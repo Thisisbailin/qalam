@@ -92,6 +92,7 @@ export default defineConfig(({ mode }) => {
             if (id.includes('/node_modules/konva/') || id.includes('/node_modules/react-konva/')) return 'canvas-vendor';
             if (id.includes('/node_modules/@supabase/')) return 'storage-vendor';
             if (id.includes('/node_modules/framer-motion/') || id.includes('/node_modules/motion-dom/')) return 'motion-vendor';
+            if (id.includes('/node_modules/pdfjs-dist/')) return 'pdf-vendor';
             return 'vendor';
           },
         },

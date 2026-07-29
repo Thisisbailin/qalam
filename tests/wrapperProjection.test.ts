@@ -39,14 +39,21 @@ test("collapsed Lookbook hides only direct membership nodes and expands without 
   assert.equal(expanded.memberIdsByWrapper.get("lookbook-1")?.length, 2);
 });
 
-test("only the screenplay chain root wraps later pages and cyclic dirty links terminate safely", () => {
+test("a collapsed Manus folder wraps its script pages while screenplay page order stays independent", () => {
   const nodes = [
-    makeNode("page-a", "scriptPage", true),
-    makeNode("page-b", "scriptPage", true),
+    {
+      ...makeNode("manus", "folder", true),
+      data: { title: "剧本", folderKind: "manus", wrapperCollapsed: true },
+    } as NodeFlowNode,
+    makeNode("page-a", "scriptPage"),
+    makeNode("page-b", "scriptPage"),
     makeNode("page-c", "scriptPage"),
     makeNode("note", "text"),
   ];
   const links: NodeFlowLink[] = [
+    { id: "ma", source: "manus", target: "page-a", data: { relation: "folder-membership" } },
+    { id: "mb", source: "manus", target: "page-b", data: { relation: "folder-membership" } },
+    { id: "mc", source: "manus", target: "page-c", data: { relation: "folder-membership" } },
     { id: "ab", source: "page-a", target: "page-b", data: { relation: "screenplay-page" } },
     { id: "bc", source: "page-b", target: "page-c", data: { relation: "screenplay-page" } },
     { id: "cb", source: "page-c", target: "page-b", data: { relation: "screenplay-page" } },
@@ -54,10 +61,10 @@ test("only the screenplay chain root wraps later pages and cyclic dirty links te
   ];
 
   const projection = buildWrapperProjection(nodes, links);
-  assert.deepEqual(projection.screenplayRootIds, new Set(["page-a"]));
-  assert.deepEqual(projection.memberIdsByWrapper.get("page-a"), ["page-b", "page-c"]);
-  assert.equal(projection.memberIdsByWrapper.has("page-b"), false);
-  assert.deepEqual(projection.hiddenNodeIds, new Set(["page-b", "page-c"]));
+  assert.deepEqual(projection.screenplayRootIds, new Set());
+  assert.deepEqual(projection.memberIdsByWrapper.get("manus"), ["page-a", "page-b", "page-c"]);
+  assert.equal(projection.memberIdsByWrapper.has("page-a"), false);
+  assert.deepEqual(projection.hiddenNodeIds, new Set(["page-a", "page-b", "page-c"]));
 });
 
 test("collapsed Pinoard accepts only explicit text memberships in either direction", () => {

@@ -18,10 +18,11 @@ import {
   slugifyIdentityKey,
 } from "./projectRoles";
 import { normalizeNodeFlowNode } from "../node-workspace/nodeflow/state";
+import { normalizeManusFolderStructure } from "../node-workspace/manus/folder";
 import { normalizeFlowProjectDuration } from "./flowProject";
 import { normalizeCineworWorkspace } from "./cineworWorkspace";
 
-const HANDLE_TYPES = new Set(["image", "text", "audio", "video", "multi"]);
+const HANDLE_TYPES = new Set(["image", "text", "audio", "video", "multi", "contains"]);
 
 const normalizeHandleType = (value: unknown) =>
   typeof value === "string" && HANDLE_TYPES.has(value) ? value as any : undefined;
@@ -128,14 +129,16 @@ const normalizeFlow = (value: any): NonNullable<ProjectData["flow"]> => {
   const linkStyle = value?.linkStyle === "angular" ? "angular" : "curved";
   const activeView = typeof value?.activeView === "string" ? value.activeView : null;
 
+  const manusStructure = normalizeManusFolderStructure(flowNodes as any, links);
+
   return {
     revision,
-    flowNodes: flowNodes as any,
+    flowNodes: manusStructure.nodes as any,
     graphLinks,
     globalAssetHistory,
     linkStyle,
     activeView,
-    links,
+    links: manusStructure.links,
   };
 };
 

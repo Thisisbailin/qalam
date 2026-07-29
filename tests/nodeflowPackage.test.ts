@@ -96,6 +96,95 @@ test("Stylo package round-trip restores packed document content", async () => {
   assert.equal(original.nodes[0]?.data.text, originalText, "packing must not mutate the source project");
 });
 
+test("Stylo packages store Manus pages as Fountain children of the screenplay folder", async () => {
+  const original: NodeFlowFile = {
+    version: 2,
+    revision: 1,
+    name: "Manus Package",
+    nodes: [
+      {
+        id: "manus-folder",
+        type: "folder",
+        position: { x: 0, y: 0 },
+        data: {
+          title: "雾中来客",
+          folderKind: "manus",
+          systemManaged: true,
+          manuscriptId: "manuscript-main",
+        },
+      },
+      {
+        id: "page-1",
+        type: "scriptPage",
+        position: { x: 320, y: 0 },
+        data: {
+          title: "雾中来客",
+          text: "INT. 车站 - 夜",
+          documentKind: "script",
+          format: "fountain",
+          manuscriptId: "manuscript-main",
+          pageNumber: 1,
+        },
+      },
+      {
+        id: "page-2",
+        type: "scriptPage",
+        position: { x: 680, y: 0 },
+        data: {
+          title: "雾中来客",
+          text: "沈\n你来了。",
+          documentKind: "script",
+          format: "fountain",
+          manuscriptId: "manuscript-main",
+          pageNumber: 2,
+        },
+      },
+    ],
+    links: [
+      {
+        id: "folder-page-1",
+        source: "manus-folder",
+        target: "page-1",
+        sourceHandle: "contains",
+        targetHandle: "contains",
+        data: { relation: "folder-membership" },
+      },
+      {
+        id: "folder-page-2",
+        source: "manus-folder",
+        target: "page-2",
+        sourceHandle: "contains",
+        targetHandle: "contains",
+        data: { relation: "folder-membership" },
+      },
+      {
+        id: "page-order",
+        source: "page-1",
+        target: "page-2",
+        sourceHandle: "text",
+        targetHandle: "text",
+        data: { relation: "screenplay-page" },
+      },
+    ],
+  };
+
+  const blob = await buildNodeFlowPackageBlob(original);
+  const zipText = new TextDecoder().decode(await blob.arrayBuffer());
+  assert.match(zipText, /项目文件夹\/雾中来客\/001 雾中来客\.fountain/);
+  assert.match(zipText, /项目文件夹\/雾中来客\/002 雾中来客\.fountain/);
+
+  const imported = await readNodeFlowImportFile(
+    new File([blob], "manus.stylo.zip", { type: "application/zip" })
+  );
+  assert.equal(imported.nodes.filter((node) => node.type === "folder").length, 1);
+  assert.equal(
+    imported.links.filter((link) => link.data?.relation === "folder-membership").length,
+    2
+  );
+  assert.equal(imported.nodes.find((node) => node.id === "page-1")?.data.text, "INT. 车站 - 夜");
+  assert.equal(imported.nodes.find((node) => node.id === "page-2")?.data.text, "沈\n你来了。");
+});
+
 test("legacy Qalam packages remain importable during the Stylo migration", async () => {
   const original = makeTextProject();
   const currentPackage = await buildNodeFlowPackageBlob(original);

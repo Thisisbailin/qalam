@@ -65,7 +65,6 @@ import {
   ViduVideoGenNode,
   SeedanceVideoGenNode,
 } from "../nodes";
-import { PdfReaderOverlay } from "./PdfReaderOverlay";
 import { createDefaultNodeFlowNodeData } from "../nodeflow/defaults";
 import { createEmptyNodeFlowApprovalState } from "../nodeflow/approvals";
 import { createIdleNodeFlowExecutionState } from "../nodeflow/sessionState";
@@ -86,6 +85,7 @@ import {
   normalizeFlowProjectDuration,
 } from "../../utils/flowProject";
 import { appendUniqueFlowLink, removeFlowLinksById } from "../nodeflow/flowLinks";
+import { applyEdgeSelectionUpdates, type EdgeSelectionUpdate } from "../nodeflow/edgeSelection";
 import { ConnectionDropMenu, type ConnectionDropMenuOption } from "./ConnectionDropMenu";
 import type { CanvasSurfaceConfig, SharedCanvasControls, SharedCanvasViewport } from "./canvas/types";
 import {
@@ -136,12 +136,25 @@ import {
 import { LOOKBOOK_MEMBERSHIP_RELATION, isLookbookNodeType } from "../../utils/lookbookIdentities";
 import { LOOKBOOK_WRAPPER_DIMENSIONS } from "../lookbook/constants";
 import { createInitialLeporelloData, resolveLeporelloProjectName } from "../../utils/leporelloWorkspace";
-import { SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
+import {
+  createManusMembershipLink,
+  FOLDER_MEMBERSHIP_RELATION,
+  getManusPageIds,
+  isFolderMembershipLink,
+  isManusFolderNode,
+  MANUS_FOLDER_KIND,
+  MANUS_FOLDER_NODE_SIZE,
+} from "../manus/folder";
 import {
   createPinoardMembershipLink,
   PINOARD_MEMBERSHIP_RELATION,
 } from "../../utils/pinoardWorkspace";
 import { DisconnectableEdge, EdgeDisconnectControl } from "../edges/DisconnectableEdge";
+import { WrapperMembershipEdge } from "../edges/WrapperMembershipEdge";
+
+const PdfReaderOverlay = React.lazy(() =>
+  import("./PdfReaderOverlay").then((module) => ({ default: module.PdfReaderOverlay }))
+);
 
 type ScriptPageData = NodeFlowNodeData & {
   title?: string;
@@ -298,6 +311,21 @@ const scriptCreateOptions: ScriptCreateOption[] = [
 
 const SCRIPT_PAGE_NODE_SIZE = { width: 286, height: 356 };
 const MARKDOWN_TEXT_NODE_SIZE = { width: 320, height: 252 };
+const PINOARD_NODE_SIZE = { width: 372, height: 278 };
+const LEPORELLO_NODE_SIZE = { width: 356, height: 180 };
+
+const getFixedFlowNodeDimensions = (type?: FlowRenderNode["type"] | null) => {
+  if (type === "pinoard") return PINOARD_NODE_SIZE;
+  if (type === "leporello") return LEPORELLO_NODE_SIZE;
+  if (type === "scriptPage") return SCRIPT_PAGE_NODE_SIZE;
+  if (type && isLookbookNodeType(type)) return LOOKBOOK_WRAPPER_DIMENSIONS;
+  return null;
+};
+
+const getFlowNodeRenderStyle = (node: Pick<NodeFlowNode, "type" | "style">) => {
+  const fixedDimensions = getFixedFlowNodeDimensions(node.type);
+  return fixedDimensions ? { ...node.style, ...fixedDimensions } : node.style;
+};
 
 const pickOutputHandle = (handles: ScriptHandleType[], preferred?: ScriptHandleType | null) => {
   if (preferred && handles.includes(preferred)) return preferred;
@@ -423,15 +451,9 @@ const createScriptNodeFlowContext = (projectData: ProjectData): NodeFlowContextS
 const toRuntimeFlowNode = (node: NodeFlowNode, index: number): NodeFlowNode => ({
   ...node,
   position: node.position || getDefaultFlowNodePosition(index),
-  measured: sanitizeScriptMeasured(node.measured),
+  measured: getFixedFlowNodeDimensions(node.type) || sanitizeScriptMeasured(node.measured),
   selected: false,
-  style: isLookbookNodeType(node.type)
-    ? { ...node.style, ...LOOKBOOK_WRAPPER_DIMENSIONS }
-    : node.type === "leporello"
-      ? { ...node.style, width: 356, height: 180 }
-    : node.type === "scriptPage"
-      ? { ...node.style, ...SCRIPT_PAGE_NODE_SIZE }
-      : node.style,
+  style: getFlowNodeRenderStyle(node),
   data: {
     ...createDefaultNodeFlowNodeData(node.type),
     ...(node.data || {}),
@@ -503,6 +525,7 @@ const FoundationBoundaryEdge: React.FC<EdgeProps<FlowRenderEdge>> = ({
   data,
   selected,
   deletable,
+  interactionWidth,
 }) => {
   const transform = useStore((state) => state.transform);
   const [viewportX, viewportY, zoom] = transform;
@@ -539,46 +562,13 @@ const FoundationBoundaryEdge: React.FC<EdgeProps<FlowRenderEdge>> = ({
 
   return (
     <>
-      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
-      <EdgeDisconnectControl
-        edgeId={id}
-        labelX={labelX}
-        labelY={labelY}
-        selected={selected}
-        deletable={deletable}
+      <BaseEdge
+        id={id}
+        path={path}
+        markerEnd={markerEnd}
+        style={style}
+        interactionWidth={interactionWidth || 28}
       />
-    </>
-  );
-};
-
-const WrapperMembershipEdge: React.FC<EdgeProps<FlowRenderEdge>> = ({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  markerEnd,
-  style,
-  selected,
-  deletable,
-}) => {
-  const deltaX = targetX - sourceX;
-  const deltaY = targetY - sourceY;
-  const firstControlX = sourceX + deltaX * 0.36;
-  const firstControlY = sourceY + deltaY * 0.08;
-  const secondControlX = sourceX + deltaX * 0.64;
-  const secondControlY = sourceY + deltaY * 0.92;
-  const path = [
-    `M ${sourceX} ${sourceY}`,
-    `C ${firstControlX} ${firstControlY}`,
-    `${secondControlX} ${secondControlY}`,
-    `${targetX} ${targetY}`,
-  ].join(" ");
-  const labelX = (sourceX + 3 * firstControlX + 3 * secondControlX + targetX) / 8;
-  const labelY = (sourceY + 3 * firstControlY + 3 * secondControlY + targetY) / 8;
-  return (
-    <>
-      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
       <EdgeDisconnectControl
         edgeId={id}
         labelX={labelX}
@@ -708,13 +698,15 @@ const remapImportedFoundationNodeData = (
 };
 
 const getFlowNodeVirtualSize = (node: Pick<NodeFlowNode, "type" | "style" | "measured">) => {
+  const fixedDimensions = getFixedFlowNodeDimensions(node.type);
+  if (fixedDimensions) return fixedDimensions;
   const measured = sanitizeScriptMeasured(node.measured);
   const style = node.style || {};
   const styleWidth = typeof style.width === "number" ? style.width : undefined;
   const styleHeight = typeof style.height === "number" ? style.height : undefined;
   const fallbackHeight =
     node.type === "pinoard"
-      ? 156
+      ? 278
       : node.type === "scriptPage"
       ? 249
       : node.type === "folder"
@@ -727,8 +719,8 @@ const getFlowNodeVirtualSize = (node: Pick<NodeFlowNode, "type" | "style" | "mea
               ? 256
               : 220;
   return {
-    width: measured?.width || styleWidth || 320,
-    height: measured?.height || styleHeight || fallbackHeight,
+    width: styleWidth || measured?.width || 320,
+    height: styleHeight || measured?.height || fallbackHeight,
   };
 };
 
@@ -1682,6 +1674,7 @@ export const useFlowSurface = ({
   const [activeTimelineBlockId, setActiveTimelineBlockId] = useState("");
   const [axisRevealRequest, setAxisRevealRequest] = useState(0);
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<Set<string>>(() => new Set());
   const [foundationProjection, setFoundationProjection] = useState<ScriptFoundationProjection>({
     activeAxis: "time",
     positions: {},
@@ -1714,12 +1707,22 @@ export const useFlowSurface = ({
   useEffect(() => {
     if (hydratedStyloProjectRef.current === activeFlowProjectId) return;
     hydratedStyloProjectRef.current = activeFlowProjectId;
+    setSelectedNodeIds(new Set());
+    setSelectedEdgeIds(new Set());
     useNodeFlowStore.setState((state) => ({
       ...state,
       ...createIdleNodeFlowExecutionState(),
       ...createEmptyNodeFlowApprovalState(),
     }));
   }, [activeFlowProjectId]);
+
+  useEffect(() => {
+    const liveIds = new Set(flow.links.map((link) => link.id));
+    setSelectedEdgeIds((current) => {
+      const next = new Set(Array.from(current).filter((edgeId) => liveIds.has(edgeId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [flow.links]);
   const foundationGraph = useMemo(
     () =>
       parseFoundationGraph(flow, {
@@ -1916,15 +1919,8 @@ export const useFlowSurface = ({
       .map((node, index) => {
         const memberMotion = wrapperMemberMotion?.offsets[node.id];
         const isMotionMember = Boolean(memberMotion);
-        const baseStyle = isLookbookNodeType(node.type)
-          ? { ...node.style, ...LOOKBOOK_WRAPPER_DIMENSIONS }
-          : node.type === "leporello"
-            ? { ...node.style, width: 356, height: 180 }
-          : node.type === "pinoard"
-            ? { ...node.style, width: 244, height: 156 }
-          : node.type === "scriptPage"
-            ? { ...node.style, ...SCRIPT_PAGE_NODE_SIZE }
-            : node.style;
+        const fixedDimensions = getFixedFlowNodeDimensions(node.type);
+        const baseStyle = getFlowNodeRenderStyle(node);
         const motionStyle = memberMotion
           ? {
               ...baseStyle,
@@ -1937,6 +1933,7 @@ export const useFlowSurface = ({
         return {
           ...node,
           position: node.position || getDefaultFlowNodePosition(index),
+          measured: fixedDimensions || sanitizeScriptMeasured(node.measured),
           className: [existingClassName, isMotionMember ? `wrapper-member--${wrapperMemberMotion?.mode}` : ""]
             .filter(Boolean)
             .join(" "),
@@ -1947,7 +1944,7 @@ export const useFlowSurface = ({
             ...createDefaultNodeFlowNodeData(node.type),
             ...(node.data || {}),
             wrapperMemberCount: wrapperProjection.memberIdsByWrapper.get(node.id)?.length || 0,
-            wrapperRoot: isLookbookNodeType(node.type) || node.type === "leporello" || node.type === "pinoard" || wrapperProjection.screenplayRootIds.has(node.id),
+            wrapperRoot: isLookbookNodeType(node.type) || node.type === "leporello" || node.type === "pinoard" || isManusFolderNode(node),
             agentReviewPending: node.type === "scriptPage" && !!pendingScriptReviewNodeIds?.has(node.id),
           } as NodeFlowNodeData,
         };
@@ -2006,7 +2003,12 @@ export const useFlowSurface = ({
   const flowRuntimeLinks = useMemo<NodeFlowLink[]>(
     () =>
       flow.links
-        .filter((link) => flowRuntimeNodeIdSet.has(link.source) && flowRuntimeNodeIdSet.has(link.target))
+        .filter(
+          (link) =>
+            !isFolderMembershipLink(link) &&
+            flowRuntimeNodeIdSet.has(link.source) &&
+            flowRuntimeNodeIdSet.has(link.target)
+        )
         .map(toRuntimeScriptLink),
     [flow.links, flowRuntimeNodeIdSet]
   );
@@ -2016,7 +2018,7 @@ export const useFlowSurface = ({
       .map((link) => {
         const isWrapperMembership = link.data?.relation === LOOKBOOK_MEMBERSHIP_RELATION ||
           link.data?.relation === PINOARD_MEMBERSHIP_RELATION ||
-          link.data?.relation === SCREENPLAY_PAGE_RELATION;
+          link.data?.relation === FOLDER_MEMBERSHIP_RELATION;
         const sourceIsMotionMember = Boolean(wrapperMemberMotion?.offsets[link.source]);
         const targetIsMotionMember = Boolean(wrapperMemberMotion?.offsets[link.target]);
         const isWrapperMotionEdge = sourceIsMotionMember || targetIsMotionMember;
@@ -2047,12 +2049,13 @@ export const useFlowSurface = ({
           targetHandle: isFoundationBoundary ? FOUNDATION_BOUNDARY_HANDLE_ID : link.targetHandle || "text",
           type: isFoundationBoundary ? "foundationBoundary" : isWrapperMembership ? "wrapperMembership" : "disconnectable",
           animated: false,
+          selected: selectedEdgeIds.has(link.id),
           hidden: isProjectedHiddenEdge && !isWrapperMotionEdge,
           className: [
             isWrapperMembership ? "wrapper-membership-edge" : "",
             isWrapperMotionEdge ? `wrapper-edge--${wrapperMemberMotion?.mode}` : "",
           ].filter(Boolean).join(" ") || undefined,
-          deletable: !isFoundationStructuralLink(flow, link),
+          deletable: !isFolderMembershipLink(link) && !isFoundationStructuralLink(flow, link),
           zIndex: isFoundationBoundary ? 2 : 0,
           data: isFoundationBoundary
             ? {
@@ -2079,6 +2082,7 @@ export const useFlowSurface = ({
     foundationProjection.activeAxis,
     foundationProjection.positions,
     nodeIdSet,
+    selectedEdgeIds,
     virtualizedNodeIndex,
     wrapperMemberMotion,
     wrapperProjection.hiddenNodeIds,
@@ -2722,18 +2726,37 @@ export const useFlowSurface = ({
 
   const handleAddScriptPage = useCallback((position?: { x: number; y: number }, dropState: ScriptConnectionDropState | null = null) => {
     let createdNodeId: string | null = null;
+    let createdFolderId: string | null = null;
     setProjectData((previous) => {
       const nextFlow = ensureFlow(previous.flow);
-      const documentId = `script-${Date.now().toString(36)}`;
-      createdNodeId = `script-${documentId}`;
-      const requestedPosition = position || getDefaultScriptPosition(nextFlow.flowNodes?.length || 0);
+      const seed = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const documentId = `script-${seed}`;
+      const manuscriptId = `manuscript-${seed}`;
+      createdNodeId = `script-page-${seed}`;
+      createdFolderId = `manus-folder-${seed}`;
+      const requestedFolderPosition = position || getDefaultScriptPosition(nextFlow.flowNodes?.length || 0);
+      const folderPosition = getSafeScriptNodePosition(
+        nextFlow.flowNodes || [],
+        "folder",
+        requestedFolderPosition,
+        {
+          id: createdFolderId,
+          type: "folder",
+          position: requestedFolderPosition,
+          style: MANUS_FOLDER_NODE_SIZE,
+        }
+      );
+      const requestedPagePosition = {
+        x: folderPosition.x + MANUS_FOLDER_NODE_SIZE.width + 80,
+        y: folderPosition.y,
+      };
       const nextNode: NodeFlowNode = {
         id: createdNodeId,
         type: "scriptPage",
-        position: getSafeScriptNodePosition(nextFlow.flowNodes || [], "scriptPage", requestedPosition, {
+        position: getSafeScriptNodePosition(nextFlow.flowNodes || [], "scriptPage", requestedPagePosition, {
           id: createdNodeId,
           type: "scriptPage",
-          position: requestedPosition,
+          position: requestedPagePosition,
           style: SCRIPT_PAGE_NODE_SIZE,
         }),
         style: SCRIPT_PAGE_NODE_SIZE,
@@ -2746,18 +2769,36 @@ export const useFlowSurface = ({
           text: "",
           content: "",
           preview: "",
+          manuscriptId,
+          pageNumber: 1,
         },
       };
+      const folderNode: NodeFlowNode = {
+        id: createdFolderId,
+        type: "folder",
+        position: folderPosition,
+        style: MANUS_FOLDER_NODE_SIZE,
+        deletable: false,
+        data: {
+          ...createDefaultNodeFlowNodeData("folder"),
+          title: "剧本",
+          folderKind: MANUS_FOLDER_KIND,
+          systemManaged: true,
+          manuscriptId,
+          wrapperCollapsed: false,
+        },
+      };
+      const contentLinks = buildLinkForCreatedNode(nextFlow.links, createdNodeId, "scriptPage", dropState);
       return {
         ...previous,
         flow: {
           ...nextFlow,
-          flowNodes: [...(nextFlow.flowNodes || []), nextNode],
-          links: buildLinkForCreatedNode(nextFlow.links, createdNodeId, "scriptPage", dropState),
+          flowNodes: [...(nextFlow.flowNodes || []), folderNode, nextNode],
+          links: [...contentLinks, createManusMembershipLink(createdFolderId, createdNodeId)],
         },
       };
     });
-    if (createdNodeId) setSelectedNodeIds(new Set([createdNodeId]));
+    if (createdFolderId) setSelectedNodeIds(new Set([createdFolderId]));
     return createdNodeId;
   }, [buildLinkForCreatedNode, setProjectData]);
 
@@ -3134,6 +3175,16 @@ export const useFlowSurface = ({
 
   const handleEdgesChange = useCallback(
     (changes: EdgeChange<FlowRenderEdge>[]) => {
+      const selectionChanges = changes.filter(
+        (change): change is Extract<EdgeChange<FlowRenderEdge>, { type: "select" }> =>
+          change.type === "select"
+      );
+      if (selectionChanges.length) {
+        setSelectedEdgeIds((current) =>
+          applyEdgeSelectionUpdates(current, selectionChanges)
+        );
+      }
+
       const removedIds = new Set(
         changes
           .filter((change): change is Extract<EdgeChange<FlowRenderEdge>, { type: "remove" }> => change.type === "remove")
@@ -3144,6 +3195,12 @@ export const useFlowSurface = ({
           .map((change) => change.id)
       );
       if (!removedIds.size) return;
+      setSelectedEdgeIds((current) =>
+        applyEdgeSelectionUpdates(
+          current,
+          Array.from(removedIds, (id): EdgeSelectionUpdate => ({ id, removed: true }))
+        )
+      );
       persistFlow((currentFlow) => {
         const removedMemberships = currentFlow.links.filter(
           (link) => removedIds.has(link.id) && isFoundationMembershipLink(currentFlow.flowNodes || [], link)
@@ -3180,6 +3237,27 @@ export const useFlowSurface = ({
       const sourceType = nodeTypeById.get(connection.source);
       const targetType = nodeTypeById.get(connection.target);
       if (!sourceType || !targetType) return false;
+      if (connection.sourceHandle === "contains" || connection.targetHandle === "contains") {
+        if (
+          connection.sourceHandle !== "contains" ||
+          connection.targetHandle !== "contains" ||
+          !isManusFolderNode(sourceNode) ||
+          targetType !== "scriptPage"
+        ) {
+          return false;
+        }
+        persistFlow((currentFlow) => ({
+          ...currentFlow,
+          revision: (currentFlow.revision || 0) + 1,
+          links: [
+            ...currentFlow.links.filter(
+              (link) => !(isFolderMembershipLink(link) && link.target === connection.target)
+            ),
+            createManusMembershipLink(connection.source!, connection.target!),
+          ],
+        }));
+        return true;
+      }
       const pinoardId =
         sourceType === "pinoard" && targetType === "text"
           ? connection.source
@@ -3512,9 +3590,8 @@ export const useFlowSurface = ({
       const memberCount = typeof node.data.wrapperMemberCount === "number" ? node.data.wrapperMemberCount : 0;
       const isCollapsibleLookbook = isLookbookNodeType(node.type) && memberCount > 0;
       const isCollapsibleLeporello = node.type === "leporello" && memberCount > 0;
-      const isCollapsiblePinoard = node.type === "pinoard" && memberCount > 0;
-      const isCollapsibleScreenplay = node.type === "scriptPage" && node.data.wrapperRoot === true && memberCount > 0;
-      if (!isCollapsibleLookbook && !isCollapsibleLeporello && !isCollapsiblePinoard && !isCollapsibleScreenplay) return;
+      const isCollapsibleScreenplay = node.type === "folder" && isManusFolderNode(node as unknown as NodeFlowNode) && memberCount > 0;
+      if (!isCollapsibleLookbook && !isCollapsibleLeporello && !isCollapsibleScreenplay) return;
       if (wrapperClickTimerRef.current) clearTimeout(wrapperClickTimerRef.current);
       wrapperClickTimerRef.current = setTimeout(() => {
         wrapperClickTimerRef.current = null;
@@ -3534,10 +3611,23 @@ export const useFlowSurface = ({
       else if (node.type === "leporello") onOpenLeporello?.(node.id);
       else if (node.type === "pinoard") onOpenPinoard?.(node.id);
       else if (node.type === "text") onOpenPinoard?.(null, node.id);
+      else if (node.type === "folder" && isManusFolderNode(node as unknown as NodeFlowNode)) {
+        const pageIds = new Set(getManusPageIds(node.id, flow.flowNodes || [], flow.links || []));
+        const firstPage = (flow.flowNodes || [])
+          .filter((candidate) => pageIds.has(candidate.id))
+          .sort((left, right) => {
+            const leftPage = typeof left.data?.pageNumber === "number" ? left.data.pageNumber : Number.MAX_SAFE_INTEGER;
+            const rightPage = typeof right.data?.pageNumber === "number" ? right.data.pageNumber : Number.MAX_SAFE_INTEGER;
+            return leftPage - rightPage ||
+              left.position.y - right.position.y ||
+              left.position.x - right.position.x;
+          })[0];
+        if (firstPage) onOpenScriptDocument(firstPage.id);
+      }
       else if (node.type === "scriptPage") onOpenScriptDocument(node.id);
       else if (node.type === "pdfInput") setActivePdfNodeId(node.id);
     },
-    [onOpenLeporello, onOpenLookbook, onOpenPinoard, onOpenScriptDocument]
+    [flow.flowNodes, flow.links, onOpenLeporello, onOpenLookbook, onOpenPinoard, onOpenScriptDocument]
   );
 
   const overlays = (
@@ -3557,7 +3647,14 @@ export const useFlowSurface = ({
       ) : null}
 
       {activePdfNodeId ? (
-        <PdfReaderOverlay nodeId={activePdfNodeId} onClose={() => setActivePdfNodeId(null)} />
+        <React.Suspense fallback={<div className="pdf-focus-module-loading" role="status">正在载入 PDF 文稿工具…</div>}>
+          <PdfReaderOverlay
+            nodeId={activePdfNodeId}
+            onClose={() => setActivePdfNodeId(null)}
+            onOpenAgent={onOpenAgent}
+            onSubmitAgentMessage={onSubmitAgentMessage}
+          />
+        </React.Suspense>
       ) : null}
 
       {nodes.length === 0 && foundationScaffoldNodeIds.size === 0 ? (

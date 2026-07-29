@@ -15,6 +15,7 @@ import type {
   VideoGenNodeData,
 } from "../types";
 import { resolveEdgeHandleType } from "../utils/handles";
+import { isFolderMembershipLink } from "../manus/folder";
 
 export type NodeFlowConnectedInputs = {
   images: string[];
@@ -98,7 +99,7 @@ export const buildConnectedInputs = ({
   const preferSeedanceAssetUri = targetNode?.type === "seedanceVideoGen";
 
   links
-    .filter((link) => link.target === nodeId)
+    .filter((link) => link.target === nodeId && !isFolderMembershipLink(link))
     .forEach((link) => {
       const sourceNode = nodes.find((node) => node.id === link.source);
       if (!sourceNode) return;
@@ -214,7 +215,7 @@ export const validateNodeFlowState = ({
 
   const hasIncomingHandleType = (nodeId: string, expectedHandle: "image" | "text" | "audio" | "video") =>
     links
-      .filter((link) => link.target === nodeId)
+      .filter((link) => link.target === nodeId && !isFolderMembershipLink(link))
       .some((link) => {
         const sourceNode = nodes.find((node) => node.id === link.source);
         return (
@@ -243,7 +244,7 @@ export const validateNodeFlowState = ({
     .filter((node) => node.type === "seedanceVideoGen")
     .forEach((node) => {
       const edgeInputTypes = links
-        .filter((link) => link.target === node.id)
+        .filter((link) => link.target === node.id && !isFolderMembershipLink(link))
         .map((link) => {
           const sourceNode = nodes.find((candidate) => candidate.id === link.source);
           return resolveEdgeHandleType({

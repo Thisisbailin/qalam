@@ -31,6 +31,14 @@ test("the realtime room durably appends only incremental edits before ACK", () =
   assert.match(worker, /await this\.ensureLoaded\(attachedIdentity\)/);
   assert.match(worker, /CREATE TABLE IF NOT EXISTS room_updates/);
   assert.match(worker, /CREATE TABLE IF NOT EXISTS room_operations/);
+  assert.match(worker, /CREATE TABLE IF NOT EXISTS _sql_schema_migrations/);
+  assert.match(worker, /CREATE TABLE IF NOT EXISTS room_checkpoint_chunks/);
+  assert.match(worker, /CREATE TABLE IF NOT EXISTS room_update_chunks/);
+  assert.match(worker, /private writeCheckpointChunks/);
+  assert.match(worker, /private readCheckpoint/);
+  assert.match(worker, /MAX_SQL_BLOB_BYTES = 1_500_000/);
+  assert.match(worker, /MAX_PROJECT_BYTES = REALTIME_PROJECT_MAX_BYTES/);
+  assert.match(worker, /projectBytes > MAX_PROJECT_BYTES/);
   assert.match(worker, /SELECT server_seq FROM room_operations/);
   assert.match(worker, /INSERT INTO room_updates/);
   assert.match(worker, /INSERT INTO room_operations/);
@@ -43,7 +51,21 @@ test("the realtime room durably appends only incremental edits before ACK", () =
   assert.doesNotMatch(worker, /INSERT INTO user_project_updates/);
   assert.doesNotMatch(worker, /const candidate = new Y\.Doc\(\)/);
   assert.match(worker, /for \(const peer of this\.state\.getWebSockets\(\)\)/);
+  assert.match(worker, /this\.sendSocketMessage\(peer, broadcast\)/);
+  assert.match(worker, /realtime_socket_send_failed/);
   assert.match(worker, /stateVector: encodeUpdateBase64\(Y\.encodeStateVector\(this\.doc\)\)/);
+});
+
+test("realtime Worker enables sampled observability without logging project payloads", () => {
+  const worker = read("realtime-worker/src/index.ts");
+  const wrangler = read("realtime-worker/wrangler.toml");
+
+  assert.match(wrangler, /\[observability\][\s\S]*enabled = true/);
+  assert.match(wrangler, /\[observability\.logs\][\s\S]*head_sampling_rate = 1\.0/);
+  assert.match(wrangler, /\[observability\.traces\][\s\S]*head_sampling_rate = 0\.05/);
+  assert.match(worker, /console\.error\(JSON\.stringify\(\{/);
+  assert.match(worker, /event,[\s\S]*serverSeq: this\.serverSeq/);
+  assert.doesNotMatch(worker, /logError\([^)]*(?:serialized|checkpoint|message\.update)/);
 });
 
 test("project reset clears the active room before durable rows can be replayed", () => {
@@ -61,7 +83,7 @@ test("project reset clears the active room before durable rows can be replayed",
   assert.match(reset, /await resetRealtimeRooms\(/);
   assert.match(lifecycle, /x-stylo-reset-mode/);
   assert.match(engine, /if \(message\.type === "reset"\)/);
-  assert.match(engine, /deleteRealtimeDocument\(this\.storageKey\)/);
+  assert.match(engine, /this\.documentStore\.delete\(this\.storageKey\)/);
 });
 
 test("permanent deletion is project-scoped and prevents stale clients from reviving an ID", () => {

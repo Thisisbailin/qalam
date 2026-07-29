@@ -1727,6 +1727,1023 @@
   .pdf-reader-overlay { animation: none; }
 }
 
+/* PDF document page node and canvas-focus reading */
+.node-card-base[data-node-type="pdfInput"] {
+  min-height: 0;
+}
+
+.node-card-base[data-node-type="pdfInput"] .node-card-floating-header {
+  display: none;
+}
+
+.node-card-base[data-node-type="pdfInput"] .node-card-shell,
+.node-card-base[data-node-type="pdfInput"] .node-card-body {
+  min-height: 0;
+  height: 100%;
+  overflow: visible;
+  background: transparent;
+}
+
+.node-card-base[data-node-type="pdfInput"] .node-card-body {
+  padding: 0;
+}
+
+.node-card-base[data-node-type="pdfInput"] .node-card-shell::before,
+.node-card-base[data-node-type="pdfInput"][data-selected="true"] .node-card-shell::before {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pdf-input-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 350px;
+}
+
+.pdf-input-page,
+.pdf-input-empty {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 350px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--node-border-strong) 76%, transparent);
+  border-radius: 3px;
+  background:
+    linear-gradient(90deg, rgba(179, 72, 63, 0.1) 1px, transparent 1px) 25px 0 / 1px 100% no-repeat,
+    #f3f1eb;
+  color: #343531;
+  box-shadow:
+    0 18px 40px -28px rgba(27, 28, 26, 0.54),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  cursor: default;
+  transition:
+    border-color 160ms ease,
+    box-shadow 180ms ease,
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.node-card-base[data-node-type="pdfInput"][data-selected="true"] .pdf-input-page {
+  border-color: color-mix(in srgb, var(--app-accent-strong) 58%, #a9a79f);
+  box-shadow:
+    0 20px 42px -26px rgba(27, 28, 26, 0.6),
+    0 0 0 2px color-mix(in srgb, var(--app-accent-soft) 58%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.pdf-input-page__masthead,
+.pdf-input-page__folio {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 22px 0 36px;
+  color: #73736d;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pdf-input-page__masthead {
+  height: 48px;
+  justify-content: flex-start;
+  border-bottom: 1px solid rgba(52, 53, 49, 0.12);
+}
+
+.pdf-input-page__masthead svg {
+  color: #a64d46;
+}
+
+.pdf-input-page__body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding: 58px 25px 24px 36px;
+}
+
+.pdf-input-page__body > span {
+  color: #898981;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 7px;
+  letter-spacing: 0.18em;
+}
+
+.pdf-input-page__body strong {
+  display: -webkit-box;
+  margin: 12px 0 24px;
+  overflow: hidden;
+  color: #2f302d;
+  font-size: 21px;
+  font-weight: 570;
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow-wrap: anywhere;
+}
+
+.pdf-input-page__body i {
+  display: block;
+  width: 100%;
+  height: 1px;
+  margin-top: 13px;
+  background: rgba(52, 53, 49, 0.14);
+}
+
+.pdf-input-page__body i:nth-of-type(2) {
+  width: 78%;
+}
+
+.pdf-input-page__body i:nth-of-type(3) {
+  width: 52%;
+}
+
+.pdf-input-page__body small {
+  margin-top: auto;
+  color: #77776f;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+
+.pdf-input-page__folio {
+  min-height: 42px;
+  border-top: 1px solid rgba(52, 53, 49, 0.12);
+  text-transform: none;
+}
+
+.pdf-input-page__folio span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-input-page__folio span:first-child {
+  max-width: 58%;
+}
+
+.pdf-input-properties {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 10px);
+  z-index: 9;
+  display: grid;
+  width: 252px;
+  gap: 13px;
+  border: 1px solid color-mix(in srgb, var(--node-border-strong) 74%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--node-bg) 94%, transparent);
+  padding: 13px;
+  color: var(--node-text-primary);
+  box-shadow:
+    0 18px 36px -24px rgba(27, 28, 26, 0.5),
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+  backdrop-filter: blur(18px);
+  animation: pdf-property-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.pdf-input-properties::before {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  width: 12px;
+  height: 100%;
+  content: "";
+}
+
+@keyframes pdf-property-enter {
+  from { opacity: 0; transform: translate3d(-6px, 0, 0) scale(0.98); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+.pdf-input-properties__heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.pdf-input-properties__heading > svg {
+  color: var(--node-accent);
+}
+
+.pdf-input-properties__heading > span {
+  display: grid;
+  gap: 1px;
+}
+
+.pdf-input-properties__heading strong {
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.pdf-input-properties__heading small,
+.pdf-input-properties__meta {
+  color: var(--node-text-secondary);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.pdf-input-properties label {
+  display: grid;
+  gap: 6px;
+}
+
+.pdf-input-properties label > span {
+  color: var(--node-text-secondary);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pdf-input-properties input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--node-border);
+  border-radius: 9px;
+  outline: 0;
+  background: var(--node-surface);
+  padding: 0 9px;
+  color: var(--node-text-primary);
+  font-size: 10px;
+}
+
+.pdf-input-properties input:focus {
+  border-color: color-mix(in srgb, var(--node-accent) 48%, var(--node-border));
+}
+
+.pdf-input-properties__meta {
+  display: grid;
+  gap: 2px;
+  padding-top: 9px;
+  border-top: 1px solid var(--node-border);
+}
+
+.pdf-input-properties__meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-input-properties__actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pdf-input-properties__actions button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--node-border);
+  border-radius: 9px;
+  background: var(--node-surface);
+  padding: 0 10px;
+  color: var(--node-text-secondary);
+  font-size: 9px;
+  transition: border-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.pdf-input-properties__actions button:hover {
+  border-color: var(--node-border-strong);
+  color: var(--node-text-primary);
+}
+
+.pdf-input-properties__actions button:active {
+  transform: translateY(1px);
+}
+
+.pdf-input-properties__actions button.is-destructive {
+  width: 32px;
+  padding: 0;
+}
+
+.pdf-input-empty {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-style: dashed;
+  color: #77776f;
+  cursor: pointer;
+}
+
+.pdf-input-empty svg {
+  color: #a64d46;
+}
+
+.pdf-input-empty strong {
+  color: #3a3b37;
+  font-size: 11px;
+}
+
+.pdf-input-empty span {
+  font-size: 8px;
+}
+
+.pdf-input-empty:hover {
+  border-color: color-mix(in srgb, var(--app-accent-strong) 52%, #a9a79f);
+  transform: translateY(-1px);
+}
+
+.pdf-focus-module-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 84;
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  background: color-mix(in srgb, var(--app-bg) 28%, transparent);
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  backdrop-filter: blur(1.5px) saturate(0.9);
+}
+
+.pdf-focus-workspace {
+  position: fixed;
+  inset: 0;
+  z-index: 84;
+  display: grid;
+  min-height: 100dvh;
+  grid-template-columns: minmax(0, 1fr) 308px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--app-bg) 22%, transparent);
+  color: var(--app-text-primary);
+  backdrop-filter: blur(1.5px) saturate(0.88);
+  animation: pdf-focus-enter 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes pdf-focus-enter {
+  from { opacity: 0; transform: scale(0.972); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.pdf-focus-title,
+.pdf-focus-pagination,
+.pdf-focus-view-controls,
+.pdf-focus-selection-command {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--app-border-strong) 74%, transparent);
+  background: color-mix(in srgb, var(--app-panel-strong) 88%, transparent);
+  box-shadow:
+    0 16px 38px -28px rgba(20, 21, 19, 0.66),
+    inset 0 1px 0 color-mix(in srgb, white 16%, transparent);
+  backdrop-filter: blur(18px) saturate(1.04);
+}
+
+.pdf-focus-title {
+  top: 16px;
+  left: 16px;
+  gap: 9px;
+  max-width: min(360px, calc(100vw - 660px));
+  min-height: 40px;
+  border-radius: 13px;
+  padding: 5px 6px 5px 10px;
+}
+
+.pdf-focus-title > svg {
+  flex: 0 0 auto;
+  color: var(--app-accent-strong);
+}
+
+.pdf-focus-title > span {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
+.pdf-focus-title strong {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-focus-title small {
+  color: var(--app-text-muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 7px;
+}
+
+.pdf-focus-title > button {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 0 7px;
+  color: var(--app-text-muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 8px;
+}
+
+.pdf-focus-title > button:hover,
+.pdf-focus-title > button.is-active {
+  background: var(--app-panel-soft);
+  color: var(--app-text-primary);
+}
+
+.pdf-focus-highlight-list {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  display: grid;
+  width: 300px;
+  max-height: 360px;
+  gap: 1px;
+  overflow-y: auto;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 13px;
+  background: var(--app-panel-strong);
+  padding: 6px;
+  box-shadow: var(--app-panel-shadow);
+}
+
+.pdf-focus-highlight-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+}
+
+.pdf-focus-highlight-list > div:first-child {
+  border-top: 0;
+}
+
+.pdf-focus-highlight-list > div > button:first-child {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 5px;
+  text-align: left;
+}
+
+.pdf-focus-highlight-list > div > button:first-child > span:first-child {
+  width: 7px;
+  height: 28px;
+  border-radius: 2px;
+}
+
+.pdf-focus-highlight-list [data-color="yellow"] { background: rgba(220, 180, 62, 0.74); }
+.pdf-focus-highlight-list [data-color="green"] { background: rgba(77, 154, 109, 0.66); }
+.pdf-focus-highlight-list [data-color="blue"] { background: rgba(70, 128, 168, 0.64); }
+
+.pdf-focus-highlight-list button > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pdf-focus-highlight-list strong {
+  font-size: 9px;
+}
+
+.pdf-focus-highlight-list small {
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-focus-highlight-list > div > button:last-child {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--app-text-muted);
+}
+
+.pdf-focus-highlight-list > div > button:last-child:hover {
+  background: var(--app-panel-soft);
+  color: var(--app-text-primary);
+}
+
+.pdf-focus-highlight-list > p {
+  margin: 0;
+  padding: 14px;
+  color: var(--app-text-muted);
+  font-size: 9px;
+}
+
+.pdf-focus-pagination {
+  top: 16px;
+  left: calc((100% - 308px) / 2);
+  min-height: 40px;
+  gap: 3px;
+  border-radius: 13px;
+  padding: 4px;
+  transform: translateX(-50%);
+}
+
+.pdf-focus-pagination button,
+.pdf-focus-view-controls button,
+.pdf-focus-selection-command > button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--app-text-secondary);
+  transition: background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.pdf-focus-pagination button:hover:not(:disabled),
+.pdf-focus-view-controls button:hover,
+.pdf-focus-selection-command > button:hover {
+  background: var(--app-panel-soft);
+  color: var(--app-text-primary);
+}
+
+.pdf-focus-pagination button:active:not(:disabled),
+.pdf-focus-view-controls button:active,
+.pdf-focus-selection-command > button:active {
+  transform: scale(0.96);
+}
+
+.pdf-focus-pagination button:disabled {
+  opacity: 0.3;
+}
+
+.pdf-focus-pagination label {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  color: var(--app-text-muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 8px;
+}
+
+.pdf-focus-pagination input {
+  width: 30px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--app-text-primary);
+  font: inherit;
+  text-align: right;
+}
+
+.pdf-focus-view-controls {
+  top: 16px;
+  right: 324px;
+  min-height: 40px;
+  gap: 2px;
+  border-radius: 13px;
+  padding: 4px;
+}
+
+.pdf-focus-view-controls > span {
+  width: 38px;
+  color: var(--app-text-muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 8px;
+  text-align: center;
+}
+
+.pdf-focus-view-controls > i {
+  width: 1px;
+  height: 20px;
+  margin: 0 3px;
+  background: var(--app-border);
+}
+
+.pdf-focus-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 82px 28px 80px;
+  scroll-padding-top: 78px;
+}
+
+.pdf-focus-page-stack {
+  display: grid;
+  justify-items: center;
+  gap: 26px;
+  min-width: max-content;
+}
+
+.pdf-focus-page-anchor {
+  width: max-content;
+  scroll-margin-top: 78px;
+}
+
+.pdf-focus-page {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(59, 60, 56, 0.14);
+  border-radius: 2px;
+  background: #f7f6f2;
+  box-shadow:
+    0 32px 74px -34px rgba(19, 20, 18, 0.68),
+    0 0 0 10px color-mix(in srgb, var(--app-bg) 12%, transparent);
+  color-scheme: only light;
+}
+
+.pdf-focus-page__canvas,
+.pdf-focus-text-layer,
+.pdf-focus-highlight-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.pdf-focus-page__canvas {
+  z-index: 0;
+  display: block;
+}
+
+.pdf-focus-highlight-layer {
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pdf-focus-text-layer {
+  z-index: 2;
+  overflow: clip;
+  color: transparent;
+  line-height: 1;
+  letter-spacing: normal;
+  text-align: initial;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+}
+
+.pdf-focus-text-layer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  cursor: text;
+  transform-origin: 0 0;
+  user-select: text;
+  white-space: pre;
+}
+
+.pdf-focus-text-layer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.pdf-focus-text-layer > :not(.markedContent),
+.pdf-focus-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.pdf-focus-text-layer .markedContent {
+  display: contents;
+}
+
+.pdf-focus-text-layer ::selection {
+  background: rgba(179, 72, 63, 0.28);
+  color: transparent;
+}
+
+.pdf-focus-highlight {
+  position: absolute;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+}
+
+.pdf-focus-highlight[data-color="yellow"] { background: rgba(226, 188, 62, 0.38); }
+.pdf-focus-highlight[data-color="green"] { background: rgba(79, 161, 112, 0.3); }
+.pdf-focus-highlight[data-color="blue"] { background: rgba(69, 133, 177, 0.28); }
+
+.pdf-focus-page__skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  background: #f4f3ee;
+  padding: 14% 12%;
+  pointer-events: none;
+}
+
+.pdf-focus-page__skeleton i,
+.pdf-focus-loading > div i {
+  display: block;
+  height: 8px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #deddd7 22%, #ecebe6 48%, #deddd7 74%);
+  background-size: 220% 100%;
+  animation: pdf-focus-shimmer 1.35s ease infinite;
+}
+
+.pdf-focus-page__skeleton i:nth-child(1) { width: 44%; height: 16px; }
+.pdf-focus-page__skeleton i:nth-child(2) { width: 92%; }
+.pdf-focus-page__skeleton i:nth-child(3) { width: 84%; }
+.pdf-focus-page__skeleton i:nth-child(4) { width: 68%; }
+
+@keyframes pdf-focus-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+.pdf-focus-page__error {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  background: #f4f3ee;
+  color: #8b4d48;
+  font-size: 10px;
+}
+
+.pdf-focus-page__number {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 4;
+  color: rgba(52, 53, 49, 0.46);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 8px;
+  pointer-events: none;
+}
+
+.pdf-focus-loading,
+.pdf-focus-load-error {
+  display: grid;
+  width: min(520px, 76vw);
+  min-height: 64dvh;
+  place-content: center;
+  justify-self: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.pdf-focus-loading > div {
+  display: grid;
+  width: min(360px, 64vw);
+  gap: 10px;
+  padding: 42px;
+  border: 1px solid var(--app-border);
+  background: color-mix(in srgb, #f4f3ee 90%, transparent);
+}
+
+.pdf-focus-loading strong,
+.pdf-focus-load-error strong {
+  font-size: 11px;
+}
+
+.pdf-focus-load-error {
+  color: var(--app-text-secondary);
+}
+
+.pdf-focus-load-error svg {
+  justify-self: center;
+  color: var(--app-accent-strong);
+}
+
+.pdf-focus-load-error span {
+  max-width: 54ch;
+  color: var(--app-text-muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.pdf-focus-notes {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  min-height: 0;
+  grid-template-rows: 44px minmax(0, 1fr);
+  margin: 72px 14px 22px 0;
+  border: 0;
+  background: transparent;
+}
+
+.pdf-focus-notes > header {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 9px;
+  align-self: start;
+  border: 1px solid color-mix(in srgb, var(--app-border-strong) 74%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--app-panel-strong) 88%, transparent);
+  padding: 8px 12px;
+  box-shadow: 0 16px 38px -28px rgba(20, 21, 19, 0.66);
+  backdrop-filter: blur(18px) saturate(1.04);
+}
+
+.pdf-focus-notes > header svg {
+  color: var(--app-accent-strong);
+}
+
+.pdf-focus-notes > header span {
+  display: grid;
+  gap: 1px;
+}
+
+.pdf-focus-notes > header strong {
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.pdf-focus-notes > header small {
+  color: var(--app-text-muted);
+  font-size: 8px;
+}
+
+.pdf-focus-note-list {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 10px 2px 12px;
+}
+
+.pdf-focus-note-node {
+  display: grid;
+  min-height: 176px;
+  grid-template-rows: 38px minmax(0, 1fr);
+  border: 1px solid color-mix(in srgb, var(--app-border-strong) 78%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--app-panel-strong) 90%, transparent);
+  box-shadow: 0 18px 38px -28px rgba(20, 21, 19, 0.62);
+  backdrop-filter: blur(16px) saturate(1.02);
+  animation: pdf-note-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes pdf-note-enter {
+  from { opacity: 0; transform: translate3d(8px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+.pdf-focus-note-node__heading {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--app-border);
+  padding: 0 10px;
+  text-align: left;
+}
+
+.pdf-focus-note-node__heading:disabled {
+  cursor: default;
+}
+
+.pdf-focus-note-node__heading span {
+  color: var(--app-accent-strong);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 7px;
+}
+
+.pdf-focus-note-node__heading strong {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 660;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-focus-note-node textarea {
+  min-height: 138px;
+  resize: vertical;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 10px;
+  color: var(--app-text-secondary);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  line-height: 1.65;
+}
+
+.pdf-focus-notes__empty {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--app-border-strong) 64%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--app-panel-strong) 48%, transparent);
+  padding: 18px;
+  color: var(--app-text-muted);
+  font-size: 9px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.pdf-focus-selection-command {
+  position: fixed;
+  z-index: 92;
+  min-height: 40px;
+  gap: 2px;
+  border-radius: 13px;
+  padding: 4px;
+  animation: pdf-selection-enter 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes pdf-selection-enter {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.pdf-focus-highlight-colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  border-right: 1px solid var(--app-border);
+  border-left: 1px solid var(--app-border);
+}
+
+.pdf-focus-highlight-colors button {
+  width: 12px;
+  height: 12px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  transition: transform 140ms ease, border-color 140ms ease;
+}
+
+.pdf-focus-highlight-colors button[data-color="yellow"] { background: #dcb43e; }
+.pdf-focus-highlight-colors button[data-color="green"] { background: #579c70; }
+.pdf-focus-highlight-colors button[data-color="blue"] { background: #4e82a7; }
+
+.pdf-focus-highlight-colors button[data-active="true"] {
+  border-color: var(--app-text-primary);
+  transform: scale(1.18);
+}
+
+@media (max-width: 920px) {
+  .pdf-focus-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pdf-focus-title {
+    max-width: calc(100vw - 220px);
+  }
+
+  .pdf-focus-pagination {
+    top: auto;
+    bottom: 14px;
+    left: 50%;
+  }
+
+  .pdf-focus-view-controls {
+    right: 14px;
+  }
+
+  .pdf-focus-viewport {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .pdf-focus-notes {
+    position: absolute;
+    top: 68px;
+    right: 10px;
+    bottom: 68px;
+    width: min(286px, 74vw);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 15px;
+    box-shadow: var(--app-panel-shadow);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-input-properties,
+  .pdf-focus-workspace,
+  .pdf-focus-note-node,
+  .pdf-focus-selection-command {
+    animation: none;
+  }
+
+  .pdf-focus-page__skeleton i,
+  .pdf-focus-loading > div i {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lookbook-book__motion { transition: none !important; }
 }
@@ -2274,6 +3291,9 @@ body.stylo-resizing * {
 
 .react-flow__edge-interaction {
   stroke-opacity: 0 !important;
+  stroke-width: 28px;
+  pointer-events: stroke;
+  cursor: pointer;
 }
 
 .react-flow__panel,
@@ -2358,8 +3378,9 @@ body.stylo-resizing * {
 
 /* Handles - Minimal and integrated */
 .react-flow__handle {
-  width: 34px !important;
-  height: calc(100% - 34px) !important;
+  width: 28px !important;
+  height: 64px !important;
+  max-height: calc(100% - 24px);
   min-height: 0 !important;
   border-radius: 999px !important;
   border: 0 !important;
@@ -2410,20 +3431,18 @@ body.stylo-resizing * {
 }
 
 .react-flow__handle-left {
-  transform: translate(-12px, -50%);
+  transform: translate(-50%, -50%);
 }
 
 .react-flow__handle-right {
-  transform: translate(12px, -50%);
+  transform: translate(50%, -50%);
 }
 
 .react-flow__node:hover .react-flow__handle-left {
-  transform: translate(-16px, -50%);
   opacity: 1;
 }
 
 .react-flow__node:hover .react-flow__handle-right {
-  transform: translate(16px, -50%);
   opacity: 1;
 }
 
@@ -2479,8 +3498,8 @@ body.stylo-resizing * {
 /* Edges - Strong and visible */
 .react-flow__edge-path {
   stroke: var(--node-accent);
-  stroke-width: 2.5;
-  opacity: 0.6;
+  stroke-width: 1.8;
+  opacity: 0.5;
   transition: stroke 120ms ease, stroke-width 120ms ease, opacity 120ms ease;
   vector-effect: non-scaling-stroke;
 }
@@ -2489,26 +3508,26 @@ body.stylo-resizing * {
 .react-flow__edge:focus .react-flow__edge-path,
 .react-flow__edge:hover .react-flow__edge-path {
   stroke: var(--node-accent);
-  stroke-width: 3.5;
-  opacity: 1;
+  stroke-width: 2.6;
+  opacity: 0.92;
 }
 
 .flow-edge-disconnect-toolbar {
-  z-index: 18;
+  z-index: 28;
 }
 
 .flow-edge-disconnect {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   display: grid;
   place-items: center;
-  color: color-mix(in srgb, var(--text-primary) 76%, var(--app-accent));
-  background: color-mix(in srgb, var(--bg-panel) 91%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 86%, var(--app-accent) 14%);
+  color: color-mix(in srgb, var(--app-text-primary) 72%, var(--app-accent));
+  background: color-mix(in srgb, var(--app-panel) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border) 80%, var(--app-accent) 20%);
   border-radius: 50%;
   box-shadow:
-    0 5px 16px rgba(19, 21, 24, 0.1),
+    0 5px 14px rgba(19, 21, 24, 0.09),
     inset 0 1px 0 color-mix(in srgb, white 62%, transparent);
   backdrop-filter: blur(14px) saturate(118%);
   -webkit-backdrop-filter: blur(14px) saturate(118%);
@@ -2525,8 +3544,8 @@ body.stylo-resizing * {
 
 .flow-edge-disconnect:hover {
   color: var(--app-accent-strong);
-  background: color-mix(in srgb, var(--bg-panel) 82%, var(--app-accent) 18%);
-  border-color: color-mix(in srgb, var(--border-subtle) 52%, var(--app-accent) 48%);
+  background: color-mix(in srgb, var(--app-panel) 84%, var(--app-accent) 16%);
+  border-color: color-mix(in srgb, var(--app-border) 56%, var(--app-accent) 44%);
   box-shadow:
     0 7px 19px rgba(19, 21, 24, 0.13),
     inset 0 1px 0 color-mix(in srgb, white 68%, transparent);
@@ -2812,12 +3831,23 @@ body.stylo-resizing * {
     linear-gradient(180deg, color-mix(in srgb, var(--app-panel-strong) 94%, transparent), color-mix(in srgb, var(--app-panel) 90%, transparent));
 }
 
+.node-card-base[data-node-type="manus-folder"] .node-card-shell {
+  border-color: color-mix(in srgb, var(--app-text-muted) 34%, var(--app-border));
+  background: color-mix(in srgb, var(--app-panel-strong) 94%, transparent);
+}
+
 .folder-node-body {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
   min-height: 70px;
   align-items: center;
   gap: 10px;
+}
+
+.folder-node-body--manus .folder-node-icon {
+  border-color: color-mix(in srgb, var(--app-text-muted) 32%, var(--app-border));
+  background: color-mix(in srgb, var(--app-canvas) 78%, var(--app-panel-muted));
+  color: var(--app-text-primary);
 }
 
 .folder-node-icon {
@@ -9721,69 +10751,373 @@ button.script-foundation-gateway-card:hover,
 
 .connection-menu-label { font-size: 11px; }
 .connection-menu-hint { display: none; }
-.pinoard-node {
+/* Pinoard wrapper: an asymmetrically folded narrative blueprint. */
+.node-card-base[data-node-type="pinoard-blueprint"] {
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+  border-radius: 0;
+}
+
+.react-flow__node:has(.node-card-base[data-node-type="pinoard-blueprint"]) {
+  width: 372px !important;
+  min-width: 372px !important;
+}
+
+.node-card-base[data-node-type="pinoard-blueprint"] .node-card-floating-header {
+  display: none;
+}
+
+.node-card-base[data-node-type="pinoard-blueprint"] .node-card-shell,
+.node-card-base[data-node-type="pinoard-blueprint"] .node-card-body,
+.pinoard-blueprint {
+  height: 278px;
+  min-height: 278px;
+}
+
+.node-card-base[data-node-type="pinoard-blueprint"] .node-card-shell,
+.node-card-base[data-node-type="pinoard-blueprint"][data-selected="true"] .node-card-shell,
+.node-card-base[data-node-type="pinoard-blueprint"][data-variant="media"] .node-card-body {
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.node-card-base[data-node-type="pinoard-blueprint"] .node-card-shell::before,
+.node-card-base[data-node-type="pinoard-blueprint"][data-selected="true"] .node-card-shell::before,
+.node-card-base[data-node-type="pinoard-blueprint"] .node-card-shell::after {
+  content: none;
+}
+
+.pinoard-blueprint {
+  --blueprint-blue: #3979b6;
+  --blueprint-blue-dark: #285f98;
+  --blueprint-ink: rgba(226, 241, 250, 0.84);
+  --blueprint-ink-soft: rgba(222, 239, 249, 0.52);
   position: relative;
-  min-height: 116px;
-  overflow: hidden;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--app-accent, #cf5f57) 9%, transparent), transparent 48%),
-    var(--app-panel);
+  width: 100%;
+  overflow: visible;
+  isolation: isolate;
+  color: var(--blueprint-ink);
+  font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
+  pointer-events: none;
 }
 
-.pinoard-node__papers {
+.pinoard-blueprint::before {
+  content: "";
   position: absolute;
-  inset: 16px 22px 12px 26px;
+  inset: 18px 13px 5px 15px;
+  z-index: -4;
+  background: rgba(27, 41, 54, 0.22);
+  border-radius: 10px;
+  box-shadow: 7px 12px 20px rgba(27, 41, 54, 0.2);
 }
 
-.pinoard-node__papers span {
+.node-card-base[data-node-type="pinoard-blueprint"][data-selected="true"] .pinoard-blueprint {
+  filter: saturate(1.04) brightness(1.025);
+}
+
+.pinoard-blueprint__paper-stack {
+  position: absolute;
+  inset: 14px 9px 3px 15px;
+  z-index: -3;
+  pointer-events: none;
+}
+
+.pinoard-blueprint__paper-stack span {
   position: absolute;
   inset: 0;
-  border: 1px solid color-mix(in srgb, var(--app-text-primary) 14%, transparent);
-  border-radius: 9px 13px 10px 8px;
-  background: color-mix(in srgb, var(--app-panel) 96%, var(--app-accent, #cf5f57) 4%);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--app-text-primary) 8%, transparent);
-  transform: rotate(-1.8deg);
+  border: 1px solid rgba(101, 99, 91, 0.28);
+  background:
+    linear-gradient(rgba(87, 99, 106, 0.13) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(87, 99, 106, 0.13) 1px, transparent 1px),
+    #e8e3d8;
+  background-size: 26px 26px;
+  box-shadow: 0 8px 18px rgba(29, 36, 42, 0.13);
+  clip-path: polygon(0.5% 2%, 98.5% 0, 100% 94%, 94% 100%, 2% 96%);
+  transform: translate(9px, 8px) rotate(1.7deg);
 }
 
-.pinoard-node__papers span:nth-child(2) {
-  transform: translate(5px, -4px) rotate(1.2deg);
+.pinoard-blueprint__paper-stack span:nth-child(2) {
+  background:
+    linear-gradient(rgba(87, 99, 106, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(87, 99, 106, 0.1) 1px, transparent 1px),
+    #f1eee6;
+  background-size: 22px 22px;
+  transform: translate(3px, 3px) rotate(0.35deg);
 }
 
-.pinoard-node__papers span:nth-child(3) {
-  transform: translate(2px, 3px);
-}
-
-.pinoard-node__pin {
+.pinoard-blueprint__sheet,
+.pinoard-blueprint__upper {
   position: absolute;
-  top: 8px;
-  left: 50%;
-  z-index: 2;
-  color: var(--app-accent, #cf5f57);
-  transform: translateX(-50%) rotate(8deg);
+  overflow: hidden;
+  border: 1px solid rgba(26, 67, 107, 0.48);
+  background:
+    radial-gradient(circle at 14% 12%, rgba(255, 255, 255, 0.08), transparent 27%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 3px),
+    linear-gradient(138deg, var(--blueprint-blue) 0%, #3473ae 62%, var(--blueprint-blue-dark) 100%);
 }
 
-.pinoard-node__copy {
-  position: relative;
+.pinoard-blueprint__sheet {
+  inset: 8px 14px 7px 8px;
   z-index: 1;
+  clip-path: polygon(0.5% 1%, 99.2% 0, 98% 98%, 1% 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 9px 16px rgba(26, 51, 75, 0.18);
+}
+
+.pinoard-blueprint__frame {
+  position: absolute;
+  inset: 9px;
+  border: 1px solid var(--blueprint-ink-soft);
+  pointer-events: none;
+}
+
+.pinoard-blueprint__frame::before,
+.pinoard-blueprint__frame::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-color: var(--blueprint-ink-soft);
+  pointer-events: none;
+}
+
+.pinoard-blueprint__frame::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid;
+  border-left: 1px solid;
+  transform: translate(2px, 2px) rotate(45deg);
+}
+
+.pinoard-blueprint__frame::after {
+  right: -1px;
+  bottom: -1px;
+  border-right: 1px solid;
+  border-bottom: 1px solid;
+  transform: translate(-2px, -2px) rotate(45deg);
+}
+
+.pinoard-blueprint__upper {
+  top: 4px;
+  right: 10px;
+  left: 2px;
+  z-index: 5;
+  height: 174px;
+  clip-path: polygon(1.2% 0, 98.3% 5.5%, 100% 96%, 48% 90%, 0 84%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 14px 13px -8px rgba(12, 35, 56, 0.72);
+}
+
+.pinoard-blueprint__pin {
+  position: absolute;
+  top: 6px;
+  left: 26px;
+  z-index: 12;
+  width: 39px;
+  height: 39px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 25%, rgba(255, 255, 255, 0.82) 0 5%, rgba(255, 255, 255, 0.18) 13%, transparent 26%),
+    radial-gradient(circle at 45% 38%, #ef5244 0 37%, #d63025 63%, #98241d 100%);
+  box-shadow:
+    inset -4px -7px 8px rgba(107, 19, 15, 0.34),
+    0 5px 4px rgba(22, 37, 51, 0.36);
+  transform: rotate(-7deg);
+}
+
+.pinoard-blueprint__pin::before {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: -5px;
+  left: 5px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ae261f;
+  box-shadow: 0 4px 5px rgba(16, 32, 47, 0.34);
+}
+
+.pinoard-blueprint__pin span {
+  position: absolute;
+  top: 2px;
+  left: 8px;
+  width: 16px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.24);
+  transform: rotate(-28deg);
+}
+
+.pinoard-blueprint__heading {
+  position: absolute;
+  top: 47px;
+  left: 24px;
+  z-index: 2;
   display: grid;
-  gap: 5px;
-  padding: 42px 34px 24px;
-  text-align: center;
-}
-
-.pinoard-node__copy strong {
-  color: var(--app-text-primary);
-  font-size: 18px;
-  letter-spacing: -0.035em;
-}
-
-.pinoard-node__copy span {
-  color: var(--app-text-muted);
-  font-size: 10px;
-  letter-spacing: 0.1em;
+  gap: 1px;
   text-transform: uppercase;
 }
 
-.pinoard-node.is-collapsed .pinoard-node__papers span:first-child {
-  transform: translate(-4px, 2px) rotate(-2.4deg);
+.pinoard-blueprint__heading strong {
+  max-width: 118px;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.05;
+  letter-spacing: 0.035em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinoard-blueprint__heading span {
+  width: fit-content;
+  border-bottom: 1px solid var(--blueprint-ink-soft);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+}
+
+.pinoard-blueprint__heading small {
+  margin-top: 2px;
+  font-size: 5px;
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+}
+
+.pinoard-blueprint__route {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: var(--blueprint-ink-soft);
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.pinoard-blueprint__route .is-dashed {
+  stroke-dasharray: 4 4;
+  opacity: 0.72;
+}
+
+.pinoard-blueprint__route circle {
+  fill: var(--blueprint-blue);
+  stroke: var(--blueprint-ink);
+}
+
+.pinoard-blueprint__route-label {
+  position: absolute;
+  z-index: 3;
+  font-size: 5px;
+  letter-spacing: 0.08em;
+  opacity: 0.74;
+}
+
+.pinoard-blueprint__route-label.is-spark {
+  top: 118px;
+  left: 72px;
+}
+
+.pinoard-blueprint__route-label.is-shape {
+  top: 46px;
+  right: 34px;
+}
+
+.pinoard-blueprint__fold-shadow {
+  position: absolute;
+  top: 149px;
+  right: 14px;
+  left: 9px;
+  z-index: 6;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, rgba(8, 28, 47, 0.52), rgba(8, 28, 47, 0));
+  filter: blur(4px);
+  pointer-events: none;
+  transform: rotate(2.3deg) scaleX(0.98);
+  transform-origin: left center;
+}
+
+.pinoard-blueprint__story-flow {
+  position: absolute;
+  bottom: 27px;
+  left: 28px;
+  z-index: 2;
+  display: grid;
+  gap: 5px;
+}
+
+.pinoard-blueprint__story-flow small {
+  font-size: 5px;
+  letter-spacing: 0.06em;
+}
+
+.pinoard-blueprint__story-flow > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pinoard-blueprint__story-flow i {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--blueprint-ink-soft);
+  border-radius: 50%;
+  font-size: 6px;
+  font-style: normal;
+}
+
+.pinoard-blueprint__story-flow span {
+  width: 21px;
+  height: 1px;
+  background: var(--blueprint-ink-soft);
+}
+
+.pinoard-blueprint__status {
+  position: absolute;
+  right: 22px;
+  bottom: 11px;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: end;
+  column-gap: 4px;
+  color: rgba(232, 244, 251, 0.9);
+  text-align: right;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.pinoard-blueprint__status strong {
+  grid-row: span 2;
+  font-size: 17px;
+  font-weight: 540;
+  line-height: 0.9;
+  letter-spacing: -0.08em;
+}
+
+.pinoard-blueprint__status span,
+.pinoard-blueprint__status i {
+  font-size: 4.5px;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: 0.12em;
+}
+
+.pinoard-blueprint__status i {
+  opacity: 0.66;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pinoard-blueprint,
+  .pinoard-blueprint__upper {
+    transition: none;
+  }
 }

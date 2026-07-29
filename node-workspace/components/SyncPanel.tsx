@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { AlertCircle, Cloud, Shield, Trash2 } from "lucide-react";
 import type { AppConfig, SyncState } from "../../types";
 import type { AccountApiSession } from "../../sync/authenticatedFetch";
+import { parseJsonResponse } from "../../sync/authenticatedFetch";
 
 type Props = {
   config: AppConfig;
@@ -17,6 +18,16 @@ type Props = {
 };
 
 export type SyncSectionKey = "status" | "history";
+type AuditEntry = {
+  id: number;
+  action: string;
+  status: string;
+  createdAt: number;
+  detail: Record<string, unknown>;
+};
+type AuditResponse = {
+  entries?: AuditEntry[];
+};
 
 const formatTime = (timestamp?: number) =>
   timestamp ? new Date(timestamp).toLocaleString() : "—";
@@ -57,9 +68,7 @@ export const SyncPanel: React.FC<Props> = ({
 }) => {
   const [internalActive, setInternalActive] = useState<SyncSectionKey>(initialSection);
   const active = activeSection ?? internalActive;
-  const [auditEntries, setAuditEntries] = useState<
-    Array<{ id: number; action: string; status: string; createdAt: number; detail: Record<string, unknown> }>
-  >([]);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [auditMessage, setAuditMessage] = useState<string | null>(null);
 
@@ -78,7 +87,7 @@ export const SyncPanel: React.FC<Props> = ({
     try {
       const response = await accountSession.request("/api/sync-audit");
       if (!response.ok) throw new Error(`Failed to load activity (${response.status})`);
-      const data = await response.json();
+      const data = await parseJsonResponse<AuditResponse>(response, "Failed to load realtime activity");
       setAuditEntries(Array.isArray(data?.entries) ? data.entries : []);
     } catch (error) {
       setAuditMessage(error instanceof Error ? error.message : "Failed to load realtime activity.");

@@ -275,6 +275,7 @@ test("Lookbook reflow is deterministic and writes only the attached index docume
 test("Lookbook active UI uses the editable studio with bounded high-frequency interactions", () => {
   const workspaceSource = readFileSync("node-workspace/components/CreativeWorkspace.tsx", "utf8");
   const flowSurfaceSource = readFileSync("node-workspace/components/FlowSurface.tsx", "utf8");
+  const wrapperEdgeSource = readFileSync("node-workspace/edges/WrapperMembershipEdge.tsx", "utf8");
   const studioSource = readFileSync("node-workspace/components/lookbook/LookbookStudioPanel.tsx", "utf8");
   const itemSource = readFileSync("node-workspace/components/lookbook/LookbookBoardItem.tsx", "utf8");
   const coverSource = readFileSync("node-workspace/nodes/CompactIdentityCardNode.tsx", "utf8");
@@ -286,8 +287,8 @@ test("Lookbook active UI uses the editable studio with bounded high-frequency in
   assert.match(flowSurfaceSource, /type: "lookbook"[\s\S]*disabled: true/);
   assert.match(flowSurfaceSource, /isLookbookNodeType\(type\)[\s\S]*\? null/);
   assert.match(flowSurfaceSource, /wrapperClickTimerRef[\s\S]*toggleWrapperCollapsed/);
-  assert.match(flowSurfaceSource, /WrapperMembershipEdge[\s\S]*deltaX \* 0\.36[\s\S]*deltaY \* 0\.92/);
-  assert.match(flowSurfaceSource, /LOOKBOOK_MEMBERSHIP_RELATION[\s\S]*SCREENPLAY_PAGE_RELATION[\s\S]*wrapperMembership/);
+  assert.match(wrapperEdgeSource, /getBezierPath\([\s\S]*sourcePosition[\s\S]*targetPosition[\s\S]*curvature: 0\.28/);
+  assert.match(flowSurfaceSource, /LOOKBOOK_MEMBERSHIP_RELATION[\s\S]*FOLDER_MEMBERSHIP_RELATION[\s\S]*wrapperMembership/);
   assert.match(flowSurfaceSource, /wrapperToggleLockRef[\s\S]*now \+ 600/);
   assert.match(flowSurfaceSource, /wrapper-member--\$\{wrapperMemberMotion\?\.mode\}/);
   assert.match(flowSurfaceSource, /handleScriptNodeDoubleClick[\s\S]*onOpenScriptDocument/);

@@ -262,6 +262,16 @@ export const PinoardPanel: React.FC<Props> = ({
       </header>
 
       <div className="pinoard-stage">
+        <div className="pinoard-stage__paper" aria-hidden="true">
+          <span className="pinoard-stage__underlay is-back" />
+          <span className="pinoard-stage__underlay is-middle" />
+          <span className="pinoard-stage__sheet" />
+          <span className="pinoard-stage__upper-fold" />
+          <span className="pinoard-stage__fold-line" />
+          <span className="pinoard-stage__pin"><i /></span>
+          <span className="pinoard-stage__mark">PINOARD / IDEATION BLUEPRINT</span>
+        </div>
+
         <aside className="pinoard-rail is-left" aria-label="左侧灵感">
           {leftMembers.map(renderRailNote)}
         </aside>

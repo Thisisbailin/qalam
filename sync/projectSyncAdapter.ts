@@ -17,8 +17,17 @@ const hashString = (value: string) => {
   return `${(left >>> 0).toString(36)}:${(right >>> 0).toString(36)}:${value.length}`;
 };
 
-const serializeCloudProject = (value: ProjectData) =>
-  JSON.stringify(toCloudProjectData(value), dropFileReplacer) || "{}";
+const serializedSnapshotCache = new WeakMap<ProjectData, string>();
+
+const serializeCloudProject = (value: ProjectData) => {
+  const cached = serializedSnapshotCache.get(value);
+  if (cached !== undefined) return cached;
+  const serialized = JSON.stringify(toCloudProjectData(value), dropFileReplacer) || "{}";
+  // Sync snapshots are immutable values owned by the engine. Caching here lets
+  // fingerprinting and byte-limit enforcement share one serialization pass.
+  serializedSnapshotCache.set(value, serialized);
+  return serialized;
+};
 
 export const readActiveFlowRevision = (data: ProjectData | null | undefined) => {
   if (!data) return null;
@@ -37,6 +46,9 @@ export const projectSyncCodec: SyncCodec<ProjectData> = {
   },
   fingerprint(value) {
     return hashString(serializeCloudProject(value));
+  },
+  byteLength(value) {
+    return new TextEncoder().encode(serializeCloudProject(value)).byteLength;
   },
   validate(value) {
     const validation = validateProjectData(value);

@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { DesignAssetItem, Episode, ProjectRoleIdentity, SeedanceModel, ViduReferenceMode } from "../../types";
 
-export type HandleType = "image" | "text" | "audio" | "video" | "multi";
+export type HandleType = "image" | "text" | "audio" | "video" | "multi" | "contains";
 
 export const NODE_TYPES = [
   "pinoard",
@@ -138,6 +138,13 @@ export interface VideoInputNodeData extends BaseNodeData {
 
 export type PdfHighlightColor = "yellow" | "green" | "blue";
 
+export interface PdfHighlightRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface PdfHighlightAnnotation {
   id: string;
   page: number;
@@ -145,6 +152,11 @@ export interface PdfHighlightAnnotation {
   y: number;
   width: number;
   height: number;
+  rects?: PdfHighlightRect[];
+  quote?: string;
+  textStart?: number;
+  textEnd?: number;
+  noteNodeId?: string;
   color: PdfHighlightColor;
   createdAt: number;
 }
@@ -295,6 +307,9 @@ export interface MarkdownTextNodeData extends TextNodeData {
 
 export interface FolderNodeData extends BaseNodeData {
   title: string;
+  folderKind?: "generic" | "foundation" | "manus";
+  systemManaged?: boolean;
+  manuscriptId?: string;
 }
 
 export interface ScriptBoardNodeData extends BaseNodeData {
@@ -493,7 +508,7 @@ export interface NodeFlowNode {
 
 export interface NodeFlowLinkData extends Record<string, unknown> {
   hasPause?: boolean;
-  relation?: "foundation-membership" | "lookbook-membership" | "leporello-membership" | "pinoard-membership" | "screenplay-page";
+  relation?: "foundation-membership" | "folder-membership" | "lookbook-membership" | "leporello-membership" | "pinoard-membership" | "screenplay-page";
 }
 
 export interface NodeFlowLink {

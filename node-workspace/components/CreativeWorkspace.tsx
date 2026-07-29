@@ -49,6 +49,11 @@ import { readNodeFlowImportFile } from "../nodeflow/package";
 import { removeLookbookIdentity, syncLookbookIdentitiesFromFountain } from "../../utils/lookbookIdentities";
 import { analyzeScreenplay, createScreenplayPreview } from "../screenplay/fountainEngine";
 import { getConnectedScriptPageSequence, SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
+import {
+  createManusMembershipLink,
+  getManusFolderForPage,
+  normalizeManusFolderStructure,
+} from "../manus/folder";
 import type { EnsureProjectSynced } from "../../hooks/useCloudSync";
 import type { AccountApiSession } from "../../sync/authenticatedFetch";
 
@@ -504,9 +509,18 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
         const manuscriptNodeIds = new Set(
           getConnectedScriptPageSequence(previous, nodeId).map((node) => node.id)
         );
+        const manusFolder = getManusFolderForPage(flow.flowNodes || [], flow.links || [], nodeId);
         let didUpdate = false;
         let didFind = false;
         const flowNodes = (flow.flowNodes || []).map((node) => {
+          if (node.id === manusFolder?.id) {
+            if (node.data?.title === title) return node;
+            didUpdate = true;
+            return {
+              ...node,
+              data: { ...node.data, title, updatedAt },
+            };
+          }
           if (node.type !== "scriptPage" || !manuscriptNodeIds.has(node.id)) return node;
           if (node.id !== nodeId) {
             if (node.data?.title === title) return node;
@@ -601,6 +615,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
         const outgoingPageLink = (flow.links || []).find(
           (link) => link.source === sourceNodeId && link.data?.relation === SCREENPLAY_PAGE_RELATION
         );
+        const manusFolder = getManusFolderForPage(flow.flowNodes || [], flow.links || [], sourceNodeId);
         const sourceStats = analyzeScreenplay(sourceContent).stats;
         const nextStats = analyzeScreenplay(nextContent).stats;
         const flowNodes = (flow.flowNodes || []).map((node) => {
@@ -659,11 +674,15 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
             source: nextNodeId,
           });
         }
+        if (manusFolder) {
+          links.push(createManusMembershipLink(manusFolder.id, nextNodeId));
+        }
+        const manusStructure = normalizeManusFolderStructure([...flowNodes, nextNode], links);
         let nextData: ProjectData = {
           ...previous,
           rawScript: "",
           episodes: [],
-          flow: { ...flow, flowNodes: [...flowNodes, nextNode], links },
+          flow: { ...flow, flowNodes: manusStructure.nodes, links: manusStructure.links },
         };
         nextData = syncLookbookIdentitiesFromFountain(nextData, {
           sourceNodeId,

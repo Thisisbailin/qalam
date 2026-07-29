@@ -27,7 +27,7 @@ import {
   resetStyloScopedProjectData,
 } from './agents/runtime/projectScope';
 import { resetStyloProjectAgentStorage } from './agents/runtime/projectReset';
-import { AccountApiSession, requireOkResponse } from './sync/authenticatedFetch';
+import { AccountApiSession, parseJsonResponse, requireOkResponse } from './sync/authenticatedFetch';
 import { deleteCloudProject, loadCloudProject, loadCloudProjectCatalog, mergeMissingCloudProjects } from './sync/projectCatalog';
 import { deleteRealtimeDocument, resetRealtimeDocuments } from './sync/realtimeDocumentStore';
 
@@ -58,6 +58,15 @@ const PROJECT_CACHE_PREFIXES = [
 ];
 
 type AccountScope = `user:${string}`;
+type ProfileResponse = {
+  avatarUrl?: unknown;
+  username?: unknown;
+};
+type UploadUrlResponse = {
+  signedUrl?: unknown;
+  publicUrl?: unknown;
+  path?: unknown;
+};
 
 const buildAccountStorageKey = (baseKey: string, accountScope: AccountScope) =>
   `${baseKey}:${encodeURIComponent(accountScope)}`;
@@ -408,9 +417,9 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
         hasFetchedProfileAvatar.current = true;
         const res = await accountSession.request('/api/profile');
         if (res.ok) {
-          const data = await res.json();
-          if (data.avatarUrl) setAvatarUrl(data.avatarUrl);
-          if (!data.username && user?.username) {
+          const data = await parseJsonResponse<ProfileResponse>(res, '读取账户资料失败');
+          if (typeof data.avatarUrl === 'string' && data.avatarUrl) setAvatarUrl(data.avatarUrl);
+          if (!(typeof data.username === 'string' && data.username) && user?.username) {
             await accountSession.request('/api/profile', {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
@@ -488,8 +497,8 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
         const message = await res.text();
         throw new Error(`Upload URL error ${res.status}: ${message || 'unknown error'}`);
       }
-      const data = await res.json();
-      const signedUrl: string = data.signedUrl;
+      const data = await parseJsonResponse<UploadUrlResponse>(res, '读取上传地址失败');
+      const signedUrl = typeof data.signedUrl === 'string' ? data.signedUrl : '';
       if (!signedUrl) throw new Error('No signedUrl returned');
 
       const uploadRes = await fetch(signedUrl, {
@@ -502,8 +511,9 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
         throw new Error(`Upload failed ${uploadRes.status}: ${txt}`);
       }
 
-      const publicUrl: string | undefined = data.publicUrl;
-      const storedUrl = publicUrl || data.path || '';
+      const publicUrl = typeof data.publicUrl === 'string' ? data.publicUrl : '';
+      const path = typeof data.path === 'string' ? data.path : '';
+      const storedUrl = publicUrl || path;
       if (!storedUrl) throw new Error('No public URL/path returned');
       setAvatarUrl(storedUrl);
       // Save to profile for multi-device sync

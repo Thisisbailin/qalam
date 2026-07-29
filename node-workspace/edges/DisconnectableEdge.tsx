@@ -70,6 +70,7 @@ export const DisconnectableEdge: React.FC<EdgeProps> = ({
   style,
   selected,
   deletable,
+  interactionWidth,
 }) => {
   const [path, labelX, labelY] = getBezierPath({
     sourceX,
@@ -88,6 +89,7 @@ export const DisconnectableEdge: React.FC<EdgeProps> = ({
         markerStart={markerStart}
         markerEnd={markerEnd}
         style={style}
+        interactionWidth={interactionWidth || 28}
       />
       <EdgeDisconnectControl
         edgeId={id}

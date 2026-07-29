@@ -12,6 +12,7 @@ import { createDefaultNodeFlowNodeData } from "./defaults";
 import { buildNodeFlowLinkId } from "./links";
 import { normalizeNodeFlowGraphLinks } from "./graphLinks";
 import { dedupeNodeFlowRefs } from "./refs";
+import { normalizeManusFolderStructure } from "../manus/folder";
 
 const NODE_TYPE_SET = new Set<NodeType>(NODE_TYPES);
 
@@ -89,5 +90,6 @@ export const normalizeNodeFlowData = (nodeFlow: NodeFlowFile) => {
         .filter((link) => nodeIds.has(link.source) && nodeIds.has(link.target))
     : [];
   const graphLinks: NodeFlowGraphLink[] = normalizeNodeFlowGraphLinks(nodeFlow.graphLinks);
-  return { nodes, links, graphLinks };
+  const manusStructure = normalizeManusFolderStructure(nodes, links);
+  return { nodes: manusStructure.nodes, links: manusStructure.links, graphLinks };
 };

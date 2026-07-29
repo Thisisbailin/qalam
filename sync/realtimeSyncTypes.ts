@@ -11,6 +11,7 @@ export type SyncStatusDetail = {
 export type SyncCodec<T> = {
   snapshot(value: T): T;
   fingerprint(value: T): string;
+  byteLength?(value: T): number;
   validate(value: T): string | null;
   isEmpty(value: T): boolean;
   revision?(value: T): number | null;
@@ -26,4 +27,3 @@ export type SyncStatusListener = (
   status: SyncStatus,
   detail?: SyncStatusDetail,
 ) => void;
-

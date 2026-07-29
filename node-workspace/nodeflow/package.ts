@@ -6,6 +6,11 @@ import type {
   NodeFlowNodeData,
 } from "../types";
 import { getFoundationAxisDefinition, isFoundationAxis } from "../foundation/axes";
+import {
+  getManusFolderForPage,
+  isManusFolderNode,
+  normalizeManusFolderStructure,
+} from "../manus/folder";
 import { NODE_FLOW_IMPORT_LIMITS, parseNodeFlowFile } from "./schema";
 
 type ZipEntryInput = {
@@ -477,6 +482,16 @@ const createPathResolver = (nodeFlow: NodeFlowFile) => {
     const role = node.data?.foundationRole;
     if (role === "project-index") return "";
     if (role === "block-document") return getBlockPath(blockDocumentParent.get(node.id));
+    if (node.type === "scriptPage") {
+      const manusFolder = getManusFolderForPage(nodeFlow.nodes, nodeFlow.links || [], node.id);
+      if (manusFolder) {
+        const folderContainerId = (manusFolder.data as { foundationContainerId?: string }).foundationContainerId;
+        const pageContainerId = (node.data as { foundationContainerId?: string }).foundationContainerId;
+        const parentPath = getBlockPath(folderContainerId || pageContainerId);
+        const folderName = sanitizePathSegment(getNodeTitle(manusFolder), "剧本");
+        return parentPath ? `${parentPath}/${folderName}` : folderName;
+      }
+    }
     return getBlockPath((node.data as { foundationContainerId?: string }).foundationContainerId);
   };
 };
@@ -528,7 +543,11 @@ const packDocumentNode = (
   if (node.type !== "scriptPage" && node.type !== "mdText" && node.type !== "text") return null;
   const data = node.data as { text?: string; content?: string; title?: string };
   const content = typeof data.content === "string" ? data.content : data.text || "";
-  const title = node.data?.foundationRole === "project-index" ? "项目索引.md" : getNodeTitle(node);
+  const pageNumber =
+    node.type === "scriptPage" && typeof node.data?.pageNumber === "number"
+      ? `${String(Math.max(1, Math.floor(node.data.pageNumber))).padStart(3, "0")} `
+      : "";
+  const title = node.data?.foundationRole === "project-index" ? "项目索引.md" : `${pageNumber}${getNodeTitle(node)}`;
   const filename = ensureFilenameExtension(sanitizePathSegment(title, "未命名文档"), getExtensionForDocumentNode(node));
   const path = createUniquePath(folderPath ? `${folderPath}/${filename}` : filename, occupiedPaths);
   addResource(node, "text", { path, kind: "document", mimeType: getMimeFromPath(path, "text/plain;charset=utf-8") });
@@ -622,6 +641,9 @@ const packGlobalAssetHistory = async (
 
 export const buildNodeFlowPackageBlob = async (nodeFlow: NodeFlowFile) => {
   const packageFlow = cloneNodeFlow(nodeFlow);
+  const manusStructure = normalizeManusFolderStructure(packageFlow.nodes, packageFlow.links || []);
+  packageFlow.nodes = manusStructure.nodes;
+  packageFlow.links = manusStructure.links;
   const packageRoot = sanitizePathSegment(packageFlow.name || "Stylo Project", "Stylo Project");
   const occupiedPaths = new Set<string>();
   const resolveFolderPath = createPathResolver(packageFlow);
@@ -630,7 +652,12 @@ export const buildNodeFlowPackageBlob = async (nodeFlow: NodeFlowFile) => {
 
   for (const node of packageFlow.nodes) {
     const role = node.data?.foundationRole;
-    if (role === "project-root" || role === "axis-folder" || role === "block-folder") continue;
+    if (
+      role === "project-root" ||
+      role === "axis-folder" ||
+      role === "block-folder" ||
+      isManusFolderNode(node)
+    ) continue;
     const folderPath = resolveFolderPath(node);
     const documentEntry = packDocumentNode(node, folderPath, occupiedPaths);
     if (documentEntry) entries.push(documentEntry);

@@ -1,7 +1,7 @@
 import type { NodeFlowLink, NodeFlowNode } from "../types";
 import { isLookbookNodeType } from "../../utils/lookbookIdentities";
-import { SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
 import { PINOARD_MEMBERSHIP_RELATION } from "../../utils/pinoardWorkspace";
+import { isFolderMembershipLink, isManusFolderNode } from "../manus/folder";
 
 export type WrapperProjection = {
   hiddenNodeIds: Set<string>;
@@ -18,24 +18,6 @@ const addMember = (members: Map<string, Set<string>>, wrapperId: string, memberI
   members.set(wrapperId, current);
 };
 
-const collectScreenplayDescendants = (
-  rootId: string,
-  outgoing: Map<string, string[]>,
-  scriptNodeIds: Set<string>
-) => {
-  const descendants: string[] = [];
-  const visited = new Set<string>([rootId]);
-  const queue = [...(outgoing.get(rootId) || [])];
-  while (queue.length) {
-    const nodeId = queue.shift();
-    if (!nodeId || visited.has(nodeId) || !scriptNodeIds.has(nodeId)) continue;
-    visited.add(nodeId);
-    descendants.push(nodeId);
-    queue.push(...(outgoing.get(nodeId) || []));
-  }
-  return descendants;
-};
-
 export const buildWrapperProjection = (
   nodes: NodeFlowNode[],
   links: NodeFlowLink[]
@@ -46,11 +28,16 @@ export const buildWrapperProjection = (
   const pinoardIds = new Set(nodes.filter((node) => node.type === "pinoard").map((node) => node.id));
   const textNodeIds = new Set(nodes.filter((node) => node.type === "text").map((node) => node.id));
   const scriptNodeIds = new Set(nodes.filter((node) => node.type === "scriptPage").map((node) => node.id));
+  const manusFolderIds = new Set(nodes.filter(isManusFolderNode).map((node) => node.id));
   const memberSets = new Map<string, Set<string>>();
-  const screenplayIncoming = new Set<string>();
-  const screenplayOutgoing = new Map<string, string[]>();
 
   links.forEach((link) => {
+    if (isFolderMembershipLink(link)) {
+      if (manusFolderIds.has(link.source) && scriptNodeIds.has(link.target)) {
+        addMember(memberSets, link.source, link.target);
+      }
+      return;
+    }
     if (link.data?.relation === "lookbook-membership") {
       if (lookbookIds.has(link.source) && nodeById.has(link.target)) addMember(memberSets, link.source, link.target);
       if (lookbookIds.has(link.target) && nodeById.has(link.source)) addMember(memberSets, link.target, link.source);
@@ -70,25 +57,9 @@ export const buildWrapperProjection = (
       }
       return;
     }
-    if (
-      link.data?.relation === SCREENPLAY_PAGE_RELATION &&
-      scriptNodeIds.has(link.source) &&
-      scriptNodeIds.has(link.target)
-    ) {
-      screenplayIncoming.add(link.target);
-      const targets = screenplayOutgoing.get(link.source) || [];
-      targets.push(link.target);
-      screenplayOutgoing.set(link.source, targets);
-    }
   });
 
-  const screenplayRootIds = new Set(
-    Array.from(scriptNodeIds).filter((nodeId) => !screenplayIncoming.has(nodeId))
-  );
-  screenplayRootIds.forEach((rootId) => {
-    collectScreenplayDescendants(rootId, screenplayOutgoing, scriptNodeIds)
-      .forEach((memberId) => addMember(memberSets, rootId, memberId));
-  });
+  const screenplayRootIds = new Set<string>();
 
   const hiddenNodeIds = new Set<string>();
   memberSets.forEach((memberIds, wrapperId) => {

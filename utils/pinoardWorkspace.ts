@@ -159,10 +159,10 @@ export const ensurePinoardForText = (
     id: pinoardId,
     type: "pinoard",
     position: {
-      x: textNode.position.x - 292,
+      x: textNode.position.x - 428,
       y: textNode.position.y + 12,
     },
-    style: { width: 244, height: 156 },
+    style: { width: 372, height: 278 },
     data: {
       title: "Pinoard",
       wrapperCollapsed: false,
@@ -196,7 +196,7 @@ export const addPinoardNote = (
     id: nodeId,
     type: "text",
     position: {
-      x: wrapper.position.x + 308 + (memberCount % 2) * 344,
+      x: wrapper.position.x + 428 + (memberCount % 2) * 344,
       y: wrapper.position.y + Math.floor(memberCount / 2) * 226,
     },
     style: { width: 320, height: 180 },

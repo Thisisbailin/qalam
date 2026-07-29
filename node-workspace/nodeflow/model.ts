@@ -7,6 +7,7 @@ import type {
 import { getNodeHandles } from "../utils/handles";
 import { resolveNodeFlowNodeStatus, resolveNodeFlowNodeTitle } from "./titles";
 import { isNodeRefField, readStyloNodeRef } from "./compatibility";
+import { isManusFolderNode } from "../manus/folder";
 
 export type NodeFlowNodeRecord = {
   id: string;
@@ -31,6 +32,7 @@ export type NodeFlowLinkRecord = {
   toNodeId: string;
   toPort?: string | null;
   paused: boolean;
+  relation?: string | null;
 };
 
 export type NodeFlowMapView = {
@@ -84,6 +86,14 @@ const summarizeNodeBody = (node: NodeFlowNode): Record<string, unknown> => {
   const data = getNodeData(node);
 
   switch (node.type) {
+    case "folder":
+      return {
+        folderKind: trimString(data.folderKind) || "generic",
+        systemManaged: data.systemManaged === true,
+        manuscriptId: trimString(data.manuscriptId) || null,
+        wrapperCollapsed: data.wrapperCollapsed === true,
+        memberCount: nonNegativeInteger(data.wrapperMemberCount),
+      };
     case "pinoard":
       return {
         wrapperCollapsed: data.wrapperCollapsed === true,
@@ -218,7 +228,9 @@ export const toNodeFlowNodeRecord = (
   node: NodeFlowNode,
   context?: NodeFlowContextSnapshot
 ): NodeFlowNodeRecord => {
-  const handles = getNodeHandles(node.type);
+  const handles = isManusFolderNode(node)
+    ? { inputs: [], outputs: ["contains"] }
+    : getNodeHandles(node.type);
   return {
     id: node.id,
     ref: getNodeFlowNodeRef(node),
@@ -244,6 +256,7 @@ export const toNodeFlowLinkRecord = (edge: NodeFlowLink): NodeFlowLinkRecord => 
     toNodeId: edge.target,
     toPort: edge.targetHandle ?? null,
     paused: Boolean(edge.data?.hasPause),
+    relation: typeof edge.data?.relation === "string" ? edge.data.relation : null,
   };
 };
 

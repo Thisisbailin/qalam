@@ -41,6 +41,10 @@ export class AccountSettingsSyncEngine {
   private version = 0;
   private staged: SecretsPayload | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private bootstrapTimer: ReturnType<typeof setTimeout> | null = null;
+  private bootstrapInitial: SecretsPayload | null = null;
+  private bootstrapRetryAttempt = 0;
+  private flushRetryAttempt = 0;
   private commandTail: Promise<void> = Promise.resolve();
   private ready = false;
   private disposed = false;
@@ -50,11 +54,19 @@ export class AccountSettingsSyncEngine {
 
   start(local: SecretsPayload) {
     const initial = secretsSyncCodec.snapshot(local);
+    this.bootstrapInitial = initial;
+    return this.bootstrap(initial);
+  }
+
+  private bootstrap(initial: SecretsPayload) {
     return this.enqueue(async () => {
       this.emit("loading");
       const remote = await loadSecretsSnapshot(this.options.session, this.controller.signal);
       if (this.disposed) return;
       this.ready = true;
+      this.bootstrapRetryAttempt = 0;
+      const pendingLocalEdit = this.staged;
+      this.staged = null;
       if (!remote) {
         this.confirmed = secretsSyncCodec.snapshot({
           textApiKey: "",
@@ -62,16 +74,15 @@ export class AccountSettingsSyncEngine {
           videoApiKey: "",
         });
         this.version = 0;
-        if (!secretsSyncCodec.isEmpty(initial)) {
-          this.staged = initial;
+        const candidate = pendingLocalEdit || initial;
+        if (!secretsSyncCodec.isEmpty(candidate)) {
+          this.staged = candidate;
           await this.flush();
         } else {
           this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0 });
         }
         return;
       }
-      const pendingLocalEdit = this.staged;
-      this.staged = null;
       this.confirmed = secretsSyncCodec.snapshot(remote.value);
       this.version = remote.version;
       if (pendingLocalEdit) {
@@ -88,6 +99,7 @@ export class AccountSettingsSyncEngine {
       if (!this.controller.signal.aborted) {
         this.emit("error", { error: error instanceof Error ? error.message : "账户设置同步失败。" });
         this.options.onError?.(error);
+        this.scheduleBootstrapRetry();
       }
       throw error;
     });
@@ -102,6 +114,7 @@ export class AccountSettingsSyncEngine {
       return;
     }
     this.staged = snapshot;
+    this.flushRetryAttempt = 0;
     if (!this.ready || !this.online) {
       this.emit(this.online ? "loading" : "offline", { pendingOps: 1 });
       return;
@@ -119,6 +132,9 @@ export class AccountSettingsSyncEngine {
     if (this.disposed || this.online === online) return;
     this.online = online;
     if (!online) {
+      this.clearTimer();
+      if (this.bootstrapTimer) clearTimeout(this.bootstrapTimer);
+      this.bootstrapTimer = null;
       this.emit("offline", { pendingOps: this.staged ? 1 : 0 });
       return;
     }
@@ -130,6 +146,7 @@ export class AccountSettingsSyncEngine {
       }, 0);
     } else {
       this.emit(this.ready ? "synced" : "loading", { pendingOps: 0 });
+      if (!this.ready) this.scheduleBootstrapRetry(true);
     }
   }
 
@@ -139,6 +156,8 @@ export class AccountSettingsSyncEngine {
     this.ready = false;
     this.staged = null;
     this.clearTimer();
+    if (this.bootstrapTimer) clearTimeout(this.bootstrapTimer);
+    this.bootstrapTimer = null;
     this.controller.abort();
   }
 
@@ -146,38 +165,57 @@ export class AccountSettingsSyncEngine {
     if (!this.ready || !this.online || !this.staged || !this.confirmed) return;
     let candidate = this.staged;
     this.staged = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (secretsSyncCodec.fingerprint(candidate) === secretsSyncCodec.fingerprint(this.confirmed)) {
-        this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0 });
-        return;
+    let operationId = createOperationId();
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (secretsSyncCodec.fingerprint(candidate) === secretsSyncCodec.fingerprint(this.confirmed)) {
+          this.flushRetryAttempt = 0;
+          this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0 });
+          return;
+        }
+        this.emit("syncing", { pendingOps: 1, retryCount: attempt, lastAttemptAt: Date.now() });
+        const result = await saveSecretsSnapshot(
+          this.options.session,
+          candidate,
+          this.version,
+          operationId,
+          this.controller.signal,
+        );
+        if (result.kind === "saved") {
+          this.confirmed = secretsSyncCodec.snapshot(candidate);
+          this.version = result.version;
+          this.flushRetryAttempt = 0;
+          this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0, retryCount: 0 });
+          return;
+        }
+        const previousConfirmed = this.confirmed;
+        this.confirmed = secretsSyncCodec.snapshot(result.remote.value);
+        this.version = result.remote.version;
+        candidate = mergeChangedFields(previousConfirmed, candidate, this.confirmed);
+        operationId = createOperationId();
+        if (secretsSyncCodec.fingerprint(candidate) === secretsSyncCodec.fingerprint(this.confirmed)) {
+          this.options.onApplyRemote(this.confirmed);
+          this.flushRetryAttempt = 0;
+          this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0, retryCount: 0 });
+          return;
+        }
       }
-      this.emit("syncing", { pendingOps: 1, retryCount: attempt, lastAttemptAt: Date.now() });
-      const result = await saveSecretsSnapshot(
-        this.options.session,
-        candidate,
-        this.version,
-        createOperationId(),
-        this.controller.signal,
-      );
-      if (result.kind === "saved") {
-        this.confirmed = secretsSyncCodec.snapshot(candidate);
-        this.version = result.version;
-        this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0, retryCount: 0 });
-        return;
-      }
-      const previousConfirmed = this.confirmed;
-      this.confirmed = secretsSyncCodec.snapshot(result.remote.value);
-      this.version = result.remote.version;
-      candidate = mergeChangedFields(previousConfirmed, candidate, this.confirmed);
-      if (secretsSyncCodec.fingerprint(candidate) === secretsSyncCodec.fingerprint(this.confirmed)) {
-        this.options.onApplyRemote(this.confirmed);
-        this.emit("synced", { lastSyncAt: Date.now(), pendingOps: 0, retryCount: 0 });
-        return;
-      }
+    } catch (error) {
+      // A failed transport must never consume the only copy of a local edit.
+      // A newer staged snapshot, if present, already contains the current UI
+      // values and therefore takes precedence over this older candidate.
+      if (!this.staged) this.staged = candidate;
+      this.emit(this.online ? "error" : "offline", {
+        error: error instanceof Error ? error.message : "账户设置同步失败。",
+        pendingOps: 1,
+      });
+      this.scheduleFlushRetry();
+      throw error;
     }
     this.staged = candidate;
     const error = new Error("账户设置连续发生更新，已保留本地改动并等待下次连接。");
     this.emit("error", { error: error.message, pendingOps: 1 });
+    this.scheduleFlushRetry();
     throw error;
   }
 
@@ -191,6 +229,35 @@ export class AccountSettingsSyncEngine {
     if (!this.timer) return;
     clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  private scheduleBootstrapRetry(immediate = false) {
+    if (
+      this.disposed
+      || this.ready
+      || !this.online
+      || !this.bootstrapInitial
+      || this.bootstrapTimer
+    ) return;
+    const delay = immediate
+      ? 0
+      : Math.min(1_000 * (2 ** this.bootstrapRetryAttempt), 15_000);
+    if (!immediate) this.bootstrapRetryAttempt += 1;
+    this.bootstrapTimer = setTimeout(() => {
+      this.bootstrapTimer = null;
+      if (!this.bootstrapInitial) return;
+      void this.bootstrap(this.bootstrapInitial).catch(() => undefined);
+    }, delay);
+  }
+
+  private scheduleFlushRetry() {
+    if (this.disposed || !this.ready || !this.online || !this.staged || this.timer) return;
+    const delay = Math.min(1_000 * (2 ** this.flushRetryAttempt), 15_000);
+    this.flushRetryAttempt += 1;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.enqueue(() => this.flush()).catch((error) => this.options.onError?.(error));
+    }, delay);
   }
 
   private emit(status: SyncStatus, detail: SyncStatusDetail = {}) {

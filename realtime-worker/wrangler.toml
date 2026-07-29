@@ -3,6 +3,17 @@ main = "src/index.ts"
 compatibility_date = "2026-07-17"
 compatibility_flags = ["nodejs_compat"]
 
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1.0
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.05
+
 [[durable_objects.bindings]]
 name = "PROJECT_REALTIME"
 class_name = "ProjectRealtimeRoom"

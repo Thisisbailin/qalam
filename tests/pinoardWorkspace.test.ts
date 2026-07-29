@@ -84,7 +84,9 @@ test("Pinoard UI has one current note, optional centered Agent, and no equal-car
   const flowSource = readFileSync("node-workspace/components/FlowSurface.tsx", "utf8");
   const workspaceSource = readFileSync("node-workspace/components/CreativeWorkspace.tsx", "utf8");
   const panelSource = readFileSync("node-workspace/components/PinoardPanel.tsx", "utf8");
+  const nodeSource = readFileSync("node-workspace/nodes/PinoardNode.tsx", "utf8");
   const styles = readFileSync("node-workspace/styles/pinoard.css", "utf8");
+  const nodeStyles = readFileSync("node-workspace/styles/nodeflow.css", "utf8");
 
   assert.match(flowSource, /label: "Pinoard"[\s\S]*label: "Manus"/);
   assert.match(flowSource, /node\.type === "text"\) onOpenPinoard\?\.\(null, node\.id\)/);
@@ -94,4 +96,15 @@ test("Pinoard UI has one current note, optional centered Agent, and no equal-car
   assert.doesNotMatch(panelSource, /board \| focus \| agent|setMode|灵感墙模式/);
   assert.match(styles, /\.pinoard-stage[\s\S]*grid-template-columns/);
   assert.match(styles, /prefers-reduced-motion/);
+  assert.match(nodeSource, /nodeType="pinoard-blueprint"/);
+  assert.match(nodeSource, /pinoard-blueprint__upper/);
+  assert.match(nodeSource, /pinoard-blueprint__route/);
+  assert.match(nodeStyles, /\.pinoard-blueprint__upper[\s\S]*clip-path: polygon/);
+  assert.match(nodeStyles, /\.pinoard-blueprint__paper-stack[\s\S]*#e8e3d8/);
+  assert.match(nodeStyles, /\.pinoard-blueprint__pin[\s\S]*radial-gradient/);
+  assert.match(nodeStyles, /\.pinoard-blueprint__fold-shadow/);
+  assert.match(panelSource, /pinoard-stage__upper-fold/);
+  assert.match(styles, /\.pinoard-stage__upper-fold[\s\S]*clip-path: polygon/);
+  assert.match(styles, /\.pinoard-stage__pin[\s\S]*radial-gradient/);
+  assert.doesNotMatch(styles, /\.pinoard-rail-note:hover[\s\S]{0,180}transform:/);
 });

@@ -189,6 +189,52 @@ const assertNodeTypeData = (nodeFlow: NodeFlowFile) => {
         ) {
           throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 无效。`);
         }
+        if (
+          highlight.quote !== undefined &&
+          (typeof highlight.quote !== "string" || highlight.quote.length > 20_000)
+        ) {
+          throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 引用文本无效。`);
+        }
+        if (
+          highlight.noteNodeId !== undefined &&
+          (typeof highlight.noteNodeId !== "string" || !highlight.noteNodeId.trim())
+        ) {
+          throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 批注引用无效。`);
+        }
+        if (
+          highlight.textStart !== undefined &&
+          (typeof highlight.textStart !== "number" || !Number.isInteger(highlight.textStart) || highlight.textStart < 0)
+        ) {
+          throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 文本起点无效。`);
+        }
+        if (
+          highlight.textEnd !== undefined &&
+          (
+            typeof highlight.textEnd !== "number" ||
+            !Number.isInteger(highlight.textEnd) ||
+            highlight.textEnd < Number(highlight.textStart || 0)
+          )
+        ) {
+          throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 文本终点无效。`);
+        }
+        if (highlight.rects !== undefined) {
+          if (!Array.isArray(highlight.rects) || highlight.rects.length > 200) {
+            throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 文本选区无效。`);
+          }
+          highlight.rects.forEach((rect) => {
+            if (!isRecord(rect)) {
+              throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 文本选区无效。`);
+            }
+            const values = [rect.x, rect.y, rect.width, rect.height];
+            if (
+              values.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) ||
+              Number(rect.x) + Number(rect.width) > 1.000_001 ||
+              Number(rect.y) + Number(rect.height) > 1.000_001
+            ) {
+              throw new Error(`节点 ${node.id} 的 PDF 高亮 ${index + 1} 文本选区无效。`);
+            }
+          });
+        }
       });
     }
     if (node.type !== "viduVideoGen") return;

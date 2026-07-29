@@ -3,7 +3,7 @@ import type { NodeFlowNode, NodeFlowNodeStyle, NodeFlowViewport, NodeType } from
 import { LOOKBOOK_WRAPPER_DIMENSIONS } from "../lookbook/constants";
 
 export const DEFAULT_NODE_DIMENSIONS: Partial<Record<NodeType, { width: number; height?: number }>> = {
-  pinoard: { width: 244, height: 156 },
+  pinoard: { width: 372, height: 278 },
   scriptPage: { width: 286, height: 356 },
   mdText: { width: 320, height: 252 },
   folder: { width: 360, height: 240 },
@@ -11,7 +11,7 @@ export const DEFAULT_NODE_DIMENSIONS: Partial<Record<NodeType, { width: number; 
   imageInput: { width: 320, height: 220 },
   audioInput: { width: 340, height: 180 },
   videoInput: { width: 360, height: 220 },
-  pdfInput: { width: 340, height: 220 },
+  pdfInput: { width: 248, height: 350 },
   scriptBoard: { width: 920 },
   lookbook: LOOKBOOK_WRAPPER_DIMENSIONS,
   leporello: { width: 356, height: 180 },

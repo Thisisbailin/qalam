@@ -12,6 +12,10 @@ import {
   buildNodeFlowPackageBlob,
   readNodeFlowImportFile,
 } from "../node-workspace/nodeflow/package";
+import {
+  getPdfHighlightBounds,
+  normalizePdfSelectionRects,
+} from "../node-workspace/pdf/selectionGeometry";
 
 const highlight = {
   id: "highlight-1",
@@ -20,6 +24,14 @@ const highlight = {
   y: 0.24,
   width: 0.42,
   height: 0.06,
+  rects: [
+    { x: 0.12, y: 0.24, width: 0.42, height: 0.025 },
+    { x: 0.12, y: 0.275, width: 0.31, height: 0.025 },
+  ],
+  quote: "角色动机需要复核",
+  textStart: 28,
+  textEnd: 36,
+  noteNodeId: "note-1",
   color: "yellow" as const,
   createdAt: 1_700_000_000_000,
 };
@@ -86,6 +98,33 @@ test("PDF input schema preserves valid highlights and rejects unsafe geometry", 
     width: 0.4,
   }];
   assert.throws(() => parseNodeFlowFile(invalid), /PDF 高亮 1 无效/);
+
+  const invalidTextSelection = makePdfProject("https://example.test/research.pdf");
+  (invalidTextSelection.nodes[1].data as PdfInputNodeData).highlights = [{
+    ...highlight,
+    rects: [{ x: 0.9, y: 0.2, width: 0.3, height: 0.05 }],
+  }];
+  assert.throws(() => parseNodeFlowFile(invalidTextSelection), /PDF 高亮 1 文本选区无效/);
+});
+
+test("PDF text selection geometry stays page-relative across scroll and zoom", () => {
+  const normalized = normalizePdfSelectionRects(
+    { left: 100, top: 600, width: 500, height: 800 },
+    [
+      { left: 150, top: 680, width: 300, height: 20 },
+      { left: 150, top: 710, width: 200, height: 20 },
+    ]
+  );
+  assert.deepEqual(normalized, [
+    { x: 0.1, y: 0.1, width: 0.6, height: 0.025 },
+    { x: 0.1, y: 0.1375, width: 0.4, height: 0.025 },
+  ]);
+  assert.deepEqual(getPdfHighlightBounds(normalized), {
+    x: 0.1,
+    y: 0.1,
+    width: 0.6,
+    height: 0.0625,
+  });
 });
 
 test("Stylo package round-trip restores PDF media, highlights, and note connection", async () => {
@@ -112,20 +151,39 @@ test("Stylo package round-trip restores PDF media, highlights, and note connecti
   assert.equal(original.nodes[1].data.pdf, source, "packing must not mutate the source PDF node");
 });
 
-test("PDF UI exposes create entries, double-click reader, highlighter, and linked notes", async () => {
-  const [flowSurface, floatingBar, nodeSource, readerSource] = await Promise.all([
+test("PDF UI uses a page node, lazy PDF.js text layer, and real linked note nodes", async () => {
+  const [flowSurface, floatingBar, nodeSource, readerSource, cssSource, packageSource, viteSource] = await Promise.all([
     readFile(path.resolve("node-workspace/components/FlowSurface.tsx"), "utf8"),
     readFile(path.resolve("node-workspace/components/FloatingActionBar.tsx"), "utf8"),
     readFile(path.resolve("node-workspace/nodes/PdfInputNode.tsx"), "utf8"),
     readFile(path.resolve("node-workspace/components/PdfReaderOverlay.tsx"), "utf8"),
+    readFile(path.resolve("node-workspace/styles/nodeflow.css"), "utf8"),
+    readFile(path.resolve("package.json"), "utf8"),
+    readFile(path.resolve("vite.config.ts"), "utf8"),
   ]);
 
   assert.match(flowSurface, /label: "PDF"[\s\S]*type: "pdfInput"/);
   assert.match(flowSurface, /node\.type === "pdfInput"\) setActivePdfNodeId\(node\.id\)/);
+  assert.match(flowSurface, /React\.lazy\(\(\) =>[\s\S]*import\("\.\/PdfReaderOverlay"\)/);
   assert.match(floatingBar, /label: "PDF"[\s\S]*onClick: onAddPdf/);
   assert.match(nodeSource, /inputs=\{\["text"\]\}/);
   assert.match(nodeSource, /uploadStorageFile\(file/);
+  assert.match(nodeSource, /className="pdf-input-page"/);
+  assert.match(nodeSource, /className="pdf-input-properties nodrag nowheel"/);
+  assert.match(readerSource, /new TextLayer\(/);
+  assert.match(readerSource, /page\.streamTextContent/);
+  assert.match(readerSource, /normalizePdfSelectionRects/);
   assert.match(readerSource, /updateNodeData\(nodeId, \{ highlights:/);
   assert.match(readerSource, /link\.target === nodeId/);
-  assert.match(readerSource, /Markdown 笔记/);
+  assert.match(readerSource, /addNode\([\s\S]*"text"/);
+  assert.match(readerSource, /connectNodes\(\{/);
+  assert.match(readerSource, /onSubmitAgentMessage/);
+  assert.doesNotMatch(readerSource, /<iframe/);
+  assert.doesNotMatch(readerSource, /DraftHighlight|highlightMode/);
+  assert.match(cssSource, /data-node-type="pdfInput"[\s\S]*\.node-card-floating-header[\s\S]*display: none/);
+  assert.match(cssSource, /\.pdf-focus-text-layer :is\(span, br\)/);
+  assert.match(cssSource, /\.pdf-focus-workspace[\s\S]*background: color-mix\(in srgb, var\(--app-bg\) 22%, transparent\)/);
+  assert.match(cssSource, /\.pdf-focus-notes[\s\S]*background: transparent/);
+  assert.match(packageSource, /"pdfjs-dist": "\^6\.2\.108"/);
+  assert.match(viteSource, /node_modules\/pdfjs-dist\/[\s\S]*return 'pdf-vendor'/);
 });

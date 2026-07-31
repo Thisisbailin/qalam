@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowsInSimple, ArrowsOutSimple, Check, PencilSimple, Plus, UploadSimple, X } from "@phosphor-icons/react";
 import type { ProjectData } from "../../../types";
 import { inspectLookbookImageFile } from "../../lookbook/imageFiles";
+import { resolvePrivateStorageUrl, uploadStorageFile } from "../../nodeflow/storageObjects";
 import {
   LEPORELLO_MAX_PAGES,
   addLeporelloPanel,
@@ -40,6 +41,15 @@ type DesktopSketchApi = {
   cancelLeporelloSketch?: (sessionId: string) => Promise<void>;
 };
 
+const cloudLeporelloFileName = (name: string) => {
+  const extension = name.split(".").pop()?.replace(/[^a-z0-9]/gi, "") || "img";
+  const base = name
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[^\w.\-]+/g, "_")
+    .slice(0, 48) || "leporello";
+  return `leporello/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${base}.${extension}`;
+};
+
 const getDesktopSketchApi = () => {
   if (typeof window === "undefined") return null;
   const scoped = window as Window & { styloDesktop?: DesktopSketchApi; qalamDesktop?: DesktopSketchApi };
@@ -59,6 +69,7 @@ export const LeporelloStudioPanel: React.FC<Props> = ({
   const [error, setError] = useState("");
   const [sketchSessionId, setSketchSessionId] = useState<string | null>(null);
   const [sketchMessage, setSketchMessage] = useState("");
+  const [resolvedMediaUrls, setResolvedMediaUrls] = useState<Record<string, string>>({});
   const wrapperNode = useMemo(
     () => getLeporelloNode(projectData, leporelloNodeId),
     [leporelloNodeId, projectData]
@@ -79,6 +90,38 @@ export const LeporelloStudioPanel: React.FC<Props> = ({
     desktopApi.completeLeporelloSketch
   );
   const visiblePages = isUnfolded ? book.pages : book.pages.slice(0, 2);
+
+  useEffect(() => {
+    const projectId = projectData.activeFlowProjectId;
+    if (!projectId) {
+      setResolvedMediaUrls({});
+      return;
+    }
+    const nodeById = new Map((projectData.flow?.flowNodes || []).map((node) => [node.id, node]));
+    const media = book.pages.flatMap((page) => {
+      const node = page.imageNodeId ? nodeById.get(page.imageNodeId) : undefined;
+      const path = typeof node?.data.storagePath === "string" ? node.data.storagePath : "";
+      return node && path ? [{ nodeId: node.id, path, bucket: node.data.storageBucket }] : [];
+    });
+    let cancelled = false;
+    void Promise.all(media.map(async (item) => [
+      item.nodeId,
+      await resolvePrivateStorageUrl({
+        bucket: item.bucket === "public-assets" ? "public-assets" : "assets",
+        path: item.path,
+      }, projectId),
+    ] as const)).then((entries) => {
+      if (!cancelled) setResolvedMediaUrls(Object.fromEntries(entries));
+    }).catch((reason) => {
+      if (!cancelled) {
+        console.warn("Leporello media URL refresh failed", reason);
+        setResolvedMediaUrls({});
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [book.pages, projectData.activeFlowProjectId, projectData.flow?.flowNodes]);
 
   const commitProjectMutation = useCallback((updater: (previous: ProjectData) => ProjectData) => {
     setProjectData((previous) => {
@@ -111,15 +154,33 @@ export const LeporelloStudioPanel: React.FC<Props> = ({
     setError("");
     try {
       const asset = await inspectLookbookImageFile(file);
+      const projectId = projectData.activeFlowProjectId;
+      if (!projectId) throw new Error("当前 Leporello 尚未绑定云端项目，无法导入图片。");
+      const uploaded = await uploadStorageFile(file, {
+        fileName: cloudLeporelloFileName(asset.name),
+        bucket: "assets",
+        contentType: asset.mimeType,
+        projectId,
+      });
       commitProjectMutation((previous) =>
-        setLeporelloPageImage(previous, leporelloNodeId, selectedPage.id, asset)
+        setLeporelloPageImage(previous, leporelloNodeId, selectedPage.id, {
+          ...asset,
+          dataUrl: uploaded.url,
+          storageBucket: uploaded.object.bucket,
+          storagePath: uploaded.object.path,
+        })
       );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "图片导入失败");
     } finally {
       setIsProcessing(false);
     }
-  }, [commitProjectMutation, leporelloNodeId, selectedPage]);
+  }, [
+    commitProjectMutation,
+    leporelloNodeId,
+    projectData.activeFlowProjectId,
+    selectedPage,
+  ]);
 
   const addPanel = useCallback(() => {
     const now = Date.now();
@@ -154,13 +215,24 @@ export const LeporelloStudioPanel: React.FC<Props> = ({
       if (!result.ok || !result.dataUrl || !result.name || !result.mimeType || !result.width || !result.height) {
         throw new Error(result.message || "系统速绘文件尚未就绪");
       }
+      const projectId = projectData.activeFlowProjectId;
+      if (!projectId) throw new Error("当前 Leporello 尚未绑定云端项目，无法保存速绘。");
+      const response = await fetch(result.dataUrl);
+      const uploaded = await uploadStorageFile(await response.blob(), {
+        fileName: cloudLeporelloFileName(result.name),
+        bucket: "assets",
+        contentType: result.mimeType,
+        projectId,
+      });
       commitProjectMutation((previous) => setLeporelloPageImage(previous, leporelloNodeId, selectedPage.id, {
         name: result.name!,
-        dataUrl: result.dataUrl!,
+        dataUrl: uploaded.url,
         mimeType: result.mimeType!,
         width: result.width!,
         height: result.height!,
         hasAlpha: Boolean(result.hasAlpha),
+        storageBucket: uploaded.object.bucket,
+        storagePath: uploaded.object.path,
       }));
       setSketchSessionId(null);
       setSketchMessage("");
@@ -169,7 +241,14 @@ export const LeporelloStudioPanel: React.FC<Props> = ({
     } finally {
       setIsProcessing(false);
     }
-  }, [commitProjectMutation, desktopApi, leporelloNodeId, selectedPage, sketchSessionId]);
+  }, [
+    commitProjectMutation,
+    desktopApi,
+    leporelloNodeId,
+    projectData.activeFlowProjectId,
+    selectedPage,
+    sketchSessionId,
+  ]);
 
   if (!wrapperNode) {
     return (
@@ -211,7 +290,9 @@ export const LeporelloStudioPanel: React.FC<Props> = ({
           style={{ "--leporello-pages": book.pages.length } as React.CSSProperties}
         >
           {visiblePages.map((page, index) => {
-            const image = getLeporelloPageImage(projectData, page);
+            const image = page.imageNodeId
+              ? resolvedMediaUrls[page.imageNodeId] || getLeporelloPageImage(projectData, page)
+              : "";
             const isSelected = selectedPage?.id === page.id;
             return (
               <button

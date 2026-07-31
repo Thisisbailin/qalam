@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import {
   FOLDER_MEMBERSHIP_RELATION,
@@ -125,4 +127,18 @@ test("Manus containment accepts only script pages and normalization is idempoten
   assert.deepEqual(second.nodes, first.nodes);
   assert.deepEqual(second.links, first.links);
   assert.equal(second.changed, false);
+});
+
+test("Manus folders render as an interactive paper stack instead of a generic folder card", async () => {
+  const [componentSource, stylesheetSource] = await Promise.all([
+    readFile(path.join(process.cwd(), "node-workspace/nodes/FolderNode.tsx"), "utf8"),
+    readFile(path.join(process.cwd(), "node-workspace/styles/nodeflow.css"), "utf8"),
+  ]);
+
+  assert.match(componentSource, /manus-wrapper-node__sheet--front/);
+  assert.match(componentSource, /<Paperclip/);
+  assert.match(componentSource, /data-state=\{isCollapsed \? "collapsed" : "expanded"\}/);
+  assert.match(stylesheetSource, /\.manus-wrapper-node__sheet--back/);
+  assert.match(stylesheetSource, /data-state="collapsed"/);
+  assert.match(stylesheetSource, /prefers-reduced-motion/);
 });

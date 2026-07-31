@@ -4,7 +4,6 @@ import { isClerkConfigured, useUser, useClerk, useAuth } from './lib/auth';
 import { FlowState, ProjectData, SyncState, SyncStatus } from './types';
 import { INITIAL_PROJECT_DATA } from './constants';
 import { normalizeProjectData } from './utils/projectData';
-import { isProjectEmpty } from './utils/persistence';
 import { getDeviceId } from './utils/device';
 import { buildApiUrl } from './utils/api';
 import { setApiAuthTokenProvider } from './utils/authToken';
@@ -28,7 +27,14 @@ import {
 } from './agents/runtime/projectScope';
 import { resetStyloProjectAgentStorage } from './agents/runtime/projectReset';
 import { AccountApiSession, parseJsonResponse, requireOkResponse } from './sync/authenticatedFetch';
-import { deleteCloudProject, loadCloudProject, loadCloudProjectCatalog, mergeMissingCloudProjects } from './sync/projectCatalog';
+import {
+  deleteCloudProject,
+  hydrateCloudProjectCatalog,
+  loadCloudProject,
+  loadCloudProjectCatalog,
+  removeDeletedCatalogProjects,
+  updateCloudProjectCatalog,
+} from './sync/projectCatalog';
 import { deleteRealtimeDocument, resetRealtimeDocuments } from './sync/realtimeDocumentStore';
 
 const AgentLab = React.lazy(() =>
@@ -157,7 +163,11 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
   const setProjectData = useCallback(
     (value: React.SetStateAction<ProjectData>) => {
       setProjectDataRaw((prev) =>
-        normalizeProjectData(typeof value === 'function' ? (value as (prevState: ProjectData) => ProjectData)(prev) : value)
+        normalizeProjectData(
+          typeof value === 'function'
+            ? (value as (prevState: ProjectData) => ProjectData)(prev)
+            : value
+        )
       );
     },
     [setProjectDataRaw]
@@ -199,7 +209,9 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
     () => typeof navigator === "undefined" || navigator.onLine !== false,
   );
   const [isCloudProjectCatalogReady, setIsCloudProjectCatalogReady] = useState(false);
+  const [cloudProjectCatalogRefresh, setCloudProjectCatalogRefresh] = useState(0);
   const [projectResetToken, setProjectResetToken] = useState(0);
+  const publishedCatalogFingerprintRef = useRef("");
 
   const [openLabModal, setOpenLabModal] = useState<LabModalKey | null>(null);
   const [projectSettingsRequest, setProjectSettingsRequest] = useState<{ panel: ProjectSettingsPanelKey; nonce: number } | null>(null);
@@ -221,32 +233,31 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
       setIsCloudProjectCatalogReady(true);
       return () => { active = false; };
     }
-    setIsCloudProjectCatalogReady(false);
+    if (cloudProjectCatalogRefresh === 0) setIsCloudProjectCatalogReady(false);
     void (async () => {
       try {
-        const catalog = await loadCloudProjectCatalog(accountSession);
-        if (!active || catalog.length === 0) return;
-        const current = projectDataRef.current;
+        const catalogResult = await loadCloudProjectCatalog(accountSession);
+        const catalog = catalogResult.projects;
+        const current = removeDeletedCatalogProjects(
+          projectDataRef.current,
+          catalogResult.deletedProjectIds,
+        );
+        if (!active) return;
+        if (catalog.length === 0) {
+          if (current !== projectDataRef.current) {
+            projectDataRef.current = current;
+            setProjectData(current);
+          }
+          return;
+        }
         const localIds = new Set((current.flowProjects || []).map((project) => project.id));
-        const missing = catalog.filter((entry) => !localIds.has(entry.projectId)).slice(0, 3);
+        const missing = catalog.filter((entry) => entry.hasDocument && !localIds.has(entry.projectId));
         const loaded = (await Promise.all(missing.map(async (entry) => ({
           projectId: entry.projectId,
           data: await loadCloudProject(accountSession, entry.projectId),
         })))).filter((item): item is { projectId: string; data: ProjectData } => Boolean(item.data));
-        if (!active || loaded.length === 0) return;
-        let merged = mergeMissingCloudProjects(current, loaded);
-        if (isProjectEmpty(current) && !catalog.some((entry) => entry.projectId === cloudProjectId)) {
-          const preferred = loaded.find((item) => item.projectId === catalog[0]?.projectId) || loaded[0];
-          const preferredProject = preferred.data.flowProjects?.find((project) => project.id === preferred.projectId);
-          if (preferredProject) {
-            merged = {
-              ...preferred.data,
-              activeFlowProjectId: preferred.projectId,
-              flow: preferredProject.flow || preferred.data.flow,
-              flowProjects: merged.flowProjects,
-            };
-          }
-        }
+        if (!active) return;
+        const merged = hydrateCloudProjectCatalog(current, catalog, loaded);
         projectDataRef.current = merged;
         setProjectData(merged);
       } catch (error) {
@@ -256,7 +267,120 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
       }
     })();
     return () => { active = false; };
-  }, [accountScope, accountSession, isSyncFeatureEnabled, setProjectData]);
+  }, [
+    accountScope,
+    accountSession,
+    cloudProjectCatalogRefresh,
+    isSyncFeatureEnabled,
+    setProjectData,
+  ]);
+
+  useEffect(() => {
+    if (!isSyncFeatureEnabled) return;
+    let active = true;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    };
+    const scheduleReconnect = () => {
+      if (!active || reconnectTimer !== null) return;
+      const delay = Math.min(30_000, 750 * (2 ** Math.min(reconnectAttempt, 5)));
+      reconnectAttempt += 1;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delay);
+    };
+    const connect = async () => {
+      if (!active || socket || navigator.onLine === false) return;
+      try {
+        const next = await accountSession.openWebSocket(
+          "/api/account-projects-realtime",
+          "stylo-realtime.v1",
+        );
+        if (!active) {
+          next.close();
+          return;
+        }
+        socket = next;
+        next.onopen = () => {
+          reconnectAttempt = 0;
+        };
+        next.onmessage = (event) => {
+          if (typeof event.data !== "string") return;
+          try {
+            const message = JSON.parse(event.data) as { type?: unknown };
+            if (message.type === "catalog-changed") {
+              setCloudProjectCatalogRefresh((revision) => revision + 1);
+            }
+          } catch {
+            // Ignore malformed invalidation packets and keep the live channel.
+          }
+        };
+        next.onclose = () => {
+          if (socket === next) socket = null;
+          scheduleReconnect();
+        };
+        next.onerror = () => next.close();
+      } catch {
+        scheduleReconnect();
+      }
+    };
+    const reconnectNow = () => {
+      if (!active || navigator.onLine === false) return;
+      clearReconnectTimer();
+      if (!socket) void connect();
+    };
+    window.addEventListener("online", reconnectNow);
+    window.addEventListener("focus", reconnectNow);
+    void connect();
+    return () => {
+      active = false;
+      clearReconnectTimer();
+      window.removeEventListener("online", reconnectNow);
+      window.removeEventListener("focus", reconnectNow);
+      socket?.close();
+      socket = null;
+    };
+  }, [accountSession, isSyncFeatureEnabled]);
+
+  useEffect(() => {
+    if (!isSyncFeatureEnabled || !isCloudProjectCatalogReady) return;
+    const projects = (projectData.flowProjects || []).map((project) => ({
+      projectId: project.id,
+      title: project.title,
+      color: project.color,
+      durationMin: project.durationMin,
+      rootNodeId: project.rootNodeId,
+      createdAt: project.createdAt,
+    }));
+    const fingerprint = JSON.stringify(projects);
+    if (!projects.length || fingerprint === publishedCatalogFingerprintRef.current) return;
+    const timer = window.setTimeout(() => {
+      void updateCloudProjectCatalog(accountSession, projects).then((result) => {
+        publishedCatalogFingerprintRef.current = fingerprint;
+        const rejected = Array.isArray(result.rejectedProjectIds)
+          ? result.rejectedProjectIds
+          : [];
+        if (rejected.length) {
+          setProjectData((current) => removeDeletedCatalogProjects(current, rejected));
+        }
+      }).catch((error) => {
+        console.warn("Cloud project catalog update failed", error);
+      });
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [
+    accountSession,
+    isCloudProjectCatalogReady,
+    isSyncFeatureEnabled,
+    projectData.flowProjects,
+    setProjectData,
+  ]);
 
   const openProjectSettings = useCallback((panel: ProjectSettingsPanelKey = "provider") => {
     setProjectSettingsRequest({ panel, nonce: Date.now() });
@@ -486,7 +610,8 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
       const payload = {
         fileName: `avatars/${Date.now()}-${safeName}`,
         bucket: 'public-assets',
-        contentType: file.type
+        contentType: file.type,
+        fileSize: file.size,
       };
       const res = await accountSession.request('/api/upload-url', {
         method: 'POST',

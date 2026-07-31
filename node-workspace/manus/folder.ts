@@ -4,7 +4,7 @@ import { SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
 
 export const FOLDER_MEMBERSHIP_RELATION = "folder-membership" as const;
 export const MANUS_FOLDER_KIND = "manus" as const;
-export const MANUS_FOLDER_NODE_SIZE = { width: 240, height: 164 } as const;
+export const MANUS_FOLDER_NODE_SIZE = { width: 286, height: 356 } as const;
 
 const stableHash = (value: string) => {
   let hash = 2166136261;

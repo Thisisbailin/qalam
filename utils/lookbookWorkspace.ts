@@ -35,6 +35,8 @@ export type LookbookImageAssetInput = {
   width: number;
   height: number;
   hasAlpha: boolean;
+  storageBucket?: "assets" | "public-assets" | null;
+  storagePath?: string | null;
 };
 
 export type LookbookBoardItem = {
@@ -539,6 +541,8 @@ export const addLookbookImageAssets = (
         filename: asset.name,
         label: asset.name.replace(/\.[^/.]+$/, ""),
         mimeType: asset.mimeType,
+        storageBucket: asset.storageBucket || null,
+        storagePath: asset.storagePath || null,
         dimensions: { width: asset.width, height: asset.height },
         hasAlpha: asset.hasAlpha,
         lookbookIdentityId: ensured.identityNode.data.identityId as string | undefined,

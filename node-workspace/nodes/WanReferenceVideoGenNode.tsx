@@ -230,12 +230,16 @@ export const WanReferenceVideoGenNode: React.FC<Props & { selected?: boolean }> 
     file: File,
     options: { prefix: string; fallbackType: string }
   ) => {
+    const projectId = nodeFlowContext.projectId || "";
+    if (!projectId) throw new Error("当前 Wan 节点尚未绑定云端项目。");
     const safeName = file.name.normalize("NFKD").replace(/[^\w.\-]+/g, "_").toLowerCase();
     const contentType = file.type || options.fallbackType;
     const payload = {
       fileName: `${options.prefix}/${Date.now()}-${safeName}`,
       bucket: "assets",
       contentType,
+      fileSize: file.size,
+      projectId,
     };
     const res = await fetch(buildApiUrl("/api/upload-url"), {
       method: "POST",
@@ -245,7 +249,12 @@ export const WanReferenceVideoGenNode: React.FC<Props & { selected?: boolean }> 
     if (!res.ok) {
       throw new Error(`Upload URL error ${res.status}`);
     }
-    const dataRes = await res.json();
+    const dataRes = await res.json() as {
+      signedUrl?: string;
+      publicUrl?: string;
+      path?: string;
+      bucket?: string;
+    };
     if (!dataRes?.signedUrl) {
       throw new Error("Missing signedUrl");
     }
@@ -265,10 +274,14 @@ export const WanReferenceVideoGenNode: React.FC<Props & { selected?: boolean }> 
       const signedRes = await fetch(buildApiUrl("/api/download-url"), {
         method: "POST",
         headers: await buildAuthorizedJsonHeaders(),
-        body: JSON.stringify({ path: dataRes.path, bucket: dataRes.bucket || "assets" }),
+        body: JSON.stringify({
+          projectId,
+          path: dataRes.path,
+          bucket: dataRes.bucket || "assets",
+        }),
       });
       if (signedRes.ok) {
-        const signedData = await signedRes.json();
+        const signedData = await signedRes.json() as { signedUrl?: string };
         url = signedData.signedUrl || "";
       }
     }

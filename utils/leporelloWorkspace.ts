@@ -154,8 +154,8 @@ export const setLeporelloPageImage = (
     assetSourceUrl: null,
     assetSourceBucket: null,
     assetSourcePath: null,
-    storageBucket: null,
-    storagePath: null,
+    storageBucket: asset.storageBucket || null,
+    storagePath: asset.storagePath || null,
   };
   const nextImageNode: NodeFlowNode = existingImageNode
     ? { ...existingImageNode, data: { ...existingImageNode.data, ...imageData } }

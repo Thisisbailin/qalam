@@ -49,7 +49,13 @@ test("the realtime room durably appends only incremental edits before ACK", () =
   assert.match(worker, /ON CONFLICT\(user_id, project_id\) DO UPDATE/);
   assert.doesNotMatch(worker, /SELECT server_seq FROM user_project_updates/);
   assert.doesNotMatch(worker, /INSERT INTO user_project_updates/);
-  assert.doesNotMatch(worker, /const candidate = new Y\.Doc\(\)/);
+  assert.match(worker, /candidateBytes > MAX_PROJECT_BYTES/);
+  assert.match(worker, /raw\.length > MAX_REALTIME_MESSAGE_CHARS/);
+  assert.match(worker, /SOCKET_RATE_MAX_MESSAGES/);
+  assert.match(worker, /SOCKET_RATE_MAX_CHARS/);
+  assert.match(worker, /MAX_PROJECT_ROOM_SOCKETS/);
+  assert.match(worker, /MAX_OWNER_EDIT_SOCKETS/);
+  assert.match(worker, /MAX_VIEWER_SOCKETS/);
   assert.match(worker, /for \(const peer of this\.state\.getWebSockets\(\)\)/);
   assert.match(worker, /this\.sendSocketMessage\(peer, broadcast\)/);
   assert.match(worker, /realtime_socket_send_failed/);
@@ -75,13 +81,16 @@ test("project reset clears the active room before durable rows can be replayed",
   const engine = read("sync/realtimeProjectSyncEngine.ts");
 
   assert.match(worker, /private async resetProject/);
-  assert.match(worker, /this\.doc\.getMap\("project"\)\.clear\(\)/);
+  assert.match(worker, /this\.doc = new Y\.Doc\(\)/);
+  assert.match(worker, /previousEpoch \+ 1/);
   assert.match(worker, /DELETE FROM room_updates/);
   assert.match(worker, /DELETE FROM room_operations/);
   assert.match(worker, /DELETE FROM user_project_documents/);
-  assert.match(worker, /JSON\.stringify\(\{ type: "reset", mode \}\)/);
+  assert.match(worker, /type: "reset"[\s\S]*epoch:/);
   assert.match(reset, /await resetRealtimeRooms\(/);
+  assert.match(reset, /await markProjectsDeleted\(/);
   assert.match(lifecycle, /x-stylo-reset-mode/);
+  assert.match(lifecycle, /deleteProjectCatalog = false/);
   assert.match(engine, /if \(message\.type === "reset"\)/);
   assert.match(engine, /this\.documentStore\.delete\(this\.storageKey\)/);
 });
@@ -90,6 +99,7 @@ test("permanent deletion is project-scoped and prevents stale clients from reviv
   const endpoint = read("functions/api/project-delete.ts");
   const lifecycle = read("functions/api/_projectDataLifecycle.ts");
   const gateway = read("functions/api/project-realtime.ts");
+  const catalogAdmission = read("functions/api/_projectCatalog.ts");
   const worker = read("realtime-worker/src/index.ts");
   const catalog = read("sync/projectCatalog.ts");
   const migration = read("migrations/0006_project_deletion_tombstones.sql");
@@ -104,7 +114,9 @@ test("permanent deletion is project-scoped and prevents stale clients from reviv
   assert.match(migration, /CREATE TRIGGER IF NOT EXISTS deny_deleted_project_document_insert/);
   assert.match(migration, /CREATE TRIGGER IF NOT EXISTS deny_deleted_agent_session_insert/);
   assert.match(migration, /RAISE\(ABORT, 'PROJECT_DELETED'\)/);
-  assert.match(gateway, /FROM user_project_deletions/);
+  assert.match(gateway, /admitProjectCatalogEntry/);
+  assert.match(catalogAdmission, /FROM user_project_deletions/);
+  assert.match(catalogAdmission, /ACCOUNT_PROJECT_LIMIT = 24/);
   assert.match(gateway, /status: 410/);
   assert.match(worker, /mode === "delete"/);
   assert.match(worker, /peer\.close\(4004, "Project permanently deleted"\)/);
@@ -118,7 +130,8 @@ test("catalog, project reads, and Agent context share the realtime document auth
   const projection = read("functions/api/_realtimeProjection.ts");
   const worker = read("realtime-worker/src/index.ts");
 
-  assert.match(catalog, /FROM user_project_documents/);
+  assert.match(catalog, /FROM user_project_catalog/);
+  assert.match(catalog, /LEFT JOIN user_project_documents/);
   assert.match(project, /FROM user_project_documents/);
   assert.match(agentState, /FROM user_project_documents/);
   assert.match(agentState, /buildAgentProjectStateFromRealtimeDocument/);
@@ -127,6 +140,28 @@ test("catalog, project reads, and Agent context share the realtime document auth
   assert.match(projection, /https:\/\/stylo\.internal\/flush/);
   assert.match(worker, /private async flushProjection\(requiredSeq = this\.serverSeq\)/);
   assert.match(worker, /while \(\(Number\(this\.readRoomMeta\(\)\?\.projected_seq\) \|\| 0\) < requiredSeq\)/);
+});
+
+test("account project discovery is event-driven across already-open devices", () => {
+  const app = read("App.tsx");
+  const endpoint = read("functions/api/account-projects-realtime.ts");
+  const notifier = read("functions/api/_accountRealtime.ts");
+  const catalog = read("functions/api/projects.ts");
+  const worker = read("realtime-worker/src/index.ts");
+  const pageConfig = read("wrangler.toml");
+  const workerConfig = read("realtime-worker/wrangler.toml");
+
+  assert.match(app, /\/api\/account-projects-realtime/);
+  assert.match(app, /message\.type === "catalog-changed"/);
+  assert.doesNotMatch(app, /setInterval\([^)]*loadCloudProjectCatalog/);
+  assert.match(endpoint, /getUserId\(authenticated, context\.env\)/);
+  assert.match(endpoint, /ACCOUNT_REALTIME\.idFromName\(userId\)/);
+  assert.match(notifier, /https:\/\/stylo\.internal\/notify/);
+  assert.match(catalog, /notifyAccountProjectCatalogChanged/);
+  assert.match(worker, /export class AccountCatalogRoom/);
+  assert.match(worker, /type: "catalog-changed"/);
+  assert.match(workerConfig, /class_name = "AccountCatalogRoom"/);
+  assert.match(pageConfig, /name = "ACCOUNT_REALTIME"/);
 });
 
 test("local project changes enter Yjs immediately while network writes are coalesced", () => {
@@ -143,6 +178,23 @@ test("local project changes enter Yjs immediately while network writes are coale
   assert.match(engine, /if \(update\.byteLength <= 2\) return/);
   assert.doesNotMatch(engine, /setInterval|\.refresh\(/);
   assert.doesNotMatch(read("hooks/useCloudSync.ts"), /refreshKey|forceCloudPull/);
+});
+
+test("refreshing private media URLs is runtime-only and cannot create phantom edits", () => {
+  const image = read("node-workspace/nodes/ImageInputNode.tsx");
+  const audio = read("node-workspace/nodes/AudioInputNode.tsx");
+  const video = read("node-workspace/nodes/VideoInputNode.tsx");
+  const pdf = read("node-workspace/nodes/PdfInputNode.tsx");
+  const reader = read("node-workspace/components/PdfReaderOverlay.tsx");
+
+  assert.match(image, /setResolvedStorageUrl\(url\)/);
+  assert.match(audio, /setResolvedStorageUrl\(url\)/);
+  assert.match(video, /setResolvedStorageUrl\(url\)/);
+  assert.match(pdf, /setResolvedStorageUrl\(url\)/);
+  assert.match(reader, /const pdfSource = resolvedStorageUrl/);
+  for (const source of [image, audio, video, pdf]) {
+    assert.doesNotMatch(source, /url !== data\.(?:image|audio|video|pdf)\)[\s\S]{0,80}updateNodeData/);
+  }
 });
 
 test("legacy snapshot sync and version-choice UI are absent", () => {

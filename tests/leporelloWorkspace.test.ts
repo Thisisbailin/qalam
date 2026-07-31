@@ -59,12 +59,18 @@ test("uploaded and sketched pages remain real image nodes referenced by the wrap
     width: 2100,
     height: 900,
     hasAlpha: false,
+    storageBucket: "assets",
+    storagePath: "users/u/projects/p/leporello/frame.png",
   }, 200);
   const book = getLeporelloBook(updated, "leporello-1");
   const panel = book.pages.find((page) => page.kind === "panel")!;
   assert.equal(panel.imageNodeId, "leporello-frame-1");
   assert.equal(getLeporelloPageImage(updated, panel), "data:image/png;base64,AA==");
   assert.equal(updated.flow?.flowNodes?.find((node) => node.id === panel.imageNodeId)?.type, "imageInput");
+  assert.equal(
+    updated.flow?.flowNodes?.find((node) => node.id === panel.imageNodeId)?.data.storagePath,
+    "users/u/projects/p/leporello/frame.png",
+  );
   assert.equal(updated.flow?.links[0]?.data?.relation, "leporello-membership");
 
   const collapsedNodes = updated.flow!.flowNodes!.map((node) =>

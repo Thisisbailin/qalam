@@ -7,9 +7,10 @@ import {
 } from "./_publicAccess";
 import { readWebSocketCredential } from "../../utils/websocketAuth";
 import { ensureRealtimeProjectProjectionExists } from "./_realtimeProjection";
+import type { D1DatabaseLike } from "./_types";
 
 type Env = {
-  DB: any;
+  DB: D1DatabaseLike;
   CLERK_SECRET_KEY: string;
   CLERK_JWT_KEY?: string;
   PROJECT_REALTIME: {

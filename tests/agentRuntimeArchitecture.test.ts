@@ -4,12 +4,6 @@ import { test } from "node:test";
 import { performance } from "node:perf_hooks";
 import { StyloMessageEventState } from "../agents/react/styloMessageState";
 import { AgentStreamEventBuffer } from "../agents/react/streamEventBuffer";
-import {
-  normalizeMessagesForDeepSeek,
-  normalizeRequestForDeepSeek,
-  normalizeResponseFromDeepSeek,
-  normalizeStreamChunkFromDeepSeek,
-} from "../agents/runtime/deepseekCompat";
 import { createHttpStyloAgentRuntime } from "../agents/runtime/httpClient";
 import {
   AgentEventSequenceGuard,
@@ -18,7 +12,7 @@ import {
   type AgentHttpRunRequest,
 } from "../agents/runtime/httpProtocol";
 import { composeAgentInstructions } from "../agents/runtime/instructions";
-import { resolveAgentProvider, resolveApiMode } from "../agents/runtime/providerConfig";
+import { resolveAgentProvider, resolveBaseUrl, resolveProviderModel } from "../agents/runtime/providerConfig";
 import { createStyloProviderRuntime } from "../agents/runtime/providerRuntime";
 import {
   compactAgentSessionItems,
@@ -45,6 +39,7 @@ import {
 } from "../node-workspace/components/stylo/agentResultReconciliation";
 import type { Message } from "../node-workspace/components/stylo/types";
 import { buildAgentProjectStateFromRealtimeDocument } from "../functions/api/_agentProjectState";
+import { DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_RESPONSES_BASE_URL } from "../constants";
 
 const emptyResult = (projectId = "project-1"): StyloRunResult => ({
   projectId,
@@ -54,17 +49,18 @@ const emptyResult = (projectId = "project-1"): StyloRunResult => ({
   toolCalls: [],
 });
 
-test("DeepSeek is the default Agent provider and uses Chat Completions mode", () => {
+test("DeepSeek is the default Agent provider and is locked to the official Responses Flash model", () => {
   assert.equal(resolveAgentProvider(undefined), "deepseek");
-  assert.equal(resolveApiMode(resolveAgentProvider(undefined)), "chat_completions");
   assert.equal(resolveAgentProvider("qwen"), "qwen");
+  assert.equal(resolveBaseUrl("deepseek"), DEEPSEEK_RESPONSES_BASE_URL);
+  assert.equal(resolveProviderModel("deepseek"), DEEPSEEK_DEFAULT_MODEL);
+  assert.equal(resolveProviderModel("deepseek", "deepseek-v4-pro"), DEEPSEEK_DEFAULT_MODEL);
+  assert.equal(resolveProviderModel("deepseek", "deepseek-chat"), DEEPSEEK_DEFAULT_MODEL);
+  assert.equal(resolveProviderModel("deepseek", "deepseek-custom"), DEEPSEEK_DEFAULT_MODEL);
 });
 
-test("provider runtimes own isolated SDK clients and DeepSeek model settings", async () => {
+test("provider runtimes own isolated SDK clients and always resolve Responses models", async () => {
   const config = {
-    provider: "deepseek" as const,
-    apiMode: "chat_completions" as const,
-    model: "deepseek-test",
     apiKey: "test-key",
     baseUrl: "https://example.invalid",
     allowBrowserClient: false,
@@ -75,41 +71,25 @@ test("provider runtimes own isolated SDK clients and DeepSeek model settings", a
     assert.notEqual(first.client, second.client);
     assert.notEqual(first.modelProvider, second.modelProvider);
     assert.equal(first.modelSettings.parallelToolCalls, false);
-    assert.equal(first.modelSettings.reasoning?.effort, "high");
-    assert.deepEqual(first.modelSettings.providerData?.thinking, { type: "enabled" });
+    assert.equal(first.modelSettings.store, false);
+    assert.equal(first.modelSettings.providerData, undefined);
+    assert.equal(first.modelSettings.reasoning, undefined);
+    const resolvedModel = await first.modelProvider.getModel(DEEPSEEK_DEFAULT_MODEL);
+    assert.equal(resolvedModel.constructor.name, "OpenAIResponsesModel");
   } finally {
     await Promise.all([first.close(), second.close()]);
   }
 });
 
-test("DeepSeek compatibility preserves reasoning across SDK assistant tool-call records", () => {
-  const normalized = normalizeMessagesForDeepSeek([
-    { role: "user", content: "inspect" },
-    { role: "assistant", content: null, reasoning: "first thought" },
-    {
-      role: "assistant",
-      content: null,
-      tool_calls: [{ id: "call-1", type: "function", function: { name: "read_document", arguments: "{}" } }],
-    },
-  ]) as Array<Record<string, unknown>>;
-
-  assert.equal(normalized.length, 2);
-  assert.equal(normalized[1].reasoning_content, "first thought");
-  assert.equal("reasoning" in normalized[1], false);
-
-  const request = normalizeRequestForDeepSeek({ messages: normalized });
-  assert.equal(request.reasoning_effort, "high");
-  assert.deepEqual(request.thinking, { type: "enabled" });
-
-  const response = normalizeResponseFromDeepSeek({
-    choices: [{ message: { role: "assistant", reasoning_content: "response thought", content: "answer" } }],
-  });
-  assert.equal(response.choices[0].message.reasoning, "response thought");
-
-  const chunk = normalizeStreamChunkFromDeepSeek({
-    choices: [{ delta: { reasoning_content: "stream thought" } }],
-  });
-  assert.equal(chunk.choices[0].delta.reasoning, "stream thought");
+test("Agent source has one Responses pipeline and no DeepSeek transport branch", () => {
+  const providerRuntime = readFileSync("agents/runtime/providerRuntime.ts", "utf8");
+  const edgeRuntime = readFileSync("functions/api/agent.ts", "utf8");
+  const settings = readFileSync("node-workspace/components/ProjectSettingsPanel.tsx", "utf8");
+  assert.match(providerRuntime, /useResponses:\s*true/);
+  assert.doesNotMatch(providerRuntime, /deepseek|chat_completions|ChatCompletions/);
+  assert.doesNotMatch(edgeRuntime, /StyloChatCompactionSession|resolveApiMode|chat_completions/);
+  assert.match(settings, /Responses API/);
+  assert.doesNotMatch(settings, /DEEPSEEK_PRO_MODEL|deepseek-v4-pro|Chat Completions/);
 });
 
 test("tool metadata is unique and drives lookup, mutation, cache, and budget behavior", () => {
@@ -689,7 +669,7 @@ test("Agent run requests carry identity and revision but no project knowledge", 
       sessionId: "stylo:project-1:conversation-1",
       userText: "检查项目",
     },
-    runtime: { provider: "deepseek", model: "deepseek-chat" },
+    runtime: { provider: "deepseek", model: DEEPSEEK_DEFAULT_MODEL },
     project: { expectedRevision: 7 },
   };
   assert.deepEqual(Object.keys(request).sort(), ["project", "run", "runtime"]);
@@ -718,7 +698,7 @@ test("HTTP Agent runtime flushes sync before sending the minimal request", async
   try {
     const runtime = createHttpStyloAgentRuntime({
       endpoint: "https://stylo.test/api/agent",
-      getRuntimeConfig: () => ({ provider: "deepseek", model: "deepseek-chat" }),
+      getRuntimeConfig: () => ({ provider: "deepseek", model: DEEPSEEK_DEFAULT_MODEL }),
       beforeRequest: async () => {
         await Promise.resolve();
         revision = 9;

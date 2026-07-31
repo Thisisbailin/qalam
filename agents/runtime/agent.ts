@@ -1,7 +1,7 @@
 import type { StyloAgentBridge } from "../bridge/styloBridge";
 import { readPersistedAgentSessionMessages } from "./session";
 import { runStyloAgentCore } from "./core";
-import { resolveAgentProvider, resolveApiMode, resolveBaseUrl } from "./providerConfig";
+import { resolveAgentProvider, resolveBaseUrl, resolveProviderModel } from "./providerConfig";
 import { resolveActivatedSkills, StaticSkillLoader } from "./skills";
 import { buildDisabledTools } from "./toolPolicy";
 import type {
@@ -66,7 +66,7 @@ export const createStyloAgentRuntime = ({
       const resolvedConfig = {
         ...rawConfig,
         provider,
-        apiMode: resolveApiMode(provider),
+        model: resolveProviderModel(provider, rawConfig.model),
         apiKey: resolveApiKey(provider, rawConfig.apiKey),
         baseUrl: resolveBaseUrl(provider, rawConfig.baseUrl),
       };
@@ -94,7 +94,6 @@ export const createStyloAgentRuntime = ({
         input,
         config: {
           provider,
-          apiMode: resolvedConfig.apiMode,
           model: resolvedConfig.model,
           apiKey: resolvedConfig.apiKey,
           baseUrl: resolvedConfig.baseUrl,

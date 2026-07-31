@@ -194,6 +194,11 @@ Notes:
 - Keep `SUPABASE_SECRET_KEY` in Cloudflare Pages secrets.
 - `SUPABASE_SERVICE_ROLE` is still supported by the code for backward compatibility, but `SUPABASE_SECRET_KEY` is the preferred current name.
 - Asset uploads expect Supabase Storage buckets `public-assets` and `assets` to exist.
+  `assets` must be private, limited to 64 MiB per object, and allow only the
+  image/audio/video/PDF MIME types accepted in `functions/api/upload-url.ts`.
+  `public-assets` is reserved for avatars and provider review images; keep it
+  public, image-only, and limited to 20 MiB. The bucket limits are the
+  authoritative enforcement for signed uploads and must match the API policy.
 
 ### Required bindings
 

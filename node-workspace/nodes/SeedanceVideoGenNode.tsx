@@ -30,7 +30,8 @@ type Props = {
 const clampDuration = (value: number) => Math.max(4, Math.min(15, Math.round(value)));
 
 export const SeedanceVideoGenNode: React.FC<Props> = ({ id, data, selected }) => {
-  const { updateNodeData, getConnectedInputs } = useNodeFlowStore();
+  const { updateNodeData, getConnectedInputs, nodeFlowContext } = useNodeFlowStore();
+  const projectId = nodeFlowContext.projectId || "";
   const { runVideoGen } = useNodeFlowExecutor();
   const [progress, setProgress] = useState(0);
   const [isUploadingVideoRefs, setIsUploadingVideoRefs] = useState(false);
@@ -74,11 +75,14 @@ export const SeedanceVideoGenNode: React.FC<Props> = ({ id, data, selected }) =>
   };
 
   const uploadReferenceVideo = async (file: File) => {
+    if (!projectId) throw new Error("当前 Seedance 节点尚未绑定云端项目。");
     const safeName = file.name.normalize("NFKD").replace(/[^\w.\-]+/g, "_").toLowerCase();
     const payload = {
       fileName: `seedance-reference-video/${Date.now()}-${safeName}`,
       bucket: "assets",
       contentType: file.type || "video/mp4",
+      fileSize: file.size,
+      projectId,
     };
     const res = await fetch(buildApiUrl("/api/upload-url"), {
       method: "POST",
@@ -89,7 +93,12 @@ export const SeedanceVideoGenNode: React.FC<Props> = ({ id, data, selected }) =>
       const message = await res.text();
       throw new Error(`Upload URL error ${res.status}: ${message || "unknown error"}`);
     }
-    const dataRes = await res.json();
+    const dataRes = await res.json() as {
+      signedUrl?: string;
+      publicUrl?: string;
+      path?: string;
+      bucket?: string;
+    };
     if (!dataRes?.signedUrl) throw new Error("Missing signedUrl");
 
     const uploadRes = await fetch(dataRes.signedUrl, {
@@ -107,10 +116,14 @@ export const SeedanceVideoGenNode: React.FC<Props> = ({ id, data, selected }) =>
       const signedRes = await fetch(buildApiUrl("/api/download-url"), {
         method: "POST",
         headers: await buildAuthorizedJsonHeaders(),
-        body: JSON.stringify({ path: dataRes.path, bucket: dataRes.bucket || "assets" }),
+        body: JSON.stringify({
+          projectId,
+          path: dataRes.path,
+          bucket: dataRes.bucket || "assets",
+        }),
       });
       if (signedRes.ok) {
-        const signedData = await signedRes.json();
+        const signedData = await signedRes.json() as { signedUrl?: string };
         url = signedData.signedUrl || "";
       }
     }

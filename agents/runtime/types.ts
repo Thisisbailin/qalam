@@ -126,7 +126,6 @@ export type StyloRunOptions = {
 
 export type StyloAgentConfig = {
   provider?: "qwen" | "openrouter" | "ark" | "deepseek";
-  apiMode?: "responses" | "chat_completions";
   runtimeTarget?: "browser" | "edge";
   apiKey?: string;
   baseUrl?: string;

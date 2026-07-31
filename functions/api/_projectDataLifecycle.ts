@@ -1,6 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
+import {
+  notifyAccountProjectCatalogChanged,
+  type AccountRealtimeEnv,
+} from "./_accountRealtime";
 
-export type ProjectLifecycleEnv = {
+export type ProjectLifecycleEnv = AccountRealtimeEnv & {
   DB: any;
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE?: string;
@@ -30,7 +34,7 @@ const PROJECT_RESET_PLANS: ResetPlan[] = [
 ];
 
 const ACCOUNT_RESET_PLANS: ResetPlan[] = [
-  { table: "user_project_deletions", sql: "DELETE FROM user_project_deletions WHERE user_id = ?1" },
+  { table: "user_project_catalog", sql: "DELETE FROM user_project_catalog WHERE user_id = ?1" },
   { table: "user_profile_visits", resultKey: "user_profile_visits_outbound", sql: "DELETE FROM user_profile_visits WHERE viewer_user_id = ?1" },
   { table: "user_sync_audit", sql: "DELETE FROM user_sync_audit WHERE user_id = ?1" },
   { table: "user_profile", sql: "DELETE FROM user_profile WHERE user_id = ?1" },
@@ -56,11 +60,19 @@ export const resetD1UserData = async (
   userId: string,
   includeAccountSettings: boolean,
   projectId?: string,
+  deleteProjectCatalog = false,
 ) => {
   const existingTables = await getExistingTables(env);
   const plans = [
     ...PROJECT_RESET_PLANS,
     ...(includeAccountSettings ? ACCOUNT_RESET_PLANS : []),
+    ...(!includeAccountSettings && deleteProjectCatalog
+      ? [{
+          table: "user_project_catalog",
+          sql: "DELETE FROM user_project_catalog WHERE user_id = ?1",
+          projectScoped: true,
+        }]
+      : []),
   ].filter((plan) =>
     existingTables.has(plan.table)
     && (includeAccountSettings || plan.projectScoped)
@@ -168,7 +180,9 @@ export const listResetProjectIds = async (
 ) => {
   if (requestedProjectId) return [requestedProjectId];
   const rows = await env.DB.prepare(
-    "SELECT project_id FROM user_project_documents WHERE user_id = ?1",
+    `SELECT project_id FROM user_project_catalog WHERE user_id = ?1
+     UNION
+     SELECT project_id FROM user_project_documents WHERE user_id = ?1`,
   ).bind(userId).all();
   return (rows?.results || [])
     .map((row: { project_id?: unknown }) => typeof row.project_id === "string" ? row.project_id : "")
@@ -213,6 +227,21 @@ export const markProjectDeleted = async (
   ).bind(userId, projectId, Date.now()).run();
 };
 
+export const markProjectsDeleted = async (
+  env: ProjectLifecycleEnv,
+  userId: string,
+  projectIds: string[],
+) => {
+  if (!projectIds.length) return;
+  const deletedAt = Date.now();
+  await env.DB.batch(projectIds.map((projectId) => env.DB.prepare(
+    `INSERT INTO user_project_deletions (user_id, project_id, deleted_at)
+     VALUES (?1, ?2, ?3)
+     ON CONFLICT(user_id, project_id) DO UPDATE SET
+       deleted_at = excluded.deleted_at`,
+  ).bind(userId, projectId, deletedAt)));
+};
+
 export const permanentlyDeleteProject = async (
   env: ProjectLifecycleEnv,
   userId: string,
@@ -227,6 +256,9 @@ export const permanentlyDeleteProject = async (
   // From this point on, stale clients must be unable to recreate the ID.
   await markProjectDeleted(env, userId, projectId);
   await resetRealtimeRooms(env, userId, [projectId], "delete");
-  const d1 = await resetD1UserData(env, userId, false, projectId);
+  const d1 = await resetD1UserData(env, userId, false, projectId, true);
+  await notifyAccountProjectCatalogChanged(env, userId).catch((error) => {
+    console.warn("Account catalog realtime notification failed after project deletion", error);
+  });
   return { d1, storage };
 };

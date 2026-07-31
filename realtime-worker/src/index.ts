@@ -2,6 +2,7 @@
 
 import * as Y from "yjs";
 import {
+  applyProjectSnapshot,
   decodeUpdateBase64,
   encodeUpdateBase64,
   readProjectSnapshot,
@@ -21,6 +22,7 @@ type ClientMessage = {
   opId?: unknown;
   update?: unknown;
   projectBytes?: unknown;
+  epoch?: unknown;
 };
 type ResetMode = "reset" | "delete";
 type RoomMetaRow = {
@@ -31,6 +33,9 @@ type RoomMetaRow = {
   checkpoint: ArrayBuffer;
   projected_seq: number;
   pending_bytes: number;
+  epoch: number;
+  epoch_reason: "rebase" | "reset";
+  material_bytes: number;
 };
 type RoomUpdateRow = {
   server_seq: number;
@@ -48,10 +53,19 @@ const MAX_UPDATE_BYTES = REALTIME_UPDATE_MAX_BYTES;
 const MAX_PENDING_BYTES = 8_000_000;
 const MAX_PROJECT_BYTES = REALTIME_PROJECT_MAX_BYTES;
 const MAX_UPDATE_BASE64_CHARS = Math.ceil(MAX_UPDATE_BYTES / 3) * 4 + 4;
+const MAX_REALTIME_MESSAGE_CHARS = MAX_UPDATE_BASE64_CHARS + 2_048;
+const SOCKET_RATE_WINDOW_MS = 60_000;
+const SOCKET_RATE_MAX_MESSAGES = 600;
+const SOCKET_RATE_MAX_CHARS = 64 * 1024 * 1024;
 const PROJECTION_BYTE_THRESHOLD = 512_000;
 const PROJECTION_DEBOUNCE_MS = 450;
 const RETAINED_OPERATION_IDS = 2_000;
-const ROOM_SCHEMA_VERSION = 3;
+const REBASE_MIN_CHECKPOINT_BYTES = 768_000;
+const REBASE_HISTORY_RATIO = 3;
+const MAX_ACCOUNT_CATALOG_SOCKETS = 8;
+const MAX_PROJECT_ROOM_SOCKETS = 256;
+const MAX_OWNER_EDIT_SOCKETS = 8;
+const MAX_VIEWER_SOCKETS = 4;
 
 const normalizeId = (value: unknown, max = 180) =>
   typeof value === "string" && value.trim().length >= 8 && value.trim().length <= max
@@ -95,6 +109,97 @@ type HibernatingWebSocket = WebSocket & {
   deserializeAttachment(): unknown;
 };
 
+export class AccountCatalogRoom {
+  private identityPromise: Promise<string> | null = null;
+
+  constructor(
+    private readonly state: DurableObjectState,
+  ) {}
+
+  private ensureIdentity(requestedUserId: string) {
+    if (this.identityPromise) return this.identityPromise;
+    this.identityPromise = this.state.blockConcurrencyWhile(async () => {
+      const stored = await this.state.storage.get<string>("userId");
+      if (stored && stored !== requestedUserId) {
+        throw new Error("Account catalog room identity mismatch");
+      }
+      if (!stored) await this.state.storage.put("userId", requestedUserId);
+      return stored || requestedUserId;
+    });
+    return this.identityPromise;
+  }
+
+  private send(socket: WebSocket, payload: Record<string, unknown>) {
+    try {
+      socket.send(JSON.stringify(payload));
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "account_catalog_socket_send_failed",
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  async fetch(request: Request) {
+    const userId = normalizeId(request.headers.get("x-stylo-user-id"));
+    if (!userId) return new Response("Missing trusted account identity", { status: 401 });
+    await this.ensureIdentity(userId);
+    const pathname = new URL(request.url).pathname;
+    if (request.method === "POST" && pathname === "/notify") {
+      const message = {
+        type: "catalog-changed",
+        changedAt: Date.now(),
+      };
+      for (const peer of this.state.getWebSockets()) this.send(peer, message);
+      return new Response(null, { status: 204 });
+    }
+    if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
+      return new Response("WebSocket upgrade required", { status: 426 });
+    }
+    if (this.state.getWebSockets().length >= MAX_ACCOUNT_CATALOG_SOCKETS) {
+      return new Response("Too many account catalog connections", {
+        status: 429,
+        headers: { "retry-after": "30" },
+      });
+    }
+    const pair = websocketPair();
+    const client = pair[0];
+    const server = pair[1] as HibernatingWebSocket;
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ userId });
+    this.send(server, { type: "catalog-ready" });
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: { "sec-websocket-protocol": REALTIME_PROTOCOL },
+    } as ResponseInit & { webSocket: WebSocket });
+  }
+
+  webSocketMessage(socket: WebSocket) {
+    try {
+      socket.close(1008, "Account catalog channel is server-push only");
+    } catch {
+      // The peer is already gone.
+    }
+  }
+
+  webSocketClose(socket: WebSocket, code: number, reason: string) {
+    try {
+      socket.close(code, reason);
+    } catch {
+      // Hibernating sockets may already be closed.
+    }
+  }
+
+  webSocketError(socket: WebSocket) {
+    try {
+      socket.close(1011, "Account catalog channel error");
+    } catch {
+      // The peer is already gone.
+    }
+  }
+}
+
 /**
  * The Durable Object SQLite database is the realtime authority for one
  * (user_id, project_id) room:
@@ -105,12 +210,17 @@ type HibernatingWebSocket = WebSocket & {
  * - strong readers call /flush before reading the D1 projection.
  */
 export class ProjectRealtimeRoom {
-  private readonly doc = new Y.Doc();
+  private doc = new Y.Doc();
   private identity: RoomIdentity | null = null;
   private serverSeq = 0;
   private loadPromise: Promise<void> | null = null;
   private flushPromise: Promise<number> | null = null;
   private resetting = false;
+  private readonly socketRate = new WeakMap<WebSocket, {
+    startedAt: number;
+    messages: number;
+    chars: number;
+  }>();
   private readonly schemaReady: Promise<void>;
 
   constructor(
@@ -178,10 +288,14 @@ export class ProjectRealtimeRoom {
              chunk_blob BLOB NOT NULL
            )`,
         );
-        const meta = this.readRoomMeta();
-        const legacyCheckpoint = meta ? toBytes(meta.checkpoint) : new Uint8Array();
-        if (meta && legacyCheckpoint.byteLength) {
-          this.writeCheckpointChunks(legacyCheckpoint, Number(meta.checkpoint_seq) || 0);
+        const legacyMeta = this.state.storage.sql.exec(
+          "SELECT checkpoint, checkpoint_seq FROM room_meta WHERE singleton = 1",
+        ).toArray()[0] as { checkpoint?: ArrayBuffer; checkpoint_seq?: number } | undefined;
+        const legacyCheckpoint = legacyMeta?.checkpoint
+          ? toBytes(legacyMeta.checkpoint)
+          : new Uint8Array();
+        if (legacyMeta && legacyCheckpoint.byteLength) {
+          this.writeCheckpointChunks(legacyCheckpoint, Number(legacyMeta.checkpoint_seq) || 0);
           this.state.storage.sql.exec(
             "UPDATE room_meta SET checkpoint = ?1 WHERE singleton = 1",
             toArrayBuffer(new Uint8Array()),
@@ -204,6 +318,29 @@ export class ProjectRealtimeRoom {
         );
         this.state.storage.sql.exec(
           "INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (3, ?1)",
+          Date.now(),
+        );
+        currentVersion = 3;
+      }
+      if (currentVersion < 4) {
+        this.state.storage.sql.exec(
+          "ALTER TABLE room_meta ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0",
+        );
+        this.state.storage.sql.exec(
+          "ALTER TABLE room_meta ADD COLUMN material_bytes INTEGER NOT NULL DEFAULT 0",
+        );
+        this.state.storage.sql.exec(
+          "INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (4, ?1)",
+          Date.now(),
+        );
+        currentVersion = 4;
+      }
+      if (currentVersion < 5) {
+        this.state.storage.sql.exec(
+          "ALTER TABLE room_meta ADD COLUMN epoch_reason TEXT NOT NULL DEFAULT 'rebase'",
+        );
+        this.state.storage.sql.exec(
+          "INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (5, ?1)",
           Date.now(),
         );
       }
@@ -232,7 +369,7 @@ export class ProjectRealtimeRoom {
   private readRoomMeta() {
     return (this.state.storage.sql.exec(
       `SELECT user_id, project_id, server_seq, checkpoint_seq,
-              checkpoint, projected_seq, pending_bytes
+              checkpoint, projected_seq, pending_bytes, epoch, epoch_reason, material_bytes
        FROM room_meta WHERE singleton = 1`,
     ).toArray() as RoomMetaRow[])[0] || null;
   }
@@ -383,30 +520,67 @@ export class ProjectRealtimeRoom {
     if (!meta || Number(meta.projected_seq) >= this.serverSeq) return this.serverSeq;
 
     const projectionSeq = this.serverSeq;
-    const checkpoint = Y.encodeStateAsUpdate(this.doc);
-    const serialized = JSON.stringify(readProjectSnapshot<Record<string, unknown>>(this.doc));
-    if (new TextEncoder().encode(serialized).byteLength > MAX_PROJECT_BYTES) {
+    const materialized = readProjectSnapshot<Record<string, unknown>>(this.doc);
+    const serialized = JSON.stringify(materialized);
+    const materialBytes = new TextEncoder().encode(serialized).byteLength;
+    if (materialBytes > MAX_PROJECT_BYTES) {
       throw new Error("Realtime project exceeds the maximum projected size");
     }
+    const checkpoint = Y.encodeStateAsUpdate(this.doc);
     const now = Date.now();
-    await this.env.DB.prepare(
-      `INSERT INTO user_project_documents
+    const activeProject = Array.isArray(materialized.flowProjects)
+      ? materialized.flowProjects.find((project) =>
+          project && typeof project === "object"
+          && (project as Record<string, unknown>).id === this.identity!.projectId)
+        || materialized.flowProjects[0]
+      : null;
+    const descriptor = activeProject && typeof activeProject === "object"
+      ? activeProject as Record<string, unknown>
+      : {};
+    await this.env.DB.batch([
+      this.env.DB.prepare(
+        `INSERT INTO user_project_documents
          (user_id, project_id, y_state, project_data, server_seq, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-       ON CONFLICT(user_id, project_id) DO UPDATE SET
-         y_state = excluded.y_state,
-         project_data = excluded.project_data,
-         server_seq = excluded.server_seq,
-         updated_at = excluded.updated_at
-       WHERE user_project_documents.server_seq <= excluded.server_seq`,
-    ).bind(
-      this.identity.userId,
-      this.identity.projectId,
-      toArrayBuffer(new Uint8Array()),
-      serialized,
-      projectionSeq,
-      now,
-    ).run();
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(user_id, project_id) DO UPDATE SET
+           y_state = excluded.y_state,
+           project_data = excluded.project_data,
+           server_seq = excluded.server_seq,
+           updated_at = excluded.updated_at
+         WHERE user_project_documents.server_seq <= excluded.server_seq`,
+      ).bind(
+        this.identity.userId,
+        this.identity.projectId,
+        toArrayBuffer(new Uint8Array()),
+        serialized,
+        projectionSeq,
+        now,
+      ),
+      this.env.DB.prepare(
+        `INSERT INTO user_project_catalog
+           (user_id, project_id, title, color, duration_min, root_node_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(user_id, project_id) DO UPDATE SET
+           title = excluded.title,
+           color = excluded.color,
+           duration_min = excluded.duration_min,
+           root_node_id = excluded.root_node_id,
+           updated_at = excluded.updated_at`,
+      ).bind(
+        this.identity.userId,
+        this.identity.projectId,
+        typeof descriptor.title === "string" && descriptor.title.trim()
+          ? descriptor.title.trim().slice(0, 200)
+          : this.identity.projectId,
+        typeof descriptor.color === "string" ? descriptor.color.slice(0, 32) : "amber",
+        Number(descriptor.durationMin) || 120,
+        typeof descriptor.rootNodeId === "string"
+          ? descriptor.rootNodeId.slice(0, 240)
+          : `project-root-${this.identity.projectId}`,
+        Number(descriptor.createdAt) || now,
+        now,
+      ),
+    ]);
 
     this.state.storage.transactionSync(() => {
       this.writeCheckpointChunks(checkpoint, projectionSeq);
@@ -415,6 +589,7 @@ export class ProjectRealtimeRoom {
            checkpoint = ?1,
            checkpoint_seq = MAX(checkpoint_seq, ?2),
            projected_seq = MAX(projected_seq, ?2),
+           material_bytes = ?3,
            pending_bytes = COALESCE((
              SELECT SUM(
                LENGTH(update_blob) + COALESCE((
@@ -428,6 +603,7 @@ export class ProjectRealtimeRoom {
          WHERE singleton = 1`,
         toArrayBuffer(new Uint8Array()),
         projectionSeq,
+        materialBytes,
       );
       this.state.storage.sql.exec(
         "DELETE FROM room_update_chunks WHERE server_seq <= ?1",
@@ -460,6 +636,48 @@ export class ProjectRealtimeRoom {
     return Number(this.readRoomMeta()?.projected_seq) || 0;
   }
 
+  private compactIdleHistory() {
+    if (this.state.getWebSockets().length !== 0) return false;
+    const meta = this.readRoomMeta();
+    if (!meta || Number(meta.projected_seq) < this.serverSeq) return false;
+    const checkpoint = Y.encodeStateAsUpdate(this.doc);
+    const materialBytes = Number(meta.material_bytes) || new TextEncoder().encode(
+      JSON.stringify(readProjectSnapshot<Record<string, unknown>>(this.doc)),
+    ).byteLength;
+    if (
+      checkpoint.byteLength < REBASE_MIN_CHECKPOINT_BYTES
+      || checkpoint.byteLength < Math.max(
+        materialBytes * REBASE_HISTORY_RATIO,
+        REBASE_MIN_CHECKPOINT_BYTES,
+      )
+    ) return false;
+    const canonical = new Y.Doc();
+    applyProjectSnapshot(
+      canonical,
+      readProjectSnapshot<Record<string, unknown>>(this.doc),
+      "server-idle-rebase",
+    );
+    const canonicalCheckpoint = Y.encodeStateAsUpdate(canonical);
+    this.state.storage.transactionSync(() => {
+      this.writeCheckpointChunks(canonicalCheckpoint, this.serverSeq);
+      this.state.storage.sql.exec(
+        `UPDATE room_meta SET
+           checkpoint = ?1,
+           checkpoint_seq = ?2,
+           epoch = epoch + 1,
+           epoch_reason = 'rebase',
+           material_bytes = ?3
+         WHERE singleton = 1`,
+        toArrayBuffer(new Uint8Array()),
+        this.serverSeq,
+        materialBytes,
+      );
+    });
+    this.doc.destroy();
+    this.doc = canonical;
+    return true;
+  }
+
   private projectInBackground(requiredSeq: number) {
     this.state.waitUntil(
       this.flushProjection(requiredSeq).catch(async (error) => {
@@ -474,9 +692,9 @@ export class ProjectRealtimeRoom {
     try {
       await this.ensureLoaded(identity);
       if (this.flushPromise) await this.flushPromise.catch(() => undefined);
-      this.doc.transact(() => {
-        this.doc.getMap("project").clear();
-      }, `server-${mode}`);
+      const previousEpoch = Number(this.readRoomMeta()?.epoch) || 0;
+      this.doc.destroy();
+      this.doc = new Y.Doc();
       const checkpoint = Y.encodeStateAsUpdate(this.doc);
       this.state.storage.transactionSync(() => {
         this.state.storage.sql.exec("DELETE FROM room_update_chunks");
@@ -487,11 +705,12 @@ export class ProjectRealtimeRoom {
         this.state.storage.sql.exec(
           `INSERT INTO room_meta
              (singleton, user_id, project_id, server_seq, checkpoint_seq,
-              checkpoint, projected_seq, pending_bytes)
-           VALUES (1, ?1, ?2, 0, 0, ?3, 0, 0)`,
+              checkpoint, projected_seq, pending_bytes, epoch, epoch_reason, material_bytes)
+           VALUES (1, ?1, ?2, 0, 0, ?3, 0, 0, ?4, 'reset', 0)`,
           identity.userId,
           identity.projectId,
           toArrayBuffer(new Uint8Array()),
+          previousEpoch + 1,
         );
         this.writeCheckpointChunks(checkpoint, 0);
       });
@@ -505,7 +724,13 @@ export class ProjectRealtimeRoom {
       this.resetting = false;
     }
 
-    const message = JSON.stringify({ type: "reset", mode });
+    const message = JSON.stringify({
+      type: "reset",
+      mode,
+      serverSeq: 0,
+      epoch: Number(this.readRoomMeta()?.epoch) || 0,
+      epochReason: "reset",
+    });
     for (const peer of this.state.getWebSockets()) {
       this.sendSocketMessage(peer, message);
       if (mode === "delete") {
@@ -556,14 +781,30 @@ export class ProjectRealtimeRoom {
     }
     await this.ensureLoaded({ userId, projectId });
 
+    const peers = this.state.getWebSockets();
+    const identitySocketCount = peers.reduce((count, peer) => {
+      const identity = this.readSocketIdentity(peer);
+      return count + (identity?.viewerUserId === viewerUserId && identity.access === access ? 1 : 0);
+    }, 0);
+    const identityLimit = access === "edit" ? MAX_OWNER_EDIT_SOCKETS : MAX_VIEWER_SOCKETS;
+    if (peers.length >= MAX_PROJECT_ROOM_SOCKETS || identitySocketCount >= identityLimit) {
+      return new Response("Too many realtime project connections", {
+        status: 429,
+        headers: { "retry-after": "30" },
+      });
+    }
+
     const pair = websocketPair();
     const client = pair[0];
     const server = pair[1] as HibernatingWebSocket;
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ userId, projectId, access, viewerUserId });
+      server.serializeAttachment({ userId, projectId, access, viewerUserId });
+    const meta = this.readRoomMeta();
     this.sendSocketMessage(server, JSON.stringify({
       type: "sync",
       serverSeq: this.serverSeq,
+      epoch: Number(meta?.epoch) || 0,
+      epochReason: meta?.epoch_reason === "reset" ? "reset" : "rebase",
       update: encodeUpdateBase64(Y.encodeStateAsUpdate(this.doc)),
       stateVector: encodeUpdateBase64(Y.encodeStateVector(this.doc)),
     }));
@@ -582,6 +823,33 @@ export class ProjectRealtimeRoom {
     }
     await this.ensureLoaded(attachedIdentity);
     if (typeof raw !== "string" || !this.identity) return;
+    if (raw.length > MAX_REALTIME_MESSAGE_CHARS) {
+      this.sendSocketMessage(socket, JSON.stringify({
+        type: "error",
+        error: "Realtime message is too large",
+      }));
+      socket.close(1009, "Realtime message is too large");
+      return;
+    }
+    const now = Date.now();
+    const previousRate = this.socketRate.get(socket);
+    const rate = !previousRate || now - previousRate.startedAt >= SOCKET_RATE_WINDOW_MS
+      ? { startedAt: now, messages: 0, chars: 0 }
+      : previousRate;
+    rate.messages += 1;
+    rate.chars += raw.length;
+    this.socketRate.set(socket, rate);
+    if (
+      rate.messages > SOCKET_RATE_MAX_MESSAGES
+      || rate.chars > SOCKET_RATE_MAX_CHARS
+    ) {
+      this.sendSocketMessage(socket, JSON.stringify({
+        type: "error",
+        error: "Realtime update rate limit exceeded",
+      }));
+      socket.close(1008, "Realtime update rate limit exceeded");
+      return;
+    }
     let message: ClientMessage;
     try {
       message = JSON.parse(raw) as ClientMessage;
@@ -601,6 +869,8 @@ export class ProjectRealtimeRoom {
     const actorId = normalizeId(message.actorId);
     const opId = normalizeId(message.opId);
     const projectBytes = Number(message.projectBytes);
+    const clientEpoch = Number(message.epoch);
+    const roomEpoch = Number(this.readRoomMeta()?.epoch) || 0;
     if (
       !actorId
       || !opId
@@ -609,6 +879,8 @@ export class ProjectRealtimeRoom {
       || !Number.isSafeInteger(projectBytes)
       || projectBytes < 0
       || projectBytes > MAX_PROJECT_BYTES
+      || !Number.isSafeInteger(clientEpoch)
+      || clientEpoch !== roomEpoch
     ) {
       this.sendSocketMessage(socket, JSON.stringify({ type: "error", opId, error: "Invalid realtime update" }));
       return;
@@ -644,6 +916,30 @@ export class ProjectRealtimeRoom {
 
       const meta = this.readRoomMeta();
       const pendingBytes = Number(meta?.pending_bytes) || 0;
+      const materialBytes = Number(meta?.material_bytes) || 0;
+      if (
+        materialBytes <= 0
+        || materialBytes + ((pendingBytes + update.byteLength) * 8) > MAX_PROJECT_BYTES
+      ) {
+        const candidate = new Y.Doc();
+        try {
+          Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.doc), "size-base");
+          Y.applyUpdate(candidate, update, "size-candidate");
+          const candidateBytes = new TextEncoder().encode(
+            JSON.stringify(readProjectSnapshot<Record<string, unknown>>(candidate)),
+          ).byteLength;
+          if (candidateBytes > MAX_PROJECT_BYTES) {
+            this.sendSocketMessage(socket, JSON.stringify({
+              type: "error",
+              opId,
+              error: "Realtime project exceeds the maximum projected size",
+            }));
+            return;
+          }
+        } finally {
+          candidate.destroy();
+        }
+      }
       if (pendingBytes + update.byteLength > MAX_PENDING_BYTES) {
         this.projectInBackground(this.serverSeq);
         this.sendSocketMessage(socket, JSON.stringify({
@@ -696,6 +992,7 @@ export class ProjectRealtimeRoom {
         opId,
         actorId,
         serverSeq,
+        epoch: roomEpoch,
         update: message.update,
       });
       for (const peer of this.state.getWebSockets()) {
@@ -713,6 +1010,7 @@ export class ProjectRealtimeRoom {
 
   async alarm() {
     await this.flushProjection();
+    this.compactIdleHistory();
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string) {
@@ -721,6 +1019,7 @@ export class ProjectRealtimeRoom {
     } catch (error) {
       this.logError("realtime_socket_close_callback_failed", error, { code });
     }
+    this.state.waitUntil(this.scheduleProjection(250));
   }
 
   webSocketError(socket: WebSocket) {

@@ -212,6 +212,46 @@ export const applyProjectSnapshot = (
   doc.transact(() => syncMap(doc.getMap("project"), project), origin);
 };
 
+export type ProjectNodeGeometryPatch = {
+  nodeId: string;
+  position?: { x: number; y: number };
+  measured?: { width?: number; height?: number };
+};
+
+export const applyProjectNodeGeometryPatches = (
+  doc: Y.Doc,
+  projectId: string,
+  patches: ProjectNodeGeometryPatch[],
+  updatedAt: number,
+  origin: unknown,
+) => {
+  const projects = doc.getMap("project").get("flowProjects");
+  if (!(projects instanceof Y.Map) || projects.get(KIND_KEY) !== ID_ARRAY_KIND) return false;
+  const projectItems = projects.get(ITEMS_KEY);
+  if (!(projectItems instanceof Y.Map)) return false;
+  const project = projectItems.get(projectId);
+  if (!(project instanceof Y.Map)) return false;
+  const flow = project.get("flow");
+  if (!(flow instanceof Y.Map)) return false;
+  const nodes = flow.get("flowNodes");
+  if (!(nodes instanceof Y.Map) || nodes.get(KIND_KEY) !== ID_ARRAY_KIND) return false;
+  const nodeItems = nodes.get(ITEMS_KEY);
+  if (!(nodeItems instanceof Y.Map)) return false;
+
+  let applied = false;
+  doc.transact(() => {
+    for (const patch of patches) {
+      const node = nodeItems.get(patch.nodeId);
+      if (!(node instanceof Y.Map)) continue;
+      if (patch.position) syncMapValue(node, "position", patch.position);
+      if (patch.measured) syncMapValue(node, "measured", patch.measured);
+      applied = true;
+    }
+    if (applied) syncMapValue(project, "updatedAt", updatedAt);
+  }, origin);
+  return applied;
+};
+
 export const readProjectSnapshot = <T extends Record<string, unknown>>(doc: Y.Doc): T =>
   readSharedValue(doc.getMap("project")) as T;
 

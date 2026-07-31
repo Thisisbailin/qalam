@@ -4,10 +4,12 @@ import { readJsonRequest } from "./_request";
 import {
   deleteStorageUserData,
   listResetProjectIds,
+  markProjectsDeleted,
   resetD1UserData,
   resetRealtimeRooms,
   type ProjectLifecycleEnv,
 } from "./_projectDataLifecycle";
+import { notifyAccountProjectCatalogChanged } from "./_accountRealtime";
 
 type Env = ProjectLifecycleEnv & {
   CLERK_SECRET_KEY: string;
@@ -26,6 +28,13 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       ? undefined
       : requireRequestProjectId(context.request);
     const projectIds = await listResetProjectIds(context.env, userId, projectId);
+
+    // A full account wipe must fence every former project ID before rooms are
+    // closed. Keeping these tombstones prevents an offline stale client from
+    // reconnecting later and resurrecting data the user explicitly erased.
+    if (includeAccountSettings) {
+      await markProjectsDeleted(context.env, userId, projectIds);
+    }
 
     await resetRealtimeRooms(
       context.env,
@@ -53,6 +62,9 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
         buckets: {},
       };
     }
+    await notifyAccountProjectCatalogChanged(context.env, userId).catch((error) => {
+      console.warn("Account catalog realtime notification failed after reset", error);
+    });
 
     return jsonResponse({
       ok: true,

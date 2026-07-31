@@ -35,7 +35,7 @@ export const resolvePrivateStorageUrl = async (object: OwnedStorageObject, proje
     const message = await response.text();
     throw new Error(`图片访问地址刷新失败 (${response.status}): ${message}`);
   }
-  const payload = await response.json();
+  const payload = await response.json() as { signedUrl?: string };
   if (!payload?.signedUrl) throw new Error("图片访问地址刷新失败：缺少 signedUrl。");
   return payload.signedUrl as string;
 };
@@ -52,13 +52,17 @@ export const uploadStorageFile = async (
   const signedResponse = await fetch(buildApiUrl("/api/upload-url"), {
     method: "POST",
     headers: await buildAuthorizedJsonHeaders(),
-    body: JSON.stringify(options),
+    body: JSON.stringify({ ...options, fileSize: file.size }),
   });
   if (!signedResponse.ok) {
     const message = await signedResponse.text();
     throw new Error(`图片上传地址创建失败 (${signedResponse.status}): ${message}`);
   }
-  const signedPayload = await signedResponse.json();
+  const signedPayload = await signedResponse.json() as {
+    signedUrl?: string;
+    path?: string;
+    publicUrl?: string;
+  };
   if (!signedPayload?.signedUrl || !signedPayload?.path) {
     throw new Error("图片上传地址创建失败：缺少对象路径。");
   }

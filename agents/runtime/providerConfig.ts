@@ -1,7 +1,7 @@
 import {
   ARK_DEFAULT_MODEL,
   ARK_RESPONSES_BASE_URL,
-  DEEPSEEK_CHAT_BASE_URL,
+  DEEPSEEK_RESPONSES_BASE_URL,
   DEEPSEEK_DEFAULT_MODEL,
   OPENROUTER_RESPONSES_BASE_URL,
   QWEN_DEFAULT_MODEL,
@@ -9,7 +9,6 @@ import {
 } from "../../constants";
 
 export type StyloAgentProvider = "qwen" | "openrouter" | "ark" | "deepseek";
-export type StyloAgentApiMode = "responses" | "chat_completions";
 
 export const resolveAgentProvider = (provider?: string): StyloAgentProvider =>
   provider === "openrouter"
@@ -20,13 +19,10 @@ export const resolveAgentProvider = (provider?: string): StyloAgentProvider =>
         ? "qwen"
         : "deepseek";
 
-export const resolveApiMode = (provider: StyloAgentProvider): StyloAgentApiMode =>
-  provider === "deepseek" ? "chat_completions" : "responses";
-
 export const resolveBaseUrl = (provider: StyloAgentProvider, baseUrl?: string) => {
   const configured = (baseUrl || "").trim();
   if (configured) return configured;
-  if (provider === "deepseek") return DEEPSEEK_CHAT_BASE_URL;
+  if (provider === "deepseek") return DEEPSEEK_RESPONSES_BASE_URL;
   if (provider === "openrouter") return OPENROUTER_RESPONSES_BASE_URL;
   if (provider === "ark") return ARK_RESPONSES_BASE_URL;
   return QWEN_RESPONSES_BASE_URL;
@@ -47,10 +43,7 @@ export const resolveProviderModel = (provider: StyloAgentProvider, requestedMode
     return model;
   }
   if (provider === "deepseek") {
-    if (!model || model.startsWith("qwen") || model.startsWith("doubao-")) {
-      return DEEPSEEK_DEFAULT_MODEL;
-    }
-    return model;
+    return DEEPSEEK_DEFAULT_MODEL;
   }
   return model;
 };
@@ -71,7 +64,7 @@ export const formatModelAccessError = (
     return `Qwen model unavailable: current request uses \`${effectiveModel}\`. Check model access for this API key or switch back to \`${QWEN_DEFAULT_MODEL}\`. Original error: ${message}`;
   }
   if (provider === "deepseek") {
-    return `DeepSeek model unavailable: current request uses \`${effectiveModel}\`. Check DEEPSEEK_API_KEY permissions, the model name, and the Chat Completions route. Original error: ${message}`;
+    return `DeepSeek model unavailable: current request uses \`${effectiveModel}\`. Check DEEPSEEK_API_KEY permissions and the Responses API route for \`${DEEPSEEK_DEFAULT_MODEL}\`. Original error: ${message}`;
   }
   return message;
 };

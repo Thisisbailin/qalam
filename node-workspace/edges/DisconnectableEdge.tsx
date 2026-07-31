@@ -51,7 +51,7 @@ export const EdgeDisconnectControl: React.FC<EdgeDisconnectControlProps> = ({
         aria-label="断开连接"
         title="断开连接"
       >
-        <LinkBreak size={14} weight="bold" aria-hidden="true" />
+        <LinkBreak size={17} weight="regular" aria-hidden="true" />
       </button>
     </EdgeToolbar>
   );

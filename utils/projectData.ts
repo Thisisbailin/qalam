@@ -143,7 +143,7 @@ const normalizeFlow = (value: any): NonNullable<ProjectData["flow"]> => {
 };
 
 const FLOW_PROJECT_COLORS = ["amber", "moss", "blue", "rose", "violet", "slate"];
-const MAX_FLOW_PROJECTS = 3;
+const MAX_FLOW_PROJECTS = 24;
 
 const normalizeFlowProjects = (
   value: unknown,
@@ -176,6 +176,17 @@ const normalizeFlowProjects = (
       roles: Array.isArray(project?.roles) ? project.roles : undefined,
       designAssets: Array.isArray(project?.designAssets) ? project.designAssets : undefined,
       cinewor: normalizeCineworWorkspace(project?.cinewor),
+      rawScript: typeof project?.rawScript === "string" ? project.rawScript : undefined,
+      episodes: Array.isArray(project?.episodes) ? project.episodes.map(normalizeEpisode) : undefined,
+      canvas: project?.canvas && typeof project.canvas === "object"
+        ? {
+            ...INITIAL_PROJECT_DATA.canvas,
+            ...project.canvas,
+            viewport: normalizeCanvasViewport(project.canvas.viewport),
+          }
+        : undefined,
+      phase5Usage: project?.phase5Usage,
+      stats: project?.stats,
       flow,
     };
   });
@@ -523,6 +534,29 @@ export const normalizeProjectData = (data: any): ProjectData => {
       ...project,
       roles: projectRoles,
       designAssets: projectDesignAssets,
+      rawScript: isActiveProject
+        ? base.rawScript
+        : typeof project.rawScript === "string"
+          ? project.rawScript
+          : "",
+      episodes: isActiveProject
+        ? base.episodes
+        : Array.isArray(project.episodes)
+          ? project.episodes.map(normalizeEpisode)
+          : [],
+      canvas: isActiveProject
+        ? base.canvas
+        : {
+            ...INITIAL_PROJECT_DATA.canvas,
+            ...(project.canvas || {}),
+            viewport: normalizeCanvasViewport(project.canvas?.viewport),
+          },
+      phase5Usage: isActiveProject
+        ? base.phase5Usage
+        : project.phase5Usage || INITIAL_PROJECT_DATA.phase5Usage,
+      stats: isActiveProject
+        ? base.stats
+        : { ...INITIAL_PROJECT_DATA.stats, ...(project.stats || {}) },
     };
   });
   const activeProject = base.flowProjects.find((project) => project.id === base.activeFlowProjectId);

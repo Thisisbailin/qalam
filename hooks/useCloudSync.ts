@@ -5,6 +5,7 @@ import { createProjectSyncCodec } from "../sync/projectSyncAdapter";
 import { mergeStyloScopedProjectData } from "../agents/runtime/projectScope";
 import type { RealtimeSyncLease, SyncStatusDetail } from "../sync/realtimeSyncTypes";
 import { RealtimeProjectSyncEngine } from "../sync/realtimeProjectSyncEngine";
+import { subscribeProjectNodeGeometryMutations } from "../sync/projectMutationBus";
 
 type UseCloudSyncOptions = {
   accountScope: string;
@@ -64,7 +65,11 @@ export const useCloudSync = ({
       session: accountSession,
       codec: createProjectSyncCodec(projectId),
       debounceMs: saveDebounceMs,
-      onStatusChange: (status, detail) => callbacksRef.current.onStatusChange?.(status, detail),
+      onStatusChange: (status, detail) => {
+        if (engineRef.current === engine) {
+          callbacksRef.current.onStatusChange?.(status, detail);
+        }
+      },
       onApplyRemote: (remote) => {
         callbacksRef.current.setProjectData((local) => {
           const merged = mergeStyloScopedProjectData(local, remote, projectId);
@@ -72,16 +77,26 @@ export const useCloudSync = ({
           return merged;
         });
       },
-      onError: (error) => callbacksRef.current.onError?.(error),
-      onReset: (mode) => callbacksRef.current.onRemoteReset?.(mode),
+      onError: (error) => {
+        if (engineRef.current === engine) callbacksRef.current.onError?.(error);
+      },
+      onReset: (mode) => {
+        if (engineRef.current === engine) callbacksRef.current.onRemoteReset?.(mode);
+      },
     });
     engineRef.current = engine;
+    const unsubscribeMutations = subscribeProjectNodeGeometryMutations((mutation) => {
+      if (mutation.projectId === projectId) {
+        engine.expectNodeGeometryMutation(mutation.patches, mutation.updatedAt);
+      }
+    });
     void engine.start(projectDataRef.current).catch((error) => {
       if (!isAbortError(error)) callbacksRef.current.onError?.(error);
     });
 
     return () => {
       if (engineRef.current === engine) engineRef.current = null;
+      unsubscribeMutations();
       engine.dispose();
     };
   }, [accountScope, accountSession, isLoaded, isSignedIn, projectId, saveDebounceMs, sessionGeneration]);

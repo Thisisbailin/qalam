@@ -40,6 +40,7 @@ import type {
   TextNodeData,
 } from "../types";
 import { useNodeFlowStore } from "../store/nodeFlowStore";
+import { resolvePrivateStorageUrl } from "../nodeflow/storageObjects";
 import {
   getPdfHighlightBounds,
   normalizePdfSelectionRects,
@@ -309,7 +310,9 @@ export const PdfReaderOverlay: React.FC<Props> = ({
   const updateNodeData = useNodeFlowStore((state) => state.updateNodeData);
   const addNode = useNodeFlowStore((state) => state.addNode);
   const connectNodes = useNodeFlowStore((state) => state.connectNodes);
+  const projectId = useNodeFlowStore((state) => state.nodeFlowContext.projectId || "");
   const data = node?.data as PdfInputNodeData | undefined;
+  const [resolvedStorageUrl, setResolvedStorageUrl] = useState<string | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [loadMessage, setLoadMessage] = useState("正在准备 PDF 文稿…");
@@ -320,6 +323,29 @@ export const PdfReaderOverlay: React.FC<Props> = ({
   const [highlightColor, setHighlightColor] = useState<PdfHighlightColor>("yellow");
   const [isHighlightListOpen, setIsHighlightListOpen] = useState(false);
   const pageRefs = useRef(new Map<number, HTMLElement>());
+  const pdfSource = resolvedStorageUrl || (!data?.storagePath ? data?.pdf : null);
+
+  useEffect(() => {
+    setResolvedStorageUrl(null);
+    if (!data?.storagePath || !projectId) return;
+    let cancelled = false;
+    resolvePrivateStorageUrl({
+      bucket: data.storageBucket || "assets",
+      path: data.storagePath,
+    }, projectId)
+      .then((url) => {
+        if (!cancelled) setResolvedStorageUrl(url);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setLoadState("error");
+          setLoadMessage(error instanceof Error ? error.message : "PDF 访问地址刷新失败。");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.storageBucket, data?.storagePath, projectId]);
 
   const highlights = Array.isArray(data?.highlights) ? data.highlights : [];
   const highlightsByPage = useMemo(() => {
@@ -361,7 +387,8 @@ export const PdfReaderOverlay: React.FC<Props> = ({
   }, [onClose]);
 
   useEffect(() => {
-    if (!data?.pdf) {
+    if (!pdfSource) {
+      if (data?.storagePath) return undefined;
       setLoadState("error");
       setLoadMessage("此节点还没有 PDF 文稿。");
       return undefined;
@@ -373,7 +400,7 @@ export const PdfReaderOverlay: React.FC<Props> = ({
     setPdfDocument(null);
 
     try {
-      loadingTask = getDocument({ url: data.pdf });
+      loadingTask = getDocument({ url: pdfSource });
       loadingTask.onProgress = ({ loaded, total }: { loaded: number; total: number }) => {
         if (cancelled || !total) return;
         setLoadMessage(`正在解析 PDF 文稿 · ${Math.min(100, Math.round((loaded / total) * 100))}%`);
@@ -400,7 +427,7 @@ export const PdfReaderOverlay: React.FC<Props> = ({
       if (loadingTask) void loadingTask.destroy();
       setPdfDocument(null);
     };
-  }, [data?.pdf]);
+  }, [data?.storagePath, pdfSource]);
 
   const goToPage = useCallback((nextPage: number) => {
     const bounded = Math.min(Math.max(1, nextPage), pdfDocument?.numPages || 1);

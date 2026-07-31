@@ -1,9 +1,9 @@
 import { runStyloAgentCore } from "../../agents/runtime/core";
 import type { AgentHttpRunRequest } from "../../agents/runtime/httpProtocol";
-import { resolveAgentProvider, resolveApiMode, resolveBaseUrl, resolveProviderModel } from "../../agents/runtime/providerConfig";
+import { resolveAgentProvider, resolveBaseUrl, resolveProviderModel } from "../../agents/runtime/providerConfig";
 import { resolveActivatedSkills, StaticSkillLoader } from "../../agents/runtime/skills";
 import { buildDisabledTools } from "../../agents/runtime/toolPolicy";
-import { createAgentSessionKey, D1EdgeSession, migrateLegacyD1AgentSession, StyloChatCompactionSession, StyloResponsesCompactionSession, readD1SessionMessages } from "./_agentSessions";
+import { createAgentSessionKey, D1EdgeSession, migrateLegacyD1AgentSession, StyloResponsesCompactionSession, readD1SessionMessages } from "./_agentSessions";
 import { ensureStyloTraceProcessor, forceFlushAgentTracing, persistBufferedTrace } from "./_agentTracing";
 import { parseNodeFlowFile } from "../../node-workspace/nodeflow/schema";
 import {
@@ -42,7 +42,6 @@ type AgentEnv = Record<string, unknown> & RealtimeProjectionEnv & {
 };
 
 const EDGE_AGENT_MAX_TURNS = 20;
-const EDGE_CHAT_SESSION_MAX_ITEMS = 18;
 const MAX_AGENT_REQUEST_BYTES = 128 * 1024;
 const MAX_AGENT_TEXT_LENGTH = 20_000;
 
@@ -217,7 +216,6 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           userTextChars: body.run.userText.length,
         });
         const effectiveModel = resolveProviderModel(provider, body.runtime.model);
-        const apiMode = resolveApiMode(provider);
         const resolvedBaseUrl = resolveBaseUrl(provider);
         const resolvedApiKey = resolveApiKey(context.env || {}, provider);
         const {
@@ -253,22 +251,12 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           })
         );
         const underlyingSession = new D1EdgeSession(context.env || {}, body.run.projectId, body.run.sessionId, sessionKey, sessionOwner);
-        let chatCompactionSession: StyloChatCompactionSession | null = null;
-        const session =
-          apiMode === "responses"
-            ? new StyloResponsesCompactionSession({
-                underlyingSession,
-                model: effectiveModel,
-                apiKey: resolvedApiKey,
-                baseUrl: resolvedBaseUrl,
-              })
-            : (chatCompactionSession = new StyloChatCompactionSession({
-                underlyingSession,
-                model: effectiveModel,
-                apiKey: resolvedApiKey,
-                baseUrl: resolvedBaseUrl,
-                maxItems: EDGE_CHAT_SESSION_MAX_ITEMS,
-              }));
+        const session = new StyloResponsesCompactionSession({
+          underlyingSession,
+          model: effectiveModel,
+          apiKey: resolvedApiKey,
+          baseUrl: resolvedBaseUrl,
+        });
         const sessionMessages = await readD1SessionMessages(
           context.env || {},
           body.run.projectId,
@@ -281,7 +269,6 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           input: body.run,
           config: {
             provider,
-            apiMode,
             model: effectiveModel,
             apiKey: resolvedApiKey,
             baseUrl: resolvedBaseUrl,
@@ -341,9 +328,6 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
         });
         emitWrapperTrace("result", "success", "Agent core returned", `text=${runResult.finalText.length} chars · tools=${runResult.toolCalls.length}`);
         const emitted = emitResult(controller, runResult);
-        if (chatCompactionSession) {
-          context.waitUntil?.(chatCompactionSession.runCompaction());
-        }
         debugLog(debugEnabled, traceId, "emit result packet", { emitted });
         emitWrapperTrace("result", emitted ? "success" : "error", emitted ? "Final result packet emitted" : "Final result packet dropped");
       } catch (error: any) {

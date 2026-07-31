@@ -1,5 +1,5 @@
 import { AppConfig } from "../types";
-import { INITIAL_TEXT_CONFIG, INITIAL_VIDEO_CONFIG, INITIAL_MULTIMODAL_CONFIG, INITIAL_REMEMBER_KEYS, INITIAL_SYNC_KEYS, INITIAL_VIDU_CONFIG, VIDU_DEFAULT_BASE_URL } from "../constants";
+import { DEEPSEEK_DEFAULT_MODEL, INITIAL_TEXT_CONFIG, INITIAL_VIDEO_CONFIG, INITIAL_MULTIMODAL_CONFIG, INITIAL_REMEMBER_KEYS, INITIAL_SYNC_KEYS, INITIAL_VIDU_CONFIG, VIDU_DEFAULT_BASE_URL } from "../constants";
 import { usePersistedState } from "./usePersistedState";
 
 export const useConfig = (key: string) => {
@@ -43,6 +43,9 @@ export const useConfig = (key: string) => {
           : safeText?.provider && allowedProviders.includes(safeText.provider)
             ? safeText.provider
             : INITIAL_TEXT_CONFIG.agentProvider;
+      const safeAgentModel = safeAgentProvider === "deepseek"
+        ? DEEPSEEK_DEFAULT_MODEL
+        : safeText?.agentModel;
       const safeVideo = rememberApiKeys ? parsed.videoConfig : { ...parsed.videoConfig, apiKey: '' };
       const rawMulti = rememberApiKeys ? parsed.multimodalConfig : { ...parsed.multimodalConfig, apiKey: '' };
       const normalizedMultiProvider = rawMulti?.provider === "wuyinkeji" ? "nanobanana" : rawMulti?.provider;
@@ -60,7 +63,13 @@ export const useConfig = (key: string) => {
       return {
         syncApiKeys,
         rememberApiKeys,
-        textConfig: { ...INITIAL_TEXT_CONFIG, ...(safeText || {}), provider: safeProvider, agentProvider: safeAgentProvider },
+        textConfig: {
+          ...INITIAL_TEXT_CONFIG,
+          ...(safeText || {}),
+          provider: safeProvider,
+          agentProvider: safeAgentProvider,
+          agentModel: safeAgentModel,
+        },
         videoConfig: { ...INITIAL_VIDEO_CONFIG, ...safeVideo },
         multimodalConfig: safeMulti?.provider
           ? { ...INITIAL_MULTIMODAL_CONFIG, ...safeMulti }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as Y from "yjs";
 import {
+  applyProjectNodeGeometryPatches,
   applyProjectSnapshot,
   readProjectSnapshot,
 } from "../collaboration/yProjectDocument";
@@ -100,4 +101,39 @@ test("concurrent text edits converge without a whole-project conflict choice", (
   assert.equal(leftText, rightText);
   assert.match(leftText, /LEFT/);
   assert.match(leftText, /RIGHT/);
+});
+
+test("node geometry patches update one Yjs node without replacing project content", () => {
+  const doc = new Y.Doc();
+  const project = baseProject();
+  project.flowProjects = [{
+    id: "project-main",
+    title: "Main",
+    color: "amber",
+    durationMin: 120,
+    rootNodeId: "root-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: {
+      links: [],
+      flowNodes: [
+        { id: "node-a", type: "text", position: { x: 0, y: 0 }, data: { text: "keep" } } as any,
+        { id: "node-b", type: "text", position: { x: 5, y: 5 }, data: { text: "sibling" } } as any,
+      ],
+    },
+  }];
+  project.activeFlowProjectId = "project-main";
+  applyProjectSnapshot(doc, project as unknown as Record<string, unknown>, "seed");
+  assert.equal(applyProjectNodeGeometryPatches(
+    doc,
+    "project-main",
+    [{ nodeId: "node-a", position: { x: 42, y: 19 } }],
+    2,
+    "move",
+  ), true);
+  const result = readProjectSnapshot<any>(doc);
+  assert.deepEqual(result.flowProjects[0].flow.flowNodes[0].position, { x: 42, y: 19 });
+  assert.equal(result.flowProjects[0].flow.flowNodes[0].data.text, "keep");
+  assert.equal(result.flowProjects[0].flow.flowNodes[1].data.text, "sibling");
+  assert.equal(result.flowProjects[0].updatedAt, 2);
 });

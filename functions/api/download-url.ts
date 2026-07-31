@@ -1,10 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import { getUserId, JSON_HEADERS } from './_auth';
 import { readJsonRequest } from './_request';
-import type { PagesContext } from './_types';
+import type { D1DatabaseLike, PagesContext } from './_types';
 import { normalizeProjectId } from './_projectScope';
+import { hasProjectCatalogEntry } from './_projectCatalog';
 
 type Env = {
+  DB: D1DatabaseLike;
   CLERK_SECRET_KEY: string;
   CLERK_JWT_KEY?: string;
   SUPABASE_URL?: string;
@@ -58,6 +60,9 @@ export const onRequestPost = async ({ request, env }: PagesContext<Env>) => {
     }
     if (!bucket) {
       return new Response('bucket not allowed', { status: 400 });
+    }
+    if (!await hasProjectCatalogEntry(env.DB, userId, projectId)) {
+      return new Response("Project not found", { status: 404 });
     }
     const projectPrefix = `users/${userId}/projects/${projectId}/`;
     if (!path.startsWith(projectPrefix)) {

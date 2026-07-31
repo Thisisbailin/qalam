@@ -1,8 +1,14 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { BaseNode } from "./BaseNode";
 import { AudioInputNodeData } from "../types";
 import { useNodeFlowStore } from "../store/nodeFlowStore";
 import { UploadSimple, Waveform, X } from "@phosphor-icons/react";
+import {
+  collectOwnedStorageObjects,
+  deleteOwnedStorageObjects,
+  resolvePrivateStorageUrl,
+  uploadStorageFile,
+} from "../nodeflow/storageObjects";
 
 type Props = {
   id: string;
@@ -10,31 +16,70 @@ type Props = {
   selected?: boolean;
 };
 
-const readFileAsDataUrl = (file: File) =>
-  new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") resolve(reader.result);
-      else reject(new Error("无法读取音频文件。"));
-    };
-    reader.onerror = () => reject(reader.error || new Error("读取音频失败。"));
-    reader.readAsDataURL(file);
-  });
+const buildAudioStorageName = (file: File) => {
+  const extension = file.name.split(".").pop()?.replace(/[^a-z0-9]/gi, "")
+    || file.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "")
+    || "audio";
+  const base = file.name
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[^\w.\-]+/g, "_")
+    .slice(0, 48) || "audio";
+  return `audio-inputs/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${base}.${extension}`;
+};
 
 export const AudioInputNode: React.FC<Props> = ({ id, data, selected }) => {
-  const { updateNodeData } = useNodeFlowStore();
+  const { updateNodeData, nodeFlowContext } = useNodeFlowStore();
+  const projectId = nodeFlowContext.projectId || "";
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [resolvedStorageUrl, setResolvedStorageUrl] = useState<string | null>(null);
+  const displayAudio = resolvedStorageUrl || data.audio;
   const nodeTitle = data.title && data.title !== "Audio Input" ? data.title : "audio";
+
+  useEffect(() => {
+    setResolvedStorageUrl(null);
+    if (!data.storagePath || !projectId) return;
+    let cancelled = false;
+    resolvePrivateStorageUrl({
+      bucket: data.storageBucket || "assets",
+      path: data.storagePath,
+    }, projectId)
+      .then((url) => {
+        if (!cancelled && url) setResolvedStorageUrl(url);
+      })
+      .catch((error) => {
+        if (!cancelled) console.warn("Refresh audio signed URL failed", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [data.storageBucket, data.storagePath, projectId]);
 
   const handleFile = async (file?: File | null) => {
     if (!file) return;
+    if (!projectId) return;
     setIsLoading(true);
     try {
-      const src = await readFileAsDataUrl(file);
+      const uploaded = await uploadStorageFile(file, {
+        fileName: buildAudioStorageName(file),
+        bucket: "assets",
+        contentType: file.type || "audio/mpeg",
+        projectId,
+      });
+      const previousObjects = collectOwnedStorageObjects([{ data }]);
+      if (previousObjects.length) {
+        try {
+          await deleteOwnedStorageObjects(previousObjects, projectId);
+        } catch (error) {
+          await deleteOwnedStorageObjects([uploaded.object], projectId).catch(() => undefined);
+          throw error;
+        }
+      }
       updateNodeData(id, {
-        audio: src,
+        audio: uploaded.url,
         filename: file.name,
+        storageBucket: uploaded.object.bucket,
+        storagePath: uploaded.object.path,
         mimeType: file.type || "audio/mpeg",
       });
     } finally {
@@ -53,7 +98,7 @@ export const AudioInputNode: React.FC<Props> = ({ id, data, selected }) => {
       nodeType="audioInput"
     >
       <div className="media-input-frame flex-1">
-        {data.audio ? (
+        {displayAudio ? (
           <>
             <div className="audio-input-media media-input-asset">
               <div className="audio-input-icon">
@@ -68,7 +113,22 @@ export const AudioInputNode: React.FC<Props> = ({ id, data, selected }) => {
                 </div>
                 <button
                   type="button"
-                  onClick={() => updateNodeData(id, { audio: null, filename: null, mimeType: null, durationMs: null })}
+                  onClick={() => {
+                    const objects = collectOwnedStorageObjects([{ data }]);
+                    if (objects.length && projectId) {
+                      void deleteOwnedStorageObjects(objects, projectId).catch((error) => {
+                        console.warn("Delete audio storage object failed", error);
+                      });
+                    }
+                    updateNodeData(id, {
+                      audio: null,
+                      filename: null,
+                      storageBucket: null,
+                      storagePath: null,
+                      mimeType: null,
+                      durationMs: null,
+                    });
+                  }}
                   className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--node-border)] text-[var(--node-text-secondary)] transition hover:border-[var(--node-border-strong)] hover:text-[var(--node-text-primary)]"
                 >
                   <X size={12} />
@@ -87,7 +147,7 @@ export const AudioInputNode: React.FC<Props> = ({ id, data, selected }) => {
               onMouseDown={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
             >
-              <source src={data.audio} type={data.mimeType || undefined} />
+              <source src={displayAudio} type={data.mimeType || undefined} />
             </audio>
               <div className="flex items-center justify-between gap-2">
                 <button

@@ -6,7 +6,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isString = (value: unknown): value is string => typeof value === "string";
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-const MAX_FLOW_PROJECTS = 3;
+const MAX_FLOW_PROJECTS = 24;
 const MAX_CINEWOR_SCENES = 24;
 const MAX_CINEWOR_ACTORS = 24;
 const MAX_CINEWOR_STATES = 64;

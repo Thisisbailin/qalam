@@ -139,6 +139,124 @@ test("a stale local Yjs checkpoint cannot overwrite a newer visible project at s
   engine.dispose();
 });
 
+test("an epoch change persists the replacement checkpoint and epoch atomically", async () => {
+  const initial = project(1, 10);
+  const persistedDoc = new Y.Doc();
+  applyProjectSnapshot(
+    persistedDoc,
+    initial as unknown as Record<string, unknown>,
+    "persisted",
+  );
+  const remote = project(2, 84);
+  const remoteDoc = new Y.Doc();
+  applyProjectSnapshot(
+    remoteDoc,
+    remote as unknown as Record<string, unknown>,
+    "remote",
+  );
+  const socket = new FakeSocket();
+  const writes: Array<{ checkpoint: Uint8Array; epoch: number }> = [];
+  let splitEpochWrites = 0;
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    documentStore: {
+      read: async () => Y.encodeStateAsUpdate(persistedDoc),
+      write: async () => undefined,
+      delete: async () => undefined,
+      readEpoch: async () => 1,
+      writeEpoch: async () => {
+        splitEpochWrites += 1;
+      },
+      writeState: async (_key, checkpoint, epoch) => {
+        writes.push({ checkpoint, epoch });
+      },
+    },
+  });
+
+  await engine.start(initial);
+  socket.emit({ ...serverSyncFromDocument(remoteDoc, 2), epoch: 2 });
+  await wait(10);
+
+  assert.equal(splitEpochWrites, 0);
+  assert.equal(writes.at(-1)?.epoch, 2);
+  const checkpoint = new Y.Doc();
+  Y.applyUpdate(checkpoint, writes.at(-1)!.checkpoint);
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>(checkpoint)
+      .flow?.flowNodes?.[0]?.position.x,
+    84,
+  );
+  engine.dispose();
+  persistedDoc.destroy();
+  remoteDoc.destroy();
+  checkpoint.destroy();
+});
+
+test("an idle server rebase preserves offline edits without overwriting unrelated remote edits", async () => {
+  const base = project(1, 10);
+  const baseDoc = new Y.Doc();
+  applyProjectSnapshot(baseDoc, base as unknown as Record<string, unknown>, "base");
+  const local = project(2, 84);
+  const remote = project(2, 10);
+  remote.flow!.flowNodes![0].data.markdown = "edited remotely";
+  const remoteDoc = new Y.Doc();
+  applyProjectSnapshot(remoteDoc, remote as unknown as Record<string, unknown>, "remote");
+  const socket = new FakeSocket();
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    documentStore: {
+      read: async () => Y.encodeStateAsUpdate(baseDoc),
+      readConfirmed: async () => Y.encodeStateAsUpdate(baseDoc),
+      readEpoch: async () => 1,
+      write: async () => undefined,
+      writeState: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+
+  await engine.start(base);
+  engine.stage(local);
+  await wait(10);
+  socket.emit({
+    ...serverSyncFromDocument(remoteDoc, 2),
+    epoch: 2,
+    epochReason: "rebase",
+  });
+  await wait(10);
+
+  const merged = readProjectSnapshot<ProjectData & Record<string, unknown>>(
+    (engine as any).doc,
+  );
+  assert.equal(merged.flow?.flowNodes?.[0]?.position.x, 84);
+  assert.equal(merged.flow?.flowNodes?.[0]?.data.markdown, "edited remotely");
+  assert.ok(socket.sent.some((message) =>
+    message.type === "update" && message.epoch === 2
+  ));
+  engine.dispose();
+  baseDoc.destroy();
+  remoteDoc.destroy();
+});
+
 test("startup merge preserves unrelated remote edits instead of replaying a full local snapshot", async () => {
   const base = project(1, 10);
   const baseDoc = new Y.Doc();
@@ -261,6 +379,22 @@ test("pointer-frame staging performs one expensive snapshot after the burst", as
   await wait(10);
   assert.equal(snapshots, startupSnapshots + 1);
   engine.dispose();
+});
+
+test("switching projects drains a first local snapshot instead of abandoning it", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  const engine = createEngine({ socket, persisted: null });
+  await engine.start(initial);
+
+  engine.dispose();
+  socket.emit(serverSyncFromDocument(new Y.Doc()));
+  await wait(10);
+  const update = socket.sent.find((message) => message.type === "update");
+  assert.ok(update?.opId);
+  socket.emit({ type: "ack", opId: update.opId, serverSeq: 1 });
+  await wait();
+  assert.equal(socket.readyState, WebSocket.CLOSED);
 });
 
 test("a synchronous WebSocket send failure immediately requeues the update", async () => {

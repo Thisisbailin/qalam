@@ -18,24 +18,24 @@ type UploadedVideo = {
   path: string;
 };
 
-const resolveSignedVideoUrl = async (path: string, bucket = "assets") => {
+const resolveSignedVideoUrl = async (path: string, bucket: string, projectId: string) => {
   const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
     method: "POST",
     headers: await buildAuthorizedJsonHeaders(),
-    body: JSON.stringify({ path, bucket }),
+    body: JSON.stringify({ projectId, path, bucket }),
   });
   if (!downloadRes.ok) {
     const err = await downloadRes.text();
     throw new Error(`Video download URL error (${downloadRes.status}): ${err}`);
   }
-  const downloadData = await downloadRes.json();
+  const downloadData = await downloadRes.json() as { signedUrl?: string };
   if (!downloadData?.signedUrl) {
     throw new Error("Video download failed: missing signedUrl.");
   }
   return downloadData.signedUrl as string;
 };
 
-const uploadVideoFile = async (file: File) => {
+const uploadVideoFile = async (file: File, projectId: string) => {
   const contentType = file.type || "video/mp4";
   const ext = file.name.split(".").pop() || contentType.split("/")[1] || "mp4";
   const fileName = `video-inputs/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
@@ -43,14 +43,25 @@ const uploadVideoFile = async (file: File) => {
   const signedRes = await fetch(buildApiUrl("/api/upload-url"), {
     method: "POST",
     headers: await buildAuthorizedJsonHeaders(),
-    body: JSON.stringify({ fileName, bucket: "assets", contentType }),
+    body: JSON.stringify({
+      projectId,
+      fileName,
+      bucket: "assets",
+      contentType,
+      fileSize: file.size,
+    }),
   });
   if (!signedRes.ok) {
     const err = await signedRes.text();
     throw new Error(`Video upload URL error (${signedRes.status}): ${err}`);
   }
 
-  const signedData = await signedRes.json();
+  const signedData = await signedRes.json() as {
+    signedUrl?: string;
+    bucket?: string;
+    path?: string;
+    publicUrl?: string;
+  };
   if (!signedData?.signedUrl) {
     throw new Error("Video upload failed: missing signedUrl.");
   }
@@ -71,7 +82,11 @@ const uploadVideoFile = async (file: File) => {
     return { url: signedData.publicUrl as string, bucket, path };
   }
   if (signedData.path) {
-    return { url: await resolveSignedVideoUrl(signedData.path, bucket), bucket, path } satisfies UploadedVideo;
+    return {
+      url: await resolveSignedVideoUrl(signedData.path, bucket, projectId),
+      bucket,
+      path,
+    } satisfies UploadedVideo;
   }
   throw new Error("Video upload failed: missing accessible URL.");
 };
@@ -85,22 +100,25 @@ const formatDuration = (durationMs?: number | null) => {
 };
 
 export const VideoInputNode: React.FC<Props> = ({ id, data, selected }) => {
-  const { updateNodeData } = useNodeFlowStore();
+  const { updateNodeData, nodeFlowContext } = useNodeFlowStore();
+  const projectId = nodeFlowContext.projectId || "";
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isRefreshingUrl, setIsRefreshingUrl] = useState(false);
+  const [resolvedStorageUrl, setResolvedStorageUrl] = useState<string | null>(null);
+  const displayVideo = resolvedStorageUrl || data.video;
   const nodeTitle = data.title && data.title !== "Video Input" ? data.title : "video";
 
   useEffect(() => {
+    setResolvedStorageUrl(null);
     if (!data.storagePath) return;
     let cancelled = false;
     setIsRefreshingUrl(true);
-    resolveSignedVideoUrl(data.storagePath, data.storageBucket || "assets")
+    if (!projectId) return;
+    resolveSignedVideoUrl(data.storagePath, data.storageBucket || "assets", projectId)
       .then((url) => {
-        if (!cancelled && url && url !== data.video) {
-          updateNodeData(id, { video: url });
-        }
+        if (!cancelled && url) setResolvedStorageUrl(url);
       })
       .catch((error) => {
         console.warn("Refresh video signed URL failed", error);
@@ -111,13 +129,14 @@ export const VideoInputNode: React.FC<Props> = ({ id, data, selected }) => {
     return () => {
       cancelled = true;
     };
-  }, [data.storageBucket, data.storagePath, id, updateNodeData]);
+  }, [data.storageBucket, data.storagePath, projectId]);
 
   const handleFile = async (file?: File | null) => {
     if (!file) return;
+    if (!projectId) return;
     setIsUploading(true);
     try {
-      const uploaded = await uploadVideoFile(file);
+      const uploaded = await uploadVideoFile(file, projectId);
       updateNodeData(id, {
         video: uploaded.url,
         filename: file.name,
@@ -166,11 +185,11 @@ export const VideoInputNode: React.FC<Props> = ({ id, data, selected }) => {
       nodeType="videoInput"
     >
       <div className="media-input-frame flex-1">
-        {data.video ? (
+        {displayVideo ? (
           <>
             <video
               ref={videoRef}
-              src={data.video}
+              src={displayVideo}
               className="video-input-media media-input-asset block w-full aspect-video bg-black nodrag cursor-pointer"
               playsInline
               preload="metadata"

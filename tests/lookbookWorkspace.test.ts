@@ -116,7 +116,17 @@ test("Lookbook adaptive layout gives landscape, square, and portrait media disti
 
 test("Lookbook image import creates connected Flow nodes in one revision", () => {
   const result = addLookbookImageAssets(makeProject(), "identity-1", [
-    { id: "image-alpha", name: "silhouette.png", dataUrl: "data:image/png;base64,AA==", mimeType: "image/png", width: 640, height: 960, hasAlpha: true },
+    {
+      id: "image-alpha",
+      name: "silhouette.png",
+      dataUrl: "https://signed.example/image-alpha",
+      mimeType: "image/png",
+      width: 640,
+      height: 960,
+      hasAlpha: true,
+      storageBucket: "assets",
+      storagePath: "users/u/projects/p/lookbook/image-alpha.png",
+    },
     { id: "image-wide", name: "warehouse.jpg", dataUrl: "data:image/jpeg;base64,AA==", mimeType: "image/jpeg", width: 1600, height: 900, hasAlpha: false },
   ], 100);
   assert.equal(result.flow?.revision, 5);
@@ -125,6 +135,8 @@ test("Lookbook image import creates connected Flow nodes in one revision", () =>
   const alpha = result.flow?.flowNodes?.find((node) => node.id === "image-alpha");
   const alphaLink = result.flow?.links.find((link) => link.source === "image-alpha");
   assert.equal(alpha?.data.hasAlpha, true);
+  assert.equal(alpha?.data.storageBucket, "assets");
+  assert.equal(alpha?.data.storagePath, "users/u/projects/p/lookbook/image-alpha.png");
   assert.equal(alpha?.data.lookbookLayout, undefined);
   const index = getLookbookIndexNode(result, "identity-1");
   const alphaEntry = (index?.data.lookbookBook as { entries?: Array<{ nodeId: string; layout: { fit: string } }> }).entries?.find((entry) => entry.nodeId === "image-alpha");

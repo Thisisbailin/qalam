@@ -33,6 +33,12 @@ import {
 } from "../../../utils/lookbookWorkspace";
 import { isLookbookNodeType } from "../../../utils/lookbookIdentities";
 import { inspectLookbookImageFiles } from "../../lookbook/imageFiles";
+import {
+  deleteOwnedStorageObjects,
+  resolvePrivateStorageUrl,
+  uploadStorageFile,
+  type OwnedStorageObject,
+} from "../../nodeflow/storageObjects";
 import { saveActiveFlowIntoProjects } from "../../foundation/scaffold";
 import { LookbookBoardItemView } from "./LookbookBoardItem";
 import "../../styles/lookbook-studio.css";
@@ -65,6 +71,15 @@ const createLocalNodeId = (prefix: string) => {
   return `${prefix}-${suffix}`;
 };
 
+const cloudImageFileName = (file: File, index: number) => {
+  const extension = file.name.split(".").pop()?.replace(/[^a-z0-9]/gi, "") || "img";
+  const base = file.name
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[^\w.\-]+/g, "_")
+    .slice(0, 48) || "lookbook";
+  return `lookbook/${Date.now()}-${index + 1}-${Math.random().toString(36).slice(2, 8)}-${base}.${extension}`;
+};
+
 export const LookbookStudioPanel: React.FC<Props> = ({
   projectData,
   setProjectData,
@@ -84,6 +99,7 @@ export const LookbookStudioPanel: React.FC<Props> = ({
   const [errorMessage, setErrorMessage] = useState("");
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const [dragTargetPageIndex, setDragTargetPageIndex] = useState<number | null>(null);
+  const [resolvedMediaUrls, setResolvedMediaUrls] = useState<Record<string, string>>({});
 
   const identityNode = useMemo(
     () => projectData.flow?.flowNodes?.find((node) => node.id === identityNodeId && isLookbookNodeType(node.type)),
@@ -108,9 +124,20 @@ export const LookbookStudioPanel: React.FC<Props> = ({
     : bookView.kind === "back"
       ? Math.max(0, spreadCount - 1)
       : 0;
-  const visibleItems = useMemo(
-    () => items.filter((item) => item.spreadIndex === spreadIndex),
-    [items, spreadIndex]
+  const displayItems = useMemo(() => items.map((item) => {
+    const resolved = resolvedMediaUrls[item.node.id];
+    if (!resolved || item.node.type !== "imageInput") return item;
+    return {
+      ...item,
+      node: {
+        ...item.node,
+        data: { ...item.node.data, image: resolved },
+      },
+    };
+  }), [items, resolvedMediaUrls]);
+  const visibleDisplayItems = useMemo(
+    () => displayItems.filter((item) => item.spreadIndex === spreadIndex),
+    [displayItems, spreadIndex],
   );
   const selectedItem = useMemo(
     () => items.find((item) => item.node.id === selectedNodeId) || null,
@@ -124,6 +151,37 @@ export const LookbookStudioPanel: React.FC<Props> = ({
   useEffect(() => {
     if (selectedNodeId && !items.some((item) => item.node.id === selectedNodeId)) setSelectedNodeId(null);
   }, [items, selectedNodeId]);
+
+  useEffect(() => {
+    const projectId = projectData.activeFlowProjectId;
+    if (!projectId) {
+      setResolvedMediaUrls({});
+      return;
+    }
+    let cancelled = false;
+    const storageItems = items.filter((item) =>
+      item.node.type === "imageInput"
+      && typeof item.node.data.storagePath === "string"
+      && item.node.data.storagePath,
+    );
+    void Promise.all(storageItems.map(async (item) => {
+      const url = await resolvePrivateStorageUrl({
+        bucket: item.node.data.storageBucket === "public-assets" ? "public-assets" : "assets",
+        path: item.node.data.storagePath as string,
+      }, projectId);
+      return [item.node.id, url] as const;
+    })).then((entries) => {
+      if (!cancelled) setResolvedMediaUrls(Object.fromEntries(entries));
+    }).catch((error) => {
+      if (!cancelled) {
+        console.warn("Lookbook media URL refresh failed", error);
+        setResolvedMediaUrls({});
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [items, projectData.activeFlowProjectId]);
 
   useEffect(() => {
     if (bookView.kind !== "spread" || bookView.index < spreadCount) return;
@@ -150,9 +208,27 @@ export const LookbookStudioPanel: React.FC<Props> = ({
     if (!files.length || isImporting) return;
     setIsImporting(true);
     setErrorMessage("");
+    const uploadedObjects: OwnedStorageObject[] = [];
     try {
       const inspected = await inspectLookbookImageFiles(files);
-      const assets = inspected.map((asset) => ({ ...asset, id: createLocalNodeId("lookbook-image") }));
+      const projectId = projectData.activeFlowProjectId;
+      if (!projectId) throw new Error("当前 Lookbook 尚未绑定云端项目，无法导入图片。");
+      const assets = await Promise.all(inspected.map(async (asset, index) => {
+        const uploaded = await uploadStorageFile(files[index], {
+          fileName: cloudImageFileName(files[index], index),
+          bucket: "assets",
+          contentType: asset.mimeType,
+          projectId,
+        });
+        uploadedObjects.push(uploaded.object);
+        return {
+          ...asset,
+          id: createLocalNodeId("lookbook-image"),
+          dataUrl: uploaded.url,
+          storageBucket: uploaded.object.bucket,
+          storagePath: uploaded.object.path,
+        };
+      }));
       commitProjectMutation((previous) => {
         let next = addLookbookImageAssets(previous, identityNodeId, assets);
         if (targetPageIndex !== null) {
@@ -170,12 +246,22 @@ export const LookbookStudioPanel: React.FC<Props> = ({
           : Math.floor(targetPageIndex / 2),
       });
     } catch (error) {
+      const projectId = projectData.activeFlowProjectId;
+      if (projectId && uploadedObjects.length) {
+        await deleteOwnedStorageObjects(uploadedObjects, projectId).catch(() => undefined);
+      }
       setErrorMessage(error instanceof Error ? error.message : "图片导入失败");
     } finally {
       setIsImporting(false);
       setIsDraggingFiles(false);
     }
-  }, [commitProjectMutation, identityNodeId, isImporting, items.length]);
+  }, [
+    commitProjectMutation,
+    identityNodeId,
+    isImporting,
+    items.length,
+    projectData.activeFlowProjectId,
+  ]);
 
   const handleFileInput = (event: React.ChangeEvent<HTMLInputElement>) => {
     const targetPageIndex = pendingImportPageRef.current;
@@ -294,7 +380,7 @@ export const LookbookStudioPanel: React.FC<Props> = ({
   const mention = identity?.mention || name;
   const identityLabel = identity?.kind === "scene" ? "SCENE STUDY" : "CHARACTER STUDY";
   const issue = String(Math.max(1, (projectData.roles || []).findIndex((role) => role.id === identityId) + 1)).padStart(2, "0");
-  const coverImageUrls = items
+  const coverImageUrls = displayItems
     .filter((item) => item.node.type === "imageInput")
     .map((item) => readString(item.node.data.image))
     .filter(Boolean)
@@ -454,7 +540,7 @@ export const LookbookStudioPanel: React.FC<Props> = ({
                 <div className="lookbook-book-spread__running-head is-left">{name} / {identityLabel}</div>
                 <div className="lookbook-book-spread__running-head is-right">STYLO LOOKBOOK / {issue}</div>
 
-                {visibleItems.map((item, index) => (
+                {visibleDisplayItems.map((item, index) => (
                   <LookbookBoardItemView
                     key={item.node.id}
                     item={item}
@@ -472,7 +558,7 @@ export const LookbookStudioPanel: React.FC<Props> = ({
                   />
                 ))}
 
-                {!visibleItems.length && !isImporting ? (
+                {!visibleDisplayItems.length && !isImporting ? (
                   <div className="lookbook-book-spread__empty">
                     <span>{pageCount ? "EMPTY PAGES / " + String(spreadIndex + 1).padStart(2, "0") : "NO INNER PAGES"}</span>
                     <strong>{pageCount ? "在纸面右键添加内容" : "这本 Lookbook 目前只有封面"}</strong>

@@ -1,4 +1,8 @@
+import { hasProjectCatalogEntry } from "./_projectCatalog";
+import type { D1DatabaseLike } from "./_types";
+
 export type RealtimeProjectionEnv = {
+  DB: D1DatabaseLike;
   PROJECT_REALTIME?: {
     idFromName(name: string): unknown;
     get(id: unknown): { fetch(request: Request): Promise<Response> };
@@ -40,10 +44,11 @@ export const flushRealtimeProjectProjection = async (
  * explicit flush before the check is repeated.
  */
 export const ensureRealtimeProjectProjectionExists = async (
-  env: RealtimeProjectionEnv & { DB: any },
+  env: RealtimeProjectionEnv,
   userId: string,
   projectId: string,
 ) => {
+  if (!await hasProjectCatalogEntry(env.DB, userId, projectId)) return false;
   const readExisting = () => env.DB.prepare(
     "SELECT 1 FROM user_project_documents WHERE user_id = ?1 AND project_id = ?2",
   ).bind(userId, projectId).first();

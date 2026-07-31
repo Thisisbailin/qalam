@@ -6,7 +6,7 @@ import type { NodeFlowFile, NodeFlowNode } from "../types";
 import { createStableId } from "../../utils/id";
 import { buildApiUrl } from "../../utils/api";
 import { restoreLocalNodeMedia } from "../../utils/cloudProjectData";
-import { ARK_DEFAULT_MODEL, DEEPSEEK_DEFAULT_MODEL, QWEN_DEFAULT_MODEL } from "../../constants";
+import { resolveProviderModel, type StyloAgentProvider } from "../../agents/runtime/providerConfig";
 import {
   GLASS_DIFFUSION_PRESETS,
   GlassDiffusionField,
@@ -267,36 +267,14 @@ const applyAgentProjectPatch = (
 };
 
 const resolveAgentRuntimeModel = (textConfig: any) => {
-  const provider = textConfig?.agentProvider || "deepseek";
+  const provider = (textConfig?.agentProvider || "deepseek") as StyloAgentProvider;
   const explicitAgentModel = (textConfig?.agentModel || "").trim();
-  if (provider === "ark") {
-    if (
-      !explicitAgentModel ||
-      explicitAgentModel === QWEN_DEFAULT_MODEL ||
-      explicitAgentModel.startsWith("qwen") ||
-      explicitAgentModel.startsWith("doubao-lite-") ||
-      explicitAgentModel.startsWith("doubao-pro-")
-    ) {
-      return ARK_DEFAULT_MODEL;
-    }
-    return explicitAgentModel;
-  }
-  if (provider === "qwen") {
-    if (!explicitAgentModel || explicitAgentModel.startsWith("doubao-")) {
-      const sharedModel = !textConfig?.agentProvider || textConfig?.agentProvider === textConfig?.provider
-        ? (textConfig?.model || "").trim()
-        : "";
-      return sharedModel && !sharedModel.startsWith("doubao-") ? sharedModel : QWEN_DEFAULT_MODEL;
-    }
-    return explicitAgentModel;
-  }
-  if (provider === "deepseek") {
-    if (!explicitAgentModel || explicitAgentModel.startsWith("qwen") || explicitAgentModel.startsWith("doubao-")) {
-      return DEEPSEEK_DEFAULT_MODEL;
-    }
-    return explicitAgentModel;
-  }
-  return explicitAgentModel || (textConfig?.model || "").trim() || "";
+  const resolvedExplicit = resolveProviderModel(provider, explicitAgentModel);
+  if (explicitAgentModel && resolvedExplicit === explicitAgentModel) return resolvedExplicit;
+  const sharedModel = !textConfig?.agentProvider || textConfig?.agentProvider === textConfig?.provider
+    ? (textConfig?.model || "").trim()
+    : "";
+  return resolveProviderModel(provider, sharedModel);
 };
 
 const hasEpisodeSceneRef = (text: string) => {

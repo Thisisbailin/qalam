@@ -8,6 +8,7 @@ const TABLES = [
   "agent_sessions",
   "user_seedance_assets",
   "user_project_documents",
+  "user_project_catalog",
   "user_project_visibility",
   "user_project_deletions",
   "user_profile_visits",
@@ -59,6 +60,7 @@ test("project reset deletes all project authority rows in one D1 batch", async (
   assert.match(sql, /DELETE FROM user_seedance_assets/);
   assert.doesNotMatch(sql, /user_project_updates/);
   assert.match(sql, /DELETE FROM user_project_documents/);
+  assert.doesNotMatch(sql, /DELETE FROM user_project_catalog/);
   assert.match(sql, /DELETE FROM user_project_visibility/);
   assert.doesNotMatch(sql, /DELETE FROM user_project_deletions/);
   assert.match(sql, /DELETE FROM user_profile_visits WHERE owner_user_id/);
@@ -82,8 +84,9 @@ test("account reset extends the same transaction to profile, traces, and secrets
   assert.match(sql, /DELETE FROM user_profile/);
   assert.match(sql, /DELETE FROM user_secrets/);
   assert.match(sql, /DELETE FROM user_project_documents/);
+  assert.match(sql, /DELETE FROM user_project_catalog/);
   assert.match(sql, /DELETE FROM user_project_visibility/);
-  assert.match(sql, /DELETE FROM user_project_deletions/);
+  assert.doesNotMatch(sql, /DELETE FROM user_project_deletions/);
   assert.match(sql, /DELETE FROM user_profile_visits WHERE viewer_user_id/);
   assert.doesNotMatch(sql, /user_project_edit_leases/);
   assert.equal(result.user_profile_visits_inbound, 1);

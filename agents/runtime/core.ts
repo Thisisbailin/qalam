@@ -12,7 +12,7 @@ import { createStyloTools } from "../tools";
 import { createStyloInputGuardrails, createStyloOutputGuardrails } from "./guardrails";
 import { composeAgentInstructions } from "./instructions";
 import { buildRunInputItems } from "./memory";
-import { formatModelAccessError, isModelAccessError, type StyloAgentApiMode, type StyloAgentProvider } from "./providerConfig";
+import { formatModelAccessError, isModelAccessError, type StyloAgentProvider } from "./providerConfig";
 import { createStyloProviderRuntime } from "./providerRuntime";
 import { AgentMessageStreamProjector, extractTextFromModelOutput } from "./streamProjector";
 import { createStyloToolBudgetPolicy } from "./toolBudget";
@@ -63,7 +63,6 @@ const summarizeSuccessfulToolCalls = (toolCalls: AgentExecutedToolCall[]) => {
 
 type ResolvedRuntimeConfig = Pick<StyloAgentConfig, "defaultHeaders" | "styloTools"> & {
   provider: StyloAgentProvider;
-  apiMode?: StyloAgentApiMode;
   model: string;
   apiKey: string;
   baseUrl: string;
@@ -161,11 +160,7 @@ export const runStyloAgentCore = async ({
   });
   emitTrace("runtime", "running", "Run started", `session=${input.sessionId}`);
 
-  const apiMode = config.apiMode || "responses";
   const providerRuntime = createStyloProviderRuntime({
-    provider: config.provider,
-    apiMode,
-    model: config.model,
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     defaultHeaders: config.defaultHeaders,

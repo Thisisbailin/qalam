@@ -27,9 +27,8 @@ import {
   ARK_DEFAULT_MODEL,
   ARK_RESPONSES_BASE_URL,
   DEFAULT_STYLO_TOOL_SETTINGS,
-  DEEPSEEK_CHAT_BASE_URL,
+  DEEPSEEK_RESPONSES_BASE_URL,
   DEEPSEEK_DEFAULT_MODEL,
-  DEEPSEEK_PRO_MODEL,
   INITIAL_VIDU_CONFIG,
   NANOBANANA_PRO_ENDPOINT,
   NANOBANANA_PRO_MODEL,
@@ -381,17 +380,16 @@ const summarizeToolActivity = (toolItem: ToolItem, activityMap: Record<string, A
 const resolveAgentModelForProvider = (provider: AgentTextProvider, configured?: string) => {
   const model = (configured || "").trim();
   if (provider === "qwen") {
-    if (!model || model.startsWith("doubao-")) return QWEN_DEFAULT_MODEL;
+    if (!model || model.startsWith("doubao-") || model.startsWith("deepseek-")) return QWEN_DEFAULT_MODEL;
     return model;
   }
   if (provider === "ark") {
-    if (!model || model === QWEN_DEFAULT_MODEL || model.startsWith("qwen")) return ARK_DEFAULT_MODEL;
+    if (!model || model.startsWith("qwen") || model.startsWith("doubao-lite-") || model.startsWith("doubao-pro-")) {
+      return ARK_DEFAULT_MODEL;
+    }
     return model;
   }
-  if (provider === "deepseek") {
-    if (!model || model.startsWith("qwen") || model.startsWith("doubao-")) return DEEPSEEK_DEFAULT_MODEL;
-    return model;
-  }
+  if (provider === "deepseek") return DEEPSEEK_DEFAULT_MODEL;
   return model;
 };
 
@@ -562,7 +560,7 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
     (activeAgentProvider === "ark"
       ? ARK_RESPONSES_BASE_URL
       : activeAgentProvider === "deepseek"
-        ? DEEPSEEK_CHAT_BASE_URL
+        ? DEEPSEEK_RESPONSES_BASE_URL
         : activeAgentProvider === "openrouter"
           ? OPENROUTER_BASE_URL
         : QWEN_RESPONSES_BASE_URL);
@@ -840,7 +838,7 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
         textConfig: {
           ...prev.textConfig,
           agentProvider: "deepseek",
-          agentBaseUrl: prev.textConfig.agentBaseUrl || DEEPSEEK_CHAT_BASE_URL,
+          agentBaseUrl: prev.textConfig.agentBaseUrl || DEEPSEEK_RESPONSES_BASE_URL,
           agentModel: resolveAgentModelForProvider("deepseek", prev.textConfig.agentModel),
         },
       }));
@@ -883,8 +881,8 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
         nextConfig.agentBaseUrl = ARK_RESPONSES_BASE_URL;
         nextConfig.agentModel = providerChanged ? ARK_DEFAULT_MODEL : resolveAgentModelForProvider(p, nextConfig.agentModel);
       } else if (p === "deepseek") {
-        nextConfig.agentBaseUrl = DEEPSEEK_CHAT_BASE_URL;
-        nextConfig.agentModel = providerChanged ? DEEPSEEK_DEFAULT_MODEL : resolveAgentModelForProvider(p, nextConfig.agentModel);
+        nextConfig.agentBaseUrl = DEEPSEEK_RESPONSES_BASE_URL;
+        nextConfig.agentModel = DEEPSEEK_DEFAULT_MODEL;
       } else {
         nextConfig.agentBaseUrl = QWEN_RESPONSES_BASE_URL;
         nextConfig.agentModel = providerChanged ? QWEN_DEFAULT_MODEL : resolveAgentModelForProvider(p, nextConfig.agentModel);
@@ -1476,39 +1474,31 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
               <div className="flex items-center justify-between">
                 <div className="text-xs text-[var(--app-text-secondary)]">DeepSeek</div>
                 <div className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[10px] uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Chat Completions
+                  Responses API
                 </div>
               </div>
               <div className="text-[11px] text-[var(--app-text-muted)]">
-                Uses the same project agent core through the OpenAI Agents SDK Chat Completions transport. Shared keys belong in Edge secrets; BYOK credentials are entered in project settings.
+                Uses the shared OpenAI Agents SDK Responses pipeline. DeepSeek currently supports this route only with the official Flash model.
               </div>
               <div className="space-y-4">
                 <div>
                   <div className="text-xs text-[var(--app-text-secondary)] mb-1">API Endpoint</div>
                   <input
                     type="text"
-                    value={activeAgentBaseUrl || DEEPSEEK_CHAT_BASE_URL}
+                    value={activeAgentBaseUrl || DEEPSEEK_RESPONSES_BASE_URL}
                     onChange={(e) => setConfig({ ...config, textConfig: { ...config.textConfig, agentBaseUrl: e.target.value } })}
                     className="w-full bg-[var(--app-panel-muted)] border border-[var(--app-border)] rounded-xl px-3 py-2 text-sm text-[var(--app-text-primary)] focus:ring-2 focus:ring-cyan-300 focus:outline-none"
                   />
                 </div>
                 <div>
                   <div className="text-xs text-[var(--app-text-secondary)] mb-2">Target Model</div>
-                  <select
-                    value={activeAgentModel || DEEPSEEK_DEFAULT_MODEL}
-                    onChange={(e) => setConfig({ ...config, textConfig: { ...config.textConfig, agentModel: e.target.value } })}
-                    className="w-full bg-[var(--app-panel-muted)] border border-[var(--app-border)] rounded-xl px-3 py-2 text-sm text-[var(--app-text-primary)] focus:ring-2 focus:ring-cyan-300 focus:outline-none"
-                  >
-                    {[DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PRO_MODEL].map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-panel-muted)] px-3 py-2 text-sm text-[var(--app-text-primary)]">
+                    {DEEPSEEK_DEFAULT_MODEL}
+                  </div>
                 </div>
               </div>
               <div className="text-[11px] text-[var(--app-text-muted)]">
-                This path does not create a second agent loop; it only changes the SDK model transport for this provider.
+                Pro is disabled until DeepSeek officially adds Responses API support. Legacy Pro selections are migrated to Flash.
               </div>
             </div>
           )}

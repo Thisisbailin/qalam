@@ -549,12 +549,15 @@ export const resetNodeFlowProjectState = () => {
 };
 
 export const captureNodeFlowAccountExecution = () => {
-  const accountGeneration = useNodeFlowStore.getState().accountGeneration;
+  const state = useNodeFlowStore.getState();
+  const accountGeneration = state.accountGeneration;
+  const projectId = state.nodeFlowContext.projectId || "";
   const signal = accountAbortController.signal;
   const isCurrent = () =>
     !signal.aborted && useNodeFlowStore.getState().accountGeneration === accountGeneration;
   return {
     accountGeneration,
+    projectId,
     signal,
     isCurrent,
     assertCurrent: () => {

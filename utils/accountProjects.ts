@@ -40,6 +40,11 @@ export const switchAccountProject = (previous: ProjectData, projectId: string): 
     flow: ensureFlow(target.flow),
     roles: target.roles || [],
     designAssets: target.designAssets || [],
+    rawScript: target.rawScript || "",
+    episodes: target.episodes || [],
+    canvas: target.canvas || { viewport: null },
+    phase5Usage: target.phase5Usage,
+    stats: target.stats || { context: { total: 0, success: 0, error: 0 } },
     flowProjects: projects,
   };
 };
@@ -67,6 +72,11 @@ export const createAccountProject = (
     updatedAt: now,
     roles: [],
     designAssets: [],
+    rawScript: "",
+    episodes: [],
+    canvas: { viewport: null },
+    phase5Usage: { promptTokens: 0, responseTokens: 0, totalTokens: 0 },
+    stats: { context: { total: 0, success: 0, error: 0 } },
     flow,
   };
   return {
@@ -76,6 +86,11 @@ export const createAccountProject = (
     flow,
     roles: [],
     designAssets: [],
+    rawScript: "",
+    episodes: [],
+    canvas: { viewport: null },
+    phase5Usage: { promptTokens: 0, responseTokens: 0, totalTokens: 0 },
+    stats: { context: { total: 0, success: 0, error: 0 } },
     flowProjects: [...projects, project],
   };
 };
@@ -135,6 +150,11 @@ export const removeAccountProject = (previous: ProjectData, projectId: string): 
     flow: ensureFlow(next.flow),
     roles: next.roles || [],
     designAssets: next.designAssets || [],
+    rawScript: next.rawScript || "",
+    episodes: next.episodes || [],
+    canvas: next.canvas || { viewport: null },
+    phase5Usage: next.phase5Usage,
+    stats: next.stats || { context: { total: 0, success: 0, error: 0 } },
     flowProjects: remaining,
   };
 };

@@ -583,6 +583,25 @@ export const getFlowProjectsForState = (projectData: ProjectData) => {
         : project.id === activeId
           ? projectData.designAssets || []
           : [],
+      rawScript: typeof project.rawScript === "string"
+        ? project.rawScript
+        : project.id === activeId
+          ? projectData.rawScript || ""
+          : "",
+      episodes: Array.isArray(project.episodes)
+        ? project.episodes
+        : project.id === activeId
+          ? projectData.episodes || []
+          : [],
+      canvas: project.canvas
+        ? project.canvas
+        : project.id === activeId
+          ? projectData.canvas
+          : { viewport: null },
+      phase5Usage: project.phase5Usage
+        || (project.id === activeId ? projectData.phase5Usage : undefined),
+      stats: project.stats
+        || (project.id === activeId ? projectData.stats : undefined),
     }));
   }
   const now = Date.now();
@@ -599,6 +618,11 @@ export const getFlowProjectsForState = (projectData: ProjectData) => {
       updatedAt: now,
       roles: projectData.roles || [],
       designAssets: projectData.designAssets || [],
+      rawScript: projectData.rawScript || "",
+      episodes: projectData.episodes || [],
+      canvas: projectData.canvas,
+      phase5Usage: projectData.phase5Usage,
+      stats: projectData.stats,
       flow: currentFlow.flowNodes?.some((node) => node.id === rootNodeId)
         ? currentFlow
         : createEmptyProjectFlow(DEFAULT_TIMELINE_DURATION, projectData.fileName || "主项目", rootNodeId),
@@ -619,6 +643,11 @@ export const saveActiveFlowIntoProjects = (projectData: ProjectData, now = Date.
           rootNodeId: project.rootNodeId || `${FOUNDATION_ROOT_NODE_PREFIX}${project.id}`,
           roles: projectData.roles || [],
           designAssets: projectData.designAssets || [],
+          rawScript: projectData.rawScript || "",
+          episodes: projectData.episodes || [],
+          canvas: projectData.canvas,
+          phase5Usage: projectData.phase5Usage,
+          stats: projectData.stats,
           flow: activeFlow,
         }
       : project

@@ -47,7 +47,9 @@ export const PdfInputNode: React.FC<Props> = ({ id, data, selected }) => {
   const projectId = nodeFlowContext.projectId || "";
   const [isUploading, setIsUploading] = useState(false);
   const [storageMessage, setStorageMessage] = useState<string | null>(null);
+  const [resolvedStorageUrl, setResolvedStorageUrl] = useState<string | null>(null);
   const [labelDraft, setLabelDraft] = useState(data.label || "");
+  const displayPdf = resolvedStorageUrl || data.pdf;
   const displayName =
     data.label?.trim() ||
     data.filename?.replace(/\.pdf$/i, "") ||
@@ -59,6 +61,7 @@ export const PdfInputNode: React.FC<Props> = ({ id, data, selected }) => {
   }, [data.label]);
 
   useEffect(() => {
+    setResolvedStorageUrl(null);
     if (!data.storagePath || !projectId) return;
     let cancelled = false;
     setStorageMessage("正在刷新 PDF 访问地址…");
@@ -67,7 +70,7 @@ export const PdfInputNode: React.FC<Props> = ({ id, data, selected }) => {
       path: data.storagePath,
     }, projectId)
       .then((url) => {
-        if (!cancelled && url && url !== data.pdf) updateNodeData(id, { pdf: url });
+        if (!cancelled && url) setResolvedStorageUrl(url);
         if (!cancelled) setStorageMessage(null);
       })
       .catch((error) => {
@@ -78,7 +81,7 @@ export const PdfInputNode: React.FC<Props> = ({ id, data, selected }) => {
     return () => {
       cancelled = true;
     };
-  }, [data.storageBucket, data.storagePath, id, projectId, updateNodeData]);
+  }, [data.storageBucket, data.storagePath, projectId]);
 
   const handleFile = async (file?: File | null) => {
     if (!file) return;
@@ -177,7 +180,7 @@ export const PdfInputNode: React.FC<Props> = ({ id, data, selected }) => {
       nodeType="pdfInput"
     >
       <div className="pdf-input-shell">
-        {data.pdf ? (
+        {displayPdf ? (
           <>
             <div className="pdf-input-page" aria-label={`${displayName}，双击打开 PDF 文稿`}>
               <div className="pdf-input-page__masthead">

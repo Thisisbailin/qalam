@@ -23,10 +23,16 @@ export const buildStyloScopedProjectData = (projectData: ProjectData, projectId:
   const scopedFlow = activeProject?.flow || projectData.flow;
   return {
     ...projectData,
+    fileName: activeProject?.title || projectData.fileName,
+    rawScript: activeProject?.rawScript ?? projectData.rawScript,
+    episodes: activeProject?.episodes ?? projectData.episodes,
+    canvas: activeProject?.canvas ?? projectData.canvas,
+    phase5Usage: activeProject?.phase5Usage ?? projectData.phase5Usage,
+    stats: activeProject?.stats ?? projectData.stats,
     activeFlowProjectId: normalizedProjectId,
     flow: scopedFlow,
-    roles: projectData.roles || [],
-    designAssets: projectData.designAssets || [],
+    roles: activeProject?.roles || projectData.roles || [],
+    designAssets: activeProject?.designAssets || projectData.designAssets || [],
     flowProjects: activeProject
       ? [{ ...activeProject, flow: scopedFlow || activeProject.flow }]
       : projectData.flowProjects?.filter((project) => project.id === normalizedProjectId),

@@ -18,9 +18,17 @@ head_sampling_rate = 0.05
 name = "PROJECT_REALTIME"
 class_name = "ProjectRealtimeRoom"
 
+[[durable_objects.bindings]]
+name = "ACCOUNT_REALTIME"
+class_name = "AccountCatalogRoom"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ProjectRealtimeRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AccountCatalogRoom"]
 
 [[d1_databases]]
 binding = "DB"

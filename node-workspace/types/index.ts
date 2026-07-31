@@ -88,6 +88,8 @@ export interface BaseNodeData extends Record<string, unknown> {
   wrapperMemberCount?: number;
   /** Runtime-only marker for the root page of a multi-page screenplay. */
   wrapperRoot?: boolean;
+  /** Runtime-only content sample rendered on physical wrapper covers. */
+  wrapperPreview?: string;
 }
 
 export interface ImageInputNodeData extends BaseNodeData {
@@ -117,6 +119,8 @@ export interface ImageInputNodeData extends BaseNodeData {
 export interface AudioInputNodeData extends BaseNodeData {
   audio: string | null;
   filename: string | null;
+  storageBucket?: "assets" | "public-assets" | null;
+  storagePath?: string | null;
   mimeType?: string | null;
   durationMs?: number | null;
   label?: string;

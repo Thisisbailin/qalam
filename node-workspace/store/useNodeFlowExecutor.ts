@@ -73,6 +73,7 @@ const captureExecutorLease = () => {
   const signal = AbortSignal.any([nodeFlow.signal, auth.signal]);
   return {
     accountGeneration: nodeFlow.accountGeneration,
+    projectId: nodeFlow.projectId,
     authGeneration: auth.generation,
     signal,
     isCurrent: () => nodeFlow.isCurrent() && auth.isCurrent() && !signal.aborted,
@@ -208,6 +209,7 @@ const uploadReferenceFile = async (
   execution: ExecutorLease
 ) => {
   execution.assertCurrent();
+  if (!execution.projectId) throw new Error("当前节点执行未绑定云端项目。");
   const response = await fetch(source, { signal: execution.signal });
   const blob = await response.blob();
   const contentType = blob.type || "image/png";
@@ -218,14 +220,25 @@ const uploadReferenceFile = async (
   const signedRes = await fetch(buildApiUrl("/api/upload-url"), {
     method: "POST",
     headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-    body: JSON.stringify({ fileName, bucket, contentType }),
+    body: JSON.stringify({
+      projectId: execution.projectId,
+      fileName,
+      bucket,
+      contentType,
+      fileSize: blob.size,
+    }),
     signal: execution.signal,
   });
   if (!signedRes.ok) {
     const err = await signedRes.text();
     throw new Error(`Reference upload URL error (${signedRes.status}): ${err}`);
   }
-  const signedData = await signedRes.json();
+  const signedData = await signedRes.json() as {
+    signedUrl?: string;
+    publicUrl?: string;
+    path?: string;
+    bucket?: string;
+  };
   if (!signedData?.signedUrl) {
     throw new Error("Reference upload failed: missing signedUrl.");
   }
@@ -246,14 +259,18 @@ const uploadReferenceFile = async (
     const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
       method: "POST",
       headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-      body: JSON.stringify({ path: signedData.path, bucket: signedData.bucket || bucket }),
+      body: JSON.stringify({
+        projectId: execution.projectId,
+        path: signedData.path,
+        bucket: signedData.bucket || bucket,
+      }),
       signal: execution.signal,
     });
     if (!downloadRes.ok) {
       const err = await downloadRes.text();
       throw new Error(`Reference download URL error (${downloadRes.status}): ${err}`);
     }
-    const downloadData = await downloadRes.json();
+    const downloadData = await downloadRes.json() as { signedUrl?: string };
     if (downloadData?.signedUrl) return downloadData.signedUrl as string;
   }
 
@@ -288,14 +305,14 @@ const normalizeWanAudio = async (source: string | undefined, execution: Executor
     const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
       method: "POST",
       headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-      body: JSON.stringify({ path: source, bucket: "assets" }),
+      body: JSON.stringify({ projectId: execution.projectId, path: source, bucket: "assets" }),
       signal: execution.signal,
     });
     if (!downloadRes.ok) {
       const err = await downloadRes.text();
       throw new Error(err);
     }
-    const data = await downloadRes.json();
+    const data = await downloadRes.json() as { signedUrl?: string };
     if (data?.signedUrl) return data.signedUrl as string;
   } catch (e) {
     if (execution.signal.aborted) throw execution.signal.reason;
@@ -355,11 +372,11 @@ const normalizeSeedanceImages = async (sources: string[], execution: ExecutorLea
       const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
         method: "POST",
         headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-        body: JSON.stringify({ path: src, bucket: "assets" }),
+        body: JSON.stringify({ projectId: execution.projectId, path: src, bucket: "assets" }),
         signal: execution.signal,
       });
       if (downloadRes.ok) {
-        const downloadData = await downloadRes.json();
+        const downloadData = await downloadRes.json() as { signedUrl?: string };
         if (downloadData?.signedUrl) {
           results.push(downloadData.signedUrl as string);
           continue;
@@ -390,11 +407,11 @@ const normalizeSeedanceAudios = async (sources: string[], execution: ExecutorLea
       const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
         method: "POST",
         headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-        body: JSON.stringify({ path: src, bucket: "assets" }),
+        body: JSON.stringify({ projectId: execution.projectId, path: src, bucket: "assets" }),
         signal: execution.signal,
       });
       if (downloadRes.ok) {
-        const downloadData = await downloadRes.json();
+        const downloadData = await downloadRes.json() as { signedUrl?: string };
         if (downloadData?.signedUrl) {
           results.push(downloadData.signedUrl as string);
           continue;
@@ -425,11 +442,11 @@ const normalizeViduImages = async (sources: string[], execution: ExecutorLease) 
       const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
         method: "POST",
         headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-        body: JSON.stringify({ path: src, bucket: "assets" }),
+        body: JSON.stringify({ projectId: execution.projectId, path: src, bucket: "assets" }),
         signal: execution.signal,
       });
       if (downloadRes.ok) {
-        const downloadData = await downloadRes.json();
+        const downloadData = await downloadRes.json() as { signedUrl?: string };
         if (downloadData?.signedUrl) {
           results.push(downloadData.signedUrl as string);
           continue;
@@ -460,11 +477,11 @@ const normalizeViduVideos = async (sources: string[], execution: ExecutorLease) 
       const downloadRes = await fetch(buildApiUrl("/api/download-url"), {
         method: "POST",
         headers: await buildAuthorizedJsonHeaders(undefined, execution.authGeneration),
-        body: JSON.stringify({ path: src, bucket: "assets" }),
+        body: JSON.stringify({ projectId: execution.projectId, path: src, bucket: "assets" }),
         signal: execution.signal,
       });
       if (downloadRes.ok) {
-        const downloadData = await downloadRes.json();
+        const downloadData = await downloadRes.json() as { signedUrl?: string };
         if (downloadData?.signedUrl) {
           results.push(downloadData.signedUrl as string);
           continue;

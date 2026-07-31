@@ -1,6 +1,6 @@
 import { jsonResponse } from "./_auth";
 
-const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/;
 
 export const normalizeProjectId = (value: unknown) => {
   if (typeof value !== "string") return "";

@@ -17,6 +17,7 @@ import {
   OnConnectStart,
   Position,
   useStore,
+  useUpdateNodeInternals,
   XYPosition,
 } from "@xyflow/react";
 import {
@@ -84,6 +85,7 @@ import {
   MIN_FLOW_PROJECT_DURATION,
   normalizeFlowProjectDuration,
 } from "../../utils/flowProject";
+import { publishProjectNodeGeometryMutation } from "../../sync/projectMutationBus";
 import { appendUniqueFlowLink, removeFlowLinksById } from "../nodeflow/flowLinks";
 import { applyEdgeSelectionUpdates, type EdgeSelectionUpdate } from "../nodeflow/edgeSelection";
 import { ConnectionDropMenu, type ConnectionDropMenuOption } from "./ConnectionDropMenu";
@@ -192,7 +194,7 @@ type WrapperMemberMotion = {
   wrapperId: string;
   mode: "collapsing" | "expanding";
   memberIds: string[];
-  offsets: Record<string, { x: number; y: number; order: number }>;
+  orderById: Record<string, number>;
 };
 type FlowCreateType = "scriptPage" | "mdText" | NodeType;
 type ScriptHandleType = "image" | "text" | "audio" | "video" | "multi";
@@ -322,8 +324,14 @@ const getFixedFlowNodeDimensions = (type?: FlowRenderNode["type"] | null) => {
   return null;
 };
 
-const getFlowNodeRenderStyle = (node: Pick<NodeFlowNode, "type" | "style">) => {
-  const fixedDimensions = getFixedFlowNodeDimensions(node.type);
+const getFixedFlowNodeDimensionsForNode = (
+  node: Pick<NodeFlowNode, "type" | "data">
+) => isManusFolderNode(node as NodeFlowNode)
+  ? MANUS_FOLDER_NODE_SIZE
+  : getFixedFlowNodeDimensions(node.type);
+
+const getFlowNodeRenderStyle = (node: Pick<NodeFlowNode, "type" | "style" | "data">) => {
+  const fixedDimensions = getFixedFlowNodeDimensionsForNode(node);
   return fixedDimensions ? { ...node.style, ...fixedDimensions } : node.style;
 };
 
@@ -451,7 +459,7 @@ const createScriptNodeFlowContext = (projectData: ProjectData): NodeFlowContextS
 const toRuntimeFlowNode = (node: NodeFlowNode, index: number): NodeFlowNode => ({
   ...node,
   position: node.position || getDefaultFlowNodePosition(index),
-  measured: getFixedFlowNodeDimensions(node.type) || sanitizeScriptMeasured(node.measured),
+  measured: getFixedFlowNodeDimensionsForNode(node) || sanitizeScriptMeasured(node.measured),
   selected: false,
   style: getFlowNodeRenderStyle(node),
   data: {
@@ -697,8 +705,8 @@ const remapImportedFoundationNodeData = (
   return nextData;
 };
 
-const getFlowNodeVirtualSize = (node: Pick<NodeFlowNode, "type" | "style" | "measured">) => {
-  const fixedDimensions = getFixedFlowNodeDimensions(node.type);
+const getFlowNodeVirtualSize = (node: Pick<NodeFlowNode, "type" | "style" | "measured" | "data">) => {
+  const fixedDimensions = getFixedFlowNodeDimensionsForNode(node);
   if (fixedDimensions) return fixedDimensions;
   const measured = sanitizeScriptMeasured(node.measured);
   const style = node.style || {};
@@ -1674,7 +1682,7 @@ export const useFlowSurface = ({
   const [activeTimelineBlockId, setActiveTimelineBlockId] = useState("");
   const [axisRevealRequest, setAxisRevealRequest] = useState(0);
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
-  const [selectedEdgeIds, setSelectedEdgeIds] = useState<Set<string>>(() => new Set());
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [foundationProjection, setFoundationProjection] = useState<ScriptFoundationProjection>({
     activeAxis: "time",
     positions: {},
@@ -1688,6 +1696,7 @@ export const useFlowSurface = ({
   const wrapperMotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperToggleLockRef = useRef(new Map<string, number>());
   const [wrapperMemberMotion, setWrapperMemberMotion] = useState<WrapperMemberMotion | null>(null);
+  const updateNodeInternals = useUpdateNodeInternals();
   const { runImageGen, runVideoGen } = useNodeFlowExecutor();
   const flow = useMemo(() => ensureFlow(projectData.flow), [projectData.flow]);
   const flowProjects = useMemo(() => getFlowProjectsForState(projectData), [projectData]);
@@ -1911,22 +1920,70 @@ export const useFlowSurface = ({
     () => buildWrapperProjection(flow.flowNodes || [], flow.links || []),
     [flow.flowNodes, flow.links]
   );
+  const wrapperGeometrySignature = useMemo(
+    () => JSON.stringify(
+      Array.from(wrapperProjection.memberIdsByWrapper.entries())
+        .map(([wrapperId, memberIds]) => [
+          wrapperId,
+          flowNodeById.get(wrapperId)?.data?.wrapperCollapsed === true,
+          [...memberIds].sort(),
+        ] as const)
+        .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
+    ),
+    [flowNodeById, wrapperProjection.memberIdsByWrapper]
+  );
+
+  useEffect(() => {
+    const entries = JSON.parse(wrapperGeometrySignature) as Array<
+      readonly [string, boolean, string[]]
+    >;
+    const nodeIds = Array.from(
+      new Set(entries.flatMap(([wrapperId, , memberIds]) => [wrapperId, ...memberIds]))
+    );
+    if (!nodeIds.length) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      updateNodeInternals(nodeIds);
+    });
+    const settleTimer = window.setTimeout(() => {
+      updateNodeInternals(nodeIds);
+    }, 520);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(settleTimer);
+    };
+  }, [updateNodeInternals, wrapperGeometrySignature]);
 
   const baseNodes = useMemo<FlowRenderNode[]>(() => {
     return (flow.flowNodes || [])
       .filter((node) => !visibleFlowNodeIds || visibleFlowNodeIds.has(node.id))
       .filter((node) => showFoundationNodes || !getFoundationNodeRole(node))
       .map((node, index) => {
-        const memberMotion = wrapperMemberMotion?.offsets[node.id];
-        const isMotionMember = Boolean(memberMotion);
-        const fixedDimensions = getFixedFlowNodeDimensions(node.type);
+        const memberMotionOrder = wrapperMemberMotion?.orderById[node.id];
+        const isMotionMember = memberMotionOrder !== undefined;
+        const fixedDimensions = getFixedFlowNodeDimensionsForNode(node);
+        const wrapperMemberIds = wrapperProjection.memberIdsByWrapper.get(node.id) || [];
+        const wrapperPreview = isManusFolderNode(node)
+          ? wrapperMemberIds
+              .map((memberId) => flowNodeById.get(memberId))
+              .filter((member): member is NodeFlowNode => member?.type === "scriptPage")
+              .sort((left, right) => {
+                const leftPage = typeof left.data?.pageNumber === "number" ? left.data.pageNumber : Number.MAX_SAFE_INTEGER;
+                const rightPage = typeof right.data?.pageNumber === "number" ? right.data.pageNumber : Number.MAX_SAFE_INTEGER;
+                return leftPage - rightPage;
+              })
+              .map((member) => {
+                const data = member.data as { preview?: string; content?: string; text?: string };
+                return data.preview || data.content || data.text || "";
+              })
+              .find((value) => value.trim())
+          : undefined;
         const baseStyle = getFlowNodeRenderStyle(node);
-        const motionStyle = memberMotion
+        const motionStyle = isMotionMember
           ? {
               ...baseStyle,
-              "--wrapper-motion-x": `${memberMotion.x}px`,
-              "--wrapper-motion-y": `${memberMotion.y}px`,
-              "--wrapper-motion-delay": `${Math.min(memberMotion.order, 8) * 18}ms`,
+              "--wrapper-motion-delay": `${Math.min(memberMotionOrder ?? 0, 8) * 18}ms`,
             } as CSSProperties & Record<`--wrapper-motion-${string}`, string>
           : baseStyle;
         const existingClassName = (node as NodeFlowNode & { className?: string }).className;
@@ -1943,13 +2000,14 @@ export const useFlowSurface = ({
           data: {
             ...createDefaultNodeFlowNodeData(node.type),
             ...(node.data || {}),
-            wrapperMemberCount: wrapperProjection.memberIdsByWrapper.get(node.id)?.length || 0,
+            wrapperMemberCount: wrapperMemberIds.length,
             wrapperRoot: isLookbookNodeType(node.type) || node.type === "leporello" || node.type === "pinoard" || isManusFolderNode(node),
+            wrapperPreview,
             agentReviewPending: node.type === "scriptPage" && !!pendingScriptReviewNodeIds?.has(node.id),
           } as NodeFlowNodeData,
         };
       });
-  }, [flow.flowNodes, pendingScriptReviewNodeIds, selectedNodeIds, showFoundationNodes, visibleFlowNodeIds, wrapperMemberMotion, wrapperProjection]);
+  }, [flow.flowNodes, flowNodeById, pendingScriptReviewNodeIds, selectedNodeIds, showFoundationNodes, visibleFlowNodeIds, wrapperMemberMotion, wrapperProjection]);
 
   const foundationBlockFolderNodes = useMemo(
     () =>
@@ -2019,8 +2077,8 @@ export const useFlowSurface = ({
         const isWrapperMembership = link.data?.relation === LOOKBOOK_MEMBERSHIP_RELATION ||
           link.data?.relation === PINOARD_MEMBERSHIP_RELATION ||
           link.data?.relation === FOLDER_MEMBERSHIP_RELATION;
-        const sourceIsMotionMember = Boolean(wrapperMemberMotion?.offsets[link.source]);
-        const targetIsMotionMember = Boolean(wrapperMemberMotion?.offsets[link.target]);
+        const sourceIsMotionMember = wrapperMemberMotion?.orderById[link.source] !== undefined;
+        const targetIsMotionMember = wrapperMemberMotion?.orderById[link.target] !== undefined;
         const isWrapperMotionEdge = sourceIsMotionMember || targetIsMotionMember;
         const isProjectedHiddenEdge = wrapperProjection.hiddenNodeIds.has(link.source) || wrapperProjection.hiddenNodeIds.has(link.target);
         const sourceVisual = foundationBlockVisuals.get(link.source);
@@ -3159,18 +3217,39 @@ export const useFlowSurface = ({
           ...currentFlow,
           flowNodes: (currentFlow.flowNodes || [])
             .filter((node) => !removedFlowNodeSet.has(node.id))
-            .map((node, index) => ({
-              ...node,
-              position: positionById.get(node.id) || node.position || getDefaultFlowNodePosition(index),
-              measured: sanitizeScriptMeasured(nextNodeById.get(node.id)?.measured) || sanitizeScriptMeasured(node.measured),
-            })),
+            .map((node, index) => {
+              const position = positionById.get(node.id) || node.position || getDefaultFlowNodePosition(index);
+              const measured = sanitizeScriptMeasured(nextNodeById.get(node.id)?.measured)
+                || sanitizeScriptMeasured(node.measured);
+              if (
+                position.x === node.position?.x
+                && position.y === node.position?.y
+                && measured?.width === node.measured?.width
+                && measured?.height === node.measured?.height
+              ) return node;
+              return { ...node, position, measured };
+            }),
           links: currentFlow.links.filter((link) => {
             return !removedFlowNodeSet.has(link.source) && !removedFlowNodeSet.has(link.target);
           }),
         };
       });
+      publishProjectNodeGeometryMutation({
+        projectId: activeFlowProjectId,
+        updatedAt: Date.now(),
+        patches: effectiveChanges.flatMap((change) => {
+          if (!("id" in change)) return [];
+          const nextNode = nextNodeById.get(change.id);
+          if (!nextNode || (change.type !== "position" && change.type !== "dimensions")) return [];
+          return [{
+            nodeId: change.id,
+            position: nextNode.position,
+            measured: sanitizeScriptMeasured(nextNode.measured),
+          }];
+        }),
+      });
     },
-    [flow.flowNodes, nodes, persistFlow, showFoundationNodes]
+    [activeFlowProjectId, flow.flowNodes, nodes, persistFlow, showFoundationNodes]
   );
 
   const handleEdgesChange = useCallback(
@@ -3542,23 +3621,15 @@ export const useFlowSurface = ({
     const wrapperNode = (flow.flowNodes || []).find((node) => node.id === nodeId);
     const memberIds = wrapperProjection.memberIdsByWrapper.get(nodeId) || [];
     const isCollapsing = wrapperNode?.data?.wrapperCollapsed !== true;
-    const wrapperPosition = wrapperNode?.position || { x: 0, y: 0 };
-    const nodeById = new Map((flow.flowNodes || []).map((node) => [node.id, node]));
-    const offsets = Object.fromEntries(memberIds.flatMap((memberId, order) => {
-      const member = nodeById.get(memberId);
-      if (!member) return [];
-      return [[memberId, {
-        x: wrapperPosition.x - member.position.x,
-        y: wrapperPosition.y - member.position.y,
-        order,
-      }]];
-    }));
+    const orderById = Object.fromEntries(
+      memberIds.map((memberId, order) => [memberId, order])
+    );
     if (wrapperMotionTimerRef.current) clearTimeout(wrapperMotionTimerRef.current);
     setWrapperMemberMotion({
       wrapperId: nodeId,
       mode: isCollapsing ? "collapsing" : "expanding",
       memberIds,
-      offsets,
+      orderById,
     });
     persistFlow((currentFlow) => ({
       ...currentFlow,

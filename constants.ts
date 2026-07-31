@@ -26,11 +26,10 @@ export const INITIAL_PROJECT_DATA: ProjectData = {
 export const QWEN_RESPONSES_BASE_URL = 'https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1';
 export const ARK_RESPONSES_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
 export const OPENROUTER_RESPONSES_BASE_URL = 'https://openrouter.ai/api/v1';
-export const DEEPSEEK_CHAT_BASE_URL = 'https://api.deepseek.com';
+export const DEEPSEEK_RESPONSES_BASE_URL = 'https://api.deepseek.com';
 export const QWEN_DEFAULT_MODEL = 'qwen-plus';
 export const ARK_DEFAULT_MODEL = 'doubao-seed-1-6-250615';
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
-export const DEEPSEEK_PRO_MODEL = 'deepseek-v4-pro';
 export const QWEN_WAN_IMAGE_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 export const QWEN_WAN_VIDEO_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis';
 export const QWEN_WAN_IMAGE_MODEL = 'wan2.6-image';
@@ -61,7 +60,7 @@ export const INITIAL_TEXT_CONFIG: TextServiceConfig = {
   baseUrl: QWEN_RESPONSES_BASE_URL,
   apiKey: '',
   model: QWEN_DEFAULT_MODEL,
-  agentBaseUrl: DEEPSEEK_CHAT_BASE_URL,
+  agentBaseUrl: DEEPSEEK_RESPONSES_BASE_URL,
   agentModel: DEEPSEEK_DEFAULT_MODEL,
   workModel: '',
   workBaseUrl: '',

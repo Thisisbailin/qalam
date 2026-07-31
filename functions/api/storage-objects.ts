@@ -1,10 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 import { getUserId, JSON_HEADERS } from "./_auth";
 import { readJsonRequest } from "./_request";
-import type { PagesContext } from "./_types";
+import type { D1DatabaseLike, PagesContext } from "./_types";
 import { normalizeProjectId } from "./_projectScope";
+import { hasProjectCatalogEntry } from "./_projectCatalog";
 
 type Env = {
+  DB: D1DatabaseLike;
   CLERK_SECRET_KEY: string;
   CLERK_JWT_KEY?: string;
   SUPABASE_URL?: string;
@@ -89,6 +91,9 @@ export const onRequestDelete = async ({ request, env }: PagesContext<Env>) => {
     const payload = await readJsonRequest<Record<string, unknown>>(request, MAX_REQUEST_BYTES);
     const projectId = normalizeProjectId(payload?.projectId);
     if (!projectId) return new Response("projectId required", { status: 400 });
+    if (!await hasProjectCatalogEntry(env.DB, userId, projectId)) {
+      return new Response("Project not found", { status: 404 });
+    }
     const objects = normalizeStorageDeleteObjects(payload, userId, projectId);
     const supabaseUrl = env.SUPABASE_URL;
     const serviceRole = env.SUPABASE_SERVICE_ROLE || env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_SECRET_KEY;

@@ -187,6 +187,16 @@ export interface FlowProject {
   roles?: ProjectRoleIdentity[];
   designAssets?: DesignAssetItem[];
   cinewor?: CineworWorkspaceState;
+  /**
+   * Non-canvas project content belongs to the project, not to the account.
+   * These fields mirror the active top-level ProjectData view so inactive
+   * projects can be persisted and synchronized independently.
+   */
+  rawScript?: string;
+  episodes?: Episode[];
+  canvas?: CanvasState;
+  phase5Usage?: TokenUsage;
+  stats?: PerformanceMetrics;
 }
 
 // --- Unified Role Identity Types ---

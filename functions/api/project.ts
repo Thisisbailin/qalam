@@ -4,9 +4,9 @@ import {
   flushRealtimeProjectProjection,
   type RealtimeProjectionEnv,
 } from "./_realtimeProjection";
+import { hasProjectCatalogEntry } from "./_projectCatalog";
 
 type Env = RealtimeProjectionEnv & {
-  DB: any;
   CLERK_SECRET_KEY: string;
   CLERK_JWT_KEY?: string;
 };
@@ -14,6 +14,9 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
   try {
     const userId = await getUserId(context.request, context.env);
     const projectId = requireRequestProjectId(context.request);
+    if (!await hasProjectCatalogEntry(context.env.DB, userId, projectId)) {
+      return new Response("Not Found", { status: 404 });
+    }
     await flushRealtimeProjectProjection(context.env, userId, projectId);
     const row = await context.env.DB.prepare(
       `SELECT project_data, updated_at, server_seq

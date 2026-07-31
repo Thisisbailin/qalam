@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import type { ProjectData, SyncStatus } from "../types";
 import {
   applyProjectSnapshot,
+  applyProjectNodeGeometryPatches,
   decodeUpdateBase64,
   encodeUpdateBase64,
   isProjectDocumentEmpty,
@@ -12,9 +13,19 @@ import type { AccountApiSession } from "./authenticatedFetch";
 import type { RealtimeSyncLease, SyncCodec, SyncStatusDetail } from "./realtimeSyncTypes";
 import {
   deleteRealtimeDocument,
+  readRealtimeConfirmedDocument,
   readRealtimeDocument,
+  readRealtimeDocumentEpoch,
   writeRealtimeDocument,
+  writeRealtimeDocumentEpoch,
+  writeRealtimeDocumentState,
 } from "./realtimeDocumentStore";
+import { mergeProjectSnapshotsAcrossEpoch } from "./projectThreeWayMerge";
+import type { ProjectNodeGeometryPatch } from "./projectMutationBus";
+import {
+  isNodeGeometryOnlyProjectChange,
+  patchProjectSyncSnapshotGeometry,
+} from "./projectSyncAdapter";
 
 const REALTIME_PROTOCOL = "stylo-realtime.v1";
 const LOCAL_ORIGIN = Symbol("stylo-local-project");
@@ -30,6 +41,8 @@ type ServerMessage = {
   stateVector?: string;
   error?: string;
   mode?: "reset" | "delete";
+  epoch?: number;
+  epochReason?: "rebase" | "reset";
 };
 
 type PendingAck = {
@@ -43,6 +56,15 @@ type RealtimeDocumentStore = {
   read(key: string): Promise<Uint8Array | null>;
   write(key: string, value: Uint8Array): Promise<void>;
   delete(key: string): Promise<void>;
+  readEpoch?(key: string): Promise<number>;
+  readConfirmed?(key: string): Promise<Uint8Array | null>;
+  writeEpoch?(key: string, epoch: number): Promise<void>;
+  writeState?(
+    key: string,
+    value: Uint8Array,
+    epoch: number,
+    confirmedValue?: Uint8Array,
+  ): Promise<void>;
 };
 
 type Options = {
@@ -88,13 +110,17 @@ export const areProjectDocumentsSemanticallyEqual = (
 };
 
 export class RealtimeProjectSyncEngine {
-  private readonly doc = new Y.Doc();
+  private doc = new Y.Doc();
+  private confirmedDoc = new Y.Doc();
   private readonly actorId: string;
   private readonly storageKey: string;
   private socket: WebSocket | null = null;
   private disposed = false;
+  private detached = false;
+  private drainTimer: ReturnType<typeof setTimeout> | null = null;
   private ready = false;
   private serverSeq = 0;
+  private epoch = 0;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stageApplyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -105,12 +131,14 @@ export class RealtimeProjectSyncEngine {
   private latestLocal: ProjectData | null = null;
   private latestLocalFingerprint: string | null = null;
   private latestLocalByteLength = 0;
+  private expectedGeometryPatches: ProjectNodeGeometryPatch[] = [];
   private bootstrapLocalDirty = false;
   private bootstrapWithoutPersistedBase = false;
   private pendingOfflineUpdate: Uint8Array | null = null;
   private pendingOfflineOpId: string | null = null;
   private pendingAcks = new Map<string, PendingAck>();
   private persistDirty = false;
+  private confirmedPersistDirty = false;
   private persistInFlight: Promise<void> | null = null;
   private lastLocalSend: Promise<number> | null = null;
   private readonly inFlightSends = new Set<Promise<number>>();
@@ -123,6 +151,10 @@ export class RealtimeProjectSyncEngine {
       read: readRealtimeDocument,
       write: writeRealtimeDocument,
       delete: deleteRealtimeDocument,
+      readEpoch: readRealtimeDocumentEpoch,
+      readConfirmed: readRealtimeConfirmedDocument,
+      writeEpoch: writeRealtimeDocumentEpoch,
+      writeState: writeRealtimeDocumentState,
     };
     this.doc.on("update", this.handleDocumentUpdate);
   }
@@ -135,8 +167,16 @@ export class RealtimeProjectSyncEngine {
     this.latestLocal = initialLocal;
     this.latestLocalFingerprint = initialFingerprint;
     this.latestLocalByteLength = initialByteLength;
-    const persisted = await this.documentStore.read(this.storageKey).catch(() => null);
+    const [persisted, persistedEpoch, confirmed] = await Promise.all([
+      this.documentStore.read(this.storageKey).catch(() => null),
+      this.documentStore.readEpoch?.(this.storageKey).catch(() => 0) ?? Promise.resolve(0),
+      this.documentStore.readConfirmed?.(this.storageKey).catch(() => null) ?? Promise.resolve(null),
+    ]);
+    this.epoch = Number.isSafeInteger(persistedEpoch) && persistedEpoch >= 0 ? persistedEpoch : 0;
     if (persisted?.byteLength) Y.applyUpdate(this.doc, persisted, PERSISTED_ORIGIN);
+    if (confirmed?.byteLength) {
+      Y.applyUpdate(this.confirmedDoc, confirmed, PERSISTED_ORIGIN);
+    }
     if (!isProjectDocumentEmpty(this.doc)) {
       const persistedProject = this.options.codec.snapshot(
         readProjectSnapshot<ProjectData & Record<string, unknown>>(this.doc),
@@ -177,6 +217,40 @@ export class RealtimeProjectSyncEngine {
   stage(local: ProjectData) {
     if (this.disposed) return;
     if (local === this.latestInput && !this.stagedLocalInput) return;
+    if (
+      this.latestInput
+      && this.latestLocal
+      && this.expectedGeometryPatches.length
+      && isNodeGeometryOnlyProjectChange(
+        this.latestInput,
+        local,
+        this.options.projectId,
+        this.expectedGeometryPatches,
+      )
+    ) {
+      const nextProject = local.flowProjects?.find((project) => project.id === this.options.projectId);
+      const patches = this.expectedGeometryPatches;
+      this.expectedGeometryPatches = [];
+      this.latestInput = local;
+      this.latestLocal = patchProjectSyncSnapshotGeometry(
+        this.latestLocal,
+        local,
+        this.options.projectId,
+        patches,
+      );
+      this.latestLocalFingerprint = null;
+      if (nextProject) {
+        applyProjectNodeGeometryPatches(
+          this.doc,
+          this.options.projectId,
+          patches,
+          nextProject.updatedAt,
+          LOCAL_ORIGIN,
+        );
+      }
+      return;
+    }
+    this.expectedGeometryPatches = [];
     this.latestInput = local;
     this.stagedLocalInput = local;
     if (this.stageApplyTimer) clearTimeout(this.stageApplyTimer);
@@ -184,6 +258,22 @@ export class RealtimeProjectSyncEngine {
       this.stageApplyTimer = null;
       this.applyStagedLocal();
     }, this.options.stageDebounceMs ?? 48);
+  }
+
+  expectNodeGeometryMutation(patches: ProjectNodeGeometryPatch[], updatedAt: number) {
+    const merged = new Map(this.expectedGeometryPatches.map((patch) => [patch.nodeId, patch]));
+    patches.forEach((patch) => merged.set(patch.nodeId, patch));
+    this.expectedGeometryPatches = Array.from(merged.values());
+    // Apply the high-frequency action directly to the CRDT. The subsequent
+    // normalized React snapshot remains the validation/fallback path, but the
+    // network payload for a drag contains only the touched node geometry.
+    applyProjectNodeGeometryPatches(
+      this.doc,
+      this.options.projectId,
+      patches,
+      updatedAt,
+      LOCAL_ORIGIN,
+    );
   }
 
   private applyStagedLocal() {
@@ -238,19 +328,37 @@ export class RealtimeProjectSyncEngine {
   }
 
   dispose() {
-    if (this.disposed) return;
+    if (this.disposed || this.detached) return;
     if (this.stageApplyTimer) {
       clearTimeout(this.stageApplyTimer);
       this.stageApplyTimer = null;
       this.applyStagedLocal();
     }
-    this.disposed = true;
-    this.ready = false;
+    this.detached = true;
     if (this.stageTimer) clearTimeout(this.stageTimer);
-    if (this.persistTimer) clearTimeout(this.persistTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.stageTimer = null;
+    this.reconnectTimer = null;
+    this.drainTimer = setTimeout(() => this.finalizeDispose(), 8_000);
+    (this.drainTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+    if (this.ready && this.socket?.readyState === WebSocket.OPEN) {
+      const drain = this.flushPendingUpdate();
+      void drain.finally(() => {
+        if (this.pendingOperationCount() === 0) this.finalizeDispose();
+      });
+    }
+  }
+
+  private finalizeDispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.ready = false;
+    if (this.drainTimer) clearTimeout(this.drainTimer);
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.drainTimer = null;
     this.persistTimer = null;
+    this.reconnectTimer = null;
     if (this.persistDirty) void this.flushDocumentPersistence();
     this.socket?.close(1000, "Project sync disposed");
     this.socket = null;
@@ -260,6 +368,7 @@ export class RealtimeProjectSyncEngine {
     });
     this.pendingAcks.clear();
     this.doc.off("update", this.handleDocumentUpdate);
+    this.confirmedDoc.destroy();
   }
 
   private async connect() {
@@ -322,16 +431,84 @@ export class RealtimeProjectSyncEngine {
     if ((message.type === "sync" || message.type === "update") && typeof message.update === "string") {
       let remoteUpdate: Uint8Array;
       const serverDoc = message.type === "sync" ? new Y.Doc() : null;
+      const serverEpoch = Number(message.epoch);
+      const epochChanged = message.type === "sync"
+        && Number.isSafeInteger(serverEpoch)
+        && serverEpoch !== this.epoch;
       try {
         remoteUpdate = decodeUpdateBase64(message.update);
         if (serverDoc) Y.applyUpdate(serverDoc, remoteUpdate, REMOTE_ORIGIN);
-        Y.applyUpdate(this.doc, remoteUpdate, REMOTE_ORIGIN);
+        if (epochChanged) {
+          if (this.stageApplyTimer) {
+            clearTimeout(this.stageApplyTimer);
+            this.stageApplyTimer = null;
+            this.applyStagedLocal();
+          }
+          const hadLocalChanges = Boolean(
+            this.pendingOfflineUpdate
+            || this.pendingAcks.size
+            || this.bootstrapLocalDirty
+            || this.bootstrapWithoutPersistedBase
+          );
+          const oldLocal = hadLocalChanges && !isProjectDocumentEmpty(this.doc)
+            ? this.options.codec.snapshot(
+              readProjectSnapshot<ProjectData & Record<string, unknown>>(this.doc),
+            )
+            : null;
+          const oldConfirmed = hadLocalChanges && !isProjectDocumentEmpty(this.confirmedDoc)
+            ? this.options.codec.snapshot(
+              readProjectSnapshot<ProjectData & Record<string, unknown>>(this.confirmedDoc),
+            )
+            : null;
+          this.pendingOfflineUpdate = null;
+          this.pendingOfflineOpId = null;
+          this.discardPendingAcks(new Error("项目实时文档已进入新的同步世代。"));
+          this.replaceDocument(remoteUpdate);
+          this.replaceConfirmedDocument(remoteUpdate);
+          this.epoch = serverEpoch;
+          this.bootstrapLocalDirty = false;
+          this.bootstrapWithoutPersistedBase = false;
+          const resetGeneration = message.epochReason === "reset"
+            || Boolean(serverDoc && isProjectDocumentEmpty(serverDoc));
+          if (resetGeneration) {
+            this.latestLocal = null;
+            this.latestLocalFingerprint = null;
+            this.options.onReset?.("reset");
+          } else if (serverDoc && oldLocal && hadLocalChanges) {
+            const remote = this.options.codec.snapshot(
+              readProjectSnapshot<ProjectData & Record<string, unknown>>(serverDoc),
+            );
+            const rebased = mergeProjectSnapshotsAcrossEpoch(
+              oldConfirmed || remote,
+              oldLocal,
+              remote,
+            );
+            this.latestLocal = rebased;
+            this.latestLocalFingerprint = this.options.codec.fingerprint(rebased);
+            this.latestLocalByteLength = this.measureSnapshot(rebased);
+            applyProjectSnapshot(
+              this.doc,
+              rebased as unknown as Record<string, unknown>,
+              LOCAL_ORIGIN,
+            );
+          }
+        } else {
+          Y.applyUpdate(this.doc, remoteUpdate, REMOTE_ORIGIN);
+          if (message.type === "sync") this.replaceConfirmedDocument(remoteUpdate);
+          else {
+            Y.applyUpdate(this.confirmedDoc, remoteUpdate, REMOTE_ORIGIN);
+            this.confirmedPersistDirty = true;
+            this.scheduleDocumentPersistence();
+          }
+        }
       } catch (cause) {
         serverDoc?.destroy();
         this.handleProtocolError("云端返回了无法解析的实时项目数据。", cause);
         return;
       }
-      this.serverSeq = Math.max(this.serverSeq, Number(message.serverSeq) || 0);
+      this.serverSeq = epochChanged
+        ? Number(message.serverSeq) || 0
+        : Math.max(this.serverSeq, Number(message.serverSeq) || 0);
       if (message.type === "sync") {
         this.ready = true;
         this.reconnectAttempt = 0;
@@ -404,6 +581,9 @@ export class RealtimeProjectSyncEngine {
             retryCount: 0,
           });
         }
+        if (this.detached && this.pendingOperationCount() === 0) {
+          this.finalizeDispose();
+        }
       }
       return;
     }
@@ -414,10 +594,15 @@ export class RealtimeProjectSyncEngine {
       }
       this.pendingOfflineUpdate = null;
       this.pendingOfflineOpId = null;
-      this.requeuePendingAcks(new Error("项目已在另一台设备重置。"));
+      this.discardPendingAcks(new Error("项目已在另一台设备重置。"));
       this.pendingOfflineUpdate = null;
       this.pendingOfflineOpId = null;
-      this.doc.transact(() => this.doc.getMap("project").clear(), REMOTE_ORIGIN);
+      this.replaceDocument(new Uint8Array());
+      this.replaceConfirmedDocument(new Uint8Array());
+      if (Number.isSafeInteger(Number(message.epoch))) {
+        this.epoch = Number(message.epoch);
+      }
+      this.serverSeq = Number(message.serverSeq) || 0;
       this.latestLocal = null;
       void this.documentStore.delete(this.storageKey).catch(() => undefined);
       this.options.onReset?.(message.mode === "delete" ? "delete" : "reset");
@@ -433,6 +618,9 @@ export class RealtimeProjectSyncEngine {
       if (!pending) return;
       this.pendingAcks.delete(message.opId);
       clearTimeout(pending.timeout);
+      Y.applyUpdate(this.confirmedDoc, pending.update, REMOTE_ORIGIN);
+      this.confirmedPersistDirty = true;
+      this.scheduleDocumentPersistence();
       this.serverSeq = Math.max(this.serverSeq, Number(message.serverSeq) || 0);
       pending.resolve(this.serverSeq);
       if (this.pendingOfflineUpdate && !this.stageTimer) {
@@ -445,6 +633,7 @@ export class RealtimeProjectSyncEngine {
           pendingOps: 0,
           retryCount: 0,
         });
+        if (this.detached) this.finalizeDispose();
       }
       return;
     }
@@ -565,6 +754,7 @@ export class RealtimeProjectSyncEngine {
         opId,
         update: encodeUpdateBase64(update),
         projectBytes: this.latestLocalByteLength,
+        epoch: this.epoch,
       }));
     } catch (cause) {
       const pending = this.pendingAcks.get(opId);
@@ -593,6 +783,16 @@ export class RealtimeProjectSyncEngine {
     pending.forEach(([opId, entry]) => {
       clearTimeout(entry.timeout);
       this.queueUpdate(entry.update, opId);
+      entry.reject(error);
+    });
+  }
+
+  private discardPendingAcks(error: Error) {
+    if (!this.pendingAcks.size) return;
+    const pending = Array.from(this.pendingAcks.values());
+    this.pendingAcks.clear();
+    pending.forEach((entry) => {
+      clearTimeout(entry.timeout);
       entry.reject(error);
     });
   }
@@ -632,21 +832,52 @@ export class RealtimeProjectSyncEngine {
     }, this.options.persistenceDebounceMs ?? 240);
   }
 
+  private replaceDocument(update: Uint8Array) {
+    this.doc.off("update", this.handleDocumentUpdate);
+    this.doc.destroy();
+    this.doc = new Y.Doc();
+    this.doc.on("update", this.handleDocumentUpdate);
+    if (update.byteLength) Y.applyUpdate(this.doc, update, REMOTE_ORIGIN);
+    this.scheduleDocumentPersistence();
+  }
+
+  private replaceConfirmedDocument(update: Uint8Array) {
+    this.confirmedDoc.destroy();
+    this.confirmedDoc = new Y.Doc();
+    if (update.byteLength) Y.applyUpdate(this.confirmedDoc, update, REMOTE_ORIGIN);
+    this.confirmedPersistDirty = true;
+    this.scheduleDocumentPersistence();
+  }
+
   private flushDocumentPersistence(): Promise<void> {
     if (this.persistInFlight) return this.persistInFlight;
     if (!this.persistDirty) return Promise.resolve();
     this.persistDirty = false;
+    const persistConfirmed = this.confirmedPersistDirty;
+    this.confirmedPersistDirty = false;
     const checkpoint = Y.encodeStateAsUpdate(this.doc);
-    const task = this.documentStore.write(this.storageKey, checkpoint).catch(() => undefined);
+    const confirmedCheckpoint = persistConfirmed
+      ? Y.encodeStateAsUpdate(this.confirmedDoc)
+      : undefined;
+    const task = (
+      this.documentStore.writeState
+        ? this.documentStore.writeState(
+          this.storageKey,
+          checkpoint,
+          this.epoch,
+          confirmedCheckpoint,
+        )
+        : this.documentStore.write(this.storageKey, checkpoint).then(() =>
+            this.documentStore.writeEpoch?.(this.storageKey, this.epoch))
+    ).catch(() => {
+      this.persistDirty = true;
+      if (persistConfirmed) this.confirmedPersistDirty = true;
+    });
     this.persistInFlight = task;
     void task.finally(() => {
       if (this.persistInFlight === task) this.persistInFlight = null;
-      if (!this.persistDirty) return;
-      if (this.disposed) {
-        void this.flushDocumentPersistence();
-      } else {
-        this.scheduleDocumentPersistence();
-      }
+      if (!this.persistDirty || this.disposed) return;
+      this.scheduleDocumentPersistence();
     });
     return task;
   }
@@ -688,7 +919,7 @@ export class RealtimeProjectSyncEngine {
     this.latestLocal = snapshot;
     this.latestLocalFingerprint = this.options.codec.fingerprint(snapshot);
     this.latestLocalByteLength = this.measureSnapshot(snapshot);
-    this.options.onApplyRemote(snapshot);
+    if (!this.detached) this.options.onApplyRemote(snapshot);
   }
 
   private measureSnapshot(snapshot: ProjectData) {

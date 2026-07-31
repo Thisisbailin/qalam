@@ -235,13 +235,14 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [storageMessage, setStorageMessage] = useState<string | null>(null);
   const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string | null>(null);
+  const [resolvedStorageUrl, setResolvedStorageUrl] = useState<string | null>(null);
   const [openControlPanel, setOpenControlPanel] = useState<"review" | "info" | null>(null);
   const dimensionLabel = useMemo(() => {
     if (!data.dimensions?.width || !data.dimensions?.height) return null;
     return `${data.dimensions.width} × ${data.dimensions.height}`;
   }, [data.dimensions?.height, data.dimensions?.width]);
   const nodeTitle = data.title && data.title !== "Visual Input" ? data.title : "image";
-  const displayImage = pendingPreviewUrl || data.image;
+  const displayImage = pendingPreviewUrl || resolvedStorageUrl || data.image;
 
   const mentionTargets = useMemo(() => {
     const roles = nodeFlowContext?.roles || [];
@@ -418,11 +419,11 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
   }, [renderedHtml, labelDraft, cursorPos, updatePickerPosition]);
 
   useLayoutEffect(() => {
-    if (!data.image) return;
+    if (!displayImage) return;
     const node = getNodeById(id);
     if (!node?.style || node.style.height === undefined) return;
     updateNodeStyle(id, { height: undefined });
-  }, [data.image, getNodeById, id, updateNodeStyle]);
+  }, [displayImage, getNodeById, id, updateNodeStyle]);
 
   React.useEffect(() => {
     if (isComposingRef.current) return;
@@ -454,6 +455,7 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
   }, [showMentionPicker, updatePickerPosition]);
 
   React.useEffect(() => {
+    setResolvedStorageUrl(null);
     if (!data.storagePath) return;
     let cancelled = false;
     resolvePrivateStorageUrl({
@@ -461,7 +463,7 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
       path: data.storagePath,
     }, projectId)
       .then((url) => {
-        if (!cancelled && url && url !== data.image) updateNodeData(id, { image: url });
+        if (!cancelled && url) setResolvedStorageUrl(url);
       })
       .catch((error) => {
         if (!cancelled) setStorageMessage(error instanceof Error ? error.message : "图片访问地址刷新失败。");
@@ -469,7 +471,7 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
     return () => {
       cancelled = true;
     };
-  }, [data.storageBucket, data.storagePath, id, projectId, updateNodeData]);
+  }, [data.storageBucket, data.storagePath, projectId]);
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -528,7 +530,7 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
 
   const runSyntheticPortraitReview = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!data.image || isReviewingAsset) return;
+    if (!displayImage || isReviewingAsset) return;
     setOpenControlPanel("review");
     setIsReviewingAsset(true);
     updateNodeData(id, {
@@ -539,7 +541,12 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
       assetUri: null,
     });
     try {
-      const uploadedSource = await uploadImageForAssetReview(data.image, data.filename, !!data.storagePath, projectId);
+      const uploadedSource = await uploadImageForAssetReview(
+        displayImage,
+        data.filename,
+        !!data.storagePath,
+        projectId,
+      );
       const previousReviewObjects = collectOwnedStorageObjects([{
         data: {
           assetSourceBucket: data.assetSourceBucket,
@@ -712,7 +719,7 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
                     }
                     void runSyntheticPortraitReview(event);
                   }}
-                  disabled={!data.image || isReviewingAsset || isUploadingImage}
+                  disabled={!displayImage || isReviewingAsset || isUploadingImage}
                   className="image-input-icon-label"
                   data-tone={assetAuditTone}
                   aria-expanded={showReviewPanel}

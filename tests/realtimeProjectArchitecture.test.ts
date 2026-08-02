@@ -17,7 +17,8 @@ test("project editing is authenticated and multi-writer without a device lease",
   assert.equal(existsSync("functions/api/project-lease.ts"), false);
 
   assert.match(endpoint, /readWebSocketCredential/);
-  assert.match(endpoint, /getUserId\(authenticated, context\.env\)/);
+  assert.match(endpoint, /consumeRealtimeTicket/);
+  assert.doesNotMatch(endpoint, /authorization:/);
   assert.match(endpoint, /idFromName\(`\$\{userId\}:\$\{projectId\}`\)/);
   assert.match(migration, /DROP TABLE IF EXISTS user_project_edit_leases/);
   assert.match(migration, /PRIMARY KEY \(user_id, project_id\)/);
@@ -56,10 +57,35 @@ test("the realtime room durably appends only incremental edits before ACK", () =
   assert.match(worker, /MAX_PROJECT_ROOM_SOCKETS/);
   assert.match(worker, /MAX_OWNER_EDIT_SOCKETS/);
   assert.match(worker, /MAX_VIEWER_SOCKETS/);
-  assert.match(worker, /for \(const peer of this\.state\.getWebSockets\(\)\)/);
+  assert.match(worker, /for \(const peer of this\.state\.getWebSockets\(\)\.filter\(isOpenSocket\)\)/);
   assert.match(worker, /this\.sendSocketMessage\(peer, broadcast\)/);
   assert.match(worker, /realtime_socket_send_failed/);
   assert.match(worker, /stateVector: encodeUpdateBase64\(Y\.encodeStateVector\(this\.doc\)\)/);
+});
+
+test("browser realtime authentication uses short-lived one-time scoped tickets", () => {
+  const session = read("sync/authenticatedFetch.ts");
+  const issuer = read("functions/api/realtime-ticket.ts");
+  const tickets = read("functions/api/_realtimeTicket.ts");
+  const migration = read("migrations/0010_realtime_connection_tickets.sql");
+  const projectGateway = read("functions/api/project-realtime.ts");
+  const catalogGateway = read("functions/api/account-projects-realtime.ts");
+  const publicGateway = read("functions/api/public-project-realtime.ts");
+
+  assert.match(session, /this\.request\("\/api\/realtime-ticket"/);
+  assert.match(session, /encodeWebSocketCredential\(ticket\)/);
+  assert.doesNotMatch(session, /encodeWebSocketCredential\(token\)/);
+  assert.match(issuer, /getUserId\(context\.request, context\.env\)/);
+  assert.match(issuer, /realtime-ticket-minute/);
+  assert.match(tickets, /crypto\.getRandomValues/);
+  assert.match(tickets, /crypto\.subtle\.digest\("SHA-256"/);
+  assert.match(tickets, /consumed_at IS NULL/);
+  assert.match(tickets, /RETURNING user_id/);
+  assert.match(migration, /token_hash TEXT PRIMARY KEY/);
+  for (const gateway of [projectGateway, catalogGateway, publicGateway]) {
+    assert.match(gateway, /consumeRealtimeTicket/);
+    assert.doesNotMatch(gateway, /authorization:/);
+  }
 });
 
 test("realtime Worker enables sampled observability without logging project payloads", () => {
@@ -154,7 +180,7 @@ test("account project discovery is event-driven across already-open devices", ()
   assert.match(app, /\/api\/account-projects-realtime/);
   assert.match(app, /message\.type === "catalog-changed"/);
   assert.doesNotMatch(app, /setInterval\([^)]*loadCloudProjectCatalog/);
-  assert.match(endpoint, /getUserId\(authenticated, context\.env\)/);
+  assert.match(endpoint, /consumeRealtimeTicket/);
   assert.match(endpoint, /ACCOUNT_REALTIME\.idFromName\(userId\)/);
   assert.match(notifier, /https:\/\/stylo\.internal\/notify/);
   assert.match(catalog, /notifyAccountProjectCatalogChanged/);
@@ -166,6 +192,8 @@ test("account project discovery is event-driven across already-open devices", ()
 
 test("local project changes enter Yjs immediately while network writes are coalesced", () => {
   const engine = read("sync/realtimeProjectSyncEngine.ts");
+  const hook = read("hooks/useCloudSync.ts");
+  const store = read("sync/realtimeDocumentStore.ts");
 
   assert.match(engine, /stage\(local: ProjectData\)[\s\S]*applyProjectSnapshot\(/);
   assert.match(engine, /this\.queueUpdate\(update\)/);
@@ -176,8 +204,26 @@ test("local project changes enter Yjs immediately while network writes are coale
   assert.match(engine, /requeuePendingAcks/);
   assert.match(engine, /Y\.mergeUpdates/);
   assert.match(engine, /if \(update\.byteLength <= 2\) return/);
+  assert.match(engine, /await this\.flushOutboxPersistence\(\)/);
+  assert.match(engine, /if \(this\.pendingAcks\.size > 0\)/);
+  assert.match(engine, /if \(this\.socket !== socket\) return/);
+  assert.match(engine, /event\.data === "pong"/);
+  assert.match(hook, /useLayoutEffect\(\(\) => \{[\s\S]*engineRef\.current\?\.stage\(projectData\)/);
+  assert.match(store, /outboxKey/);
+  assert.match(store, /readRealtimeDocumentOutbox/);
+  assert.match(store, /writeRealtimeDocumentOutbox/);
   assert.doesNotMatch(engine, /setInterval|\.refresh\(/);
-  assert.doesNotMatch(read("hooks/useCloudSync.ts"), /refreshKey|forceCloudPull/);
+  assert.doesNotMatch(hook, /refreshKey|forceCloudPull/);
+});
+
+test("realtime connections recover from transient initialization and stale close events", () => {
+  const worker = read("realtime-worker/src/index.ts");
+
+  assert.match(worker, /new WebSocketRequestResponsePair\("ping", "pong"\)/);
+  assert.match(worker, /getWebSockets\(\)\.filter\(isOpenSocket\)/);
+  assert.match(worker, /this\.identityPromise === guarded[\s\S]*this\.identityPromise = null/);
+  assert.match(worker, /this\.loadPromise === guarded[\s\S]*this\.loadPromise = null/);
+  assert.match(worker, /Realtime room update log does not reach server sequence/);
 });
 
 test("refreshing private media URLs is runtime-only and cannot create phantom edits", () => {

@@ -64,12 +64,14 @@ export const normalizeNodeFlowNode = (node: NodeFlowNode): NodeFlowNode | null =
 };
 
 export const normalizeNodeFlowLink = (link: NodeFlowLink, index: number): NodeFlowLink => {
+  const { data, ...linkWithoutData } = link;
   const id =
     link.id ||
     buildNodeFlowLinkId(link.source, link.target, link.sourceHandle, link.targetHandle) ||
     `link-${index}`;
   return {
-    ...link,
+    ...linkWithoutData,
+    ...(data == null ? {} : { data }),
     id,
     sourceHandle: link.sourceHandle ?? null,
     targetHandle: link.targetHandle ?? null,

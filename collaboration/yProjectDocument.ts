@@ -88,7 +88,11 @@ const syncText = (text: Y.Text, next: string) => {
 
 const createSharedObject = (value: Record<string, unknown>) => {
   const map = new Y.Map<unknown>();
+  // Match JSON object semantics: undefined means that the property is absent.
+  // Explicit null remains a stored value, and undefined array slots still
+  // become null through createSharedValue just like JSON.stringify.
   Object.entries(value).forEach(([key, entry]) => {
+    if (entry === undefined) return;
     map.set(key, createSharedValue(entry, key));
   });
   return map;
@@ -169,6 +173,10 @@ const syncArray = (array: Y.Array<unknown>, value: unknown[]) => {
 };
 
 const syncMapValue = (map: Y.Map<unknown>, key: string, value: unknown) => {
+  if (value === undefined) {
+    map.delete(key);
+    return;
+  }
   const existing = map.get(key);
   if (typeof value === "string") {
     if (existing instanceof Y.Text) syncText(existing, value);
@@ -197,11 +205,12 @@ const syncMapValue = (map: Y.Map<unknown>, key: string, value: unknown) => {
 };
 
 const syncMap = (map: Y.Map<unknown>, value: Record<string, unknown>) => {
-  const nextKeys = new Set(Object.keys(value));
+  const entries = Object.entries(value).filter(([, entry]) => entry !== undefined);
+  const nextKeys = new Set(entries.map(([key]) => key));
   Array.from(map.keys()).forEach((key) => {
     if (!nextKeys.has(key)) map.delete(key);
   });
-  Object.entries(value).forEach(([key, entry]) => syncMapValue(map, key, entry));
+  entries.forEach(([key, entry]) => syncMapValue(map, key, entry));
 };
 
 export const applyProjectSnapshot = (

@@ -33,9 +33,10 @@ test("public access requires auth, applies visibility on the server, and leaves 
   const realtime = read("functions/api/public-project-realtime.ts");
   const traces = read("functions/api/view-traces.ts");
 
-  for (const source of [directory, profile, project, realtime, traces]) {
+  for (const source of [directory, profile, project, traces]) {
     assert.match(source, /getUserId\(/);
   }
+  assert.match(realtime, /consumeRealtimeTicket/);
   assert.match(project, /readProjectVisibility/);
   assert.match(realtime, /readProjectVisibility/);
   assert.match(profile, /recordProfileVisit/);

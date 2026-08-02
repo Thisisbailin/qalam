@@ -16,9 +16,12 @@ import {
   readRealtimeConfirmedDocument,
   readRealtimeDocument,
   readRealtimeDocumentEpoch,
+  readRealtimeDocumentOutbox,
   writeRealtimeDocument,
   writeRealtimeDocumentEpoch,
+  writeRealtimeDocumentOutbox,
   writeRealtimeDocumentState,
+  type RealtimeStoredOutboxEntry,
 } from "./realtimeDocumentStore";
 import { mergeProjectSnapshotsAcrossEpoch } from "./projectThreeWayMerge";
 import type { ProjectNodeGeometryPatch } from "./projectMutationBus";
@@ -31,6 +34,8 @@ const REALTIME_PROTOCOL = "stylo-realtime.v1";
 const LOCAL_ORIGIN = Symbol("stylo-local-project");
 const REMOTE_ORIGIN = Symbol("stylo-remote-project");
 const PERSISTED_ORIGIN = Symbol("stylo-persisted-project");
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const HEARTBEAT_TIMEOUT_MS = 12_000;
 
 type ServerMessage = {
   type?: "sync" | "update" | "ack" | "error" | "reset";
@@ -58,7 +63,9 @@ type RealtimeDocumentStore = {
   delete(key: string): Promise<void>;
   readEpoch?(key: string): Promise<number>;
   readConfirmed?(key: string): Promise<Uint8Array | null>;
+  readOutbox?(key: string): Promise<RealtimeStoredOutboxEntry[]>;
   writeEpoch?(key: string, epoch: number): Promise<void>;
+  writeOutbox?(key: string, entries: RealtimeStoredOutboxEntry[]): Promise<void>;
   writeState?(
     key: string,
     value: Uint8Array,
@@ -82,8 +89,7 @@ type Options = {
   documentStore?: RealtimeDocumentStore;
 };
 
-const createId = () => globalThis.crypto?.randomUUID?.() ||
-  `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+const createId = () => globalThis.crypto.randomUUID();
 
 export const areProjectDocumentsSemanticallyEqual = (
   left: Y.Doc,
@@ -123,6 +129,8 @@ export class RealtimeProjectSyncEngine {
   private epoch = 0;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private stageApplyTimer: ReturnType<typeof setTimeout> | null = null;
   private stageTimer: ReturnType<typeof setTimeout> | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -140,6 +148,9 @@ export class RealtimeProjectSyncEngine {
   private persistDirty = false;
   private confirmedPersistDirty = false;
   private persistInFlight: Promise<void> | null = null;
+  private outboxPersistTimer: ReturnType<typeof setTimeout> | null = null;
+  private outboxPersistDirty = false;
+  private outboxPersistInFlight: Promise<void> | null = null;
   private lastLocalSend: Promise<number> | null = null;
   private readonly inFlightSends = new Set<Promise<number>>();
   private readonly documentStore: RealtimeDocumentStore;
@@ -153,10 +164,15 @@ export class RealtimeProjectSyncEngine {
       delete: deleteRealtimeDocument,
       readEpoch: readRealtimeDocumentEpoch,
       readConfirmed: readRealtimeConfirmedDocument,
+      readOutbox: readRealtimeDocumentOutbox,
       writeEpoch: writeRealtimeDocumentEpoch,
+      writeOutbox: writeRealtimeDocumentOutbox,
       writeState: writeRealtimeDocumentState,
     };
     this.doc.on("update", this.handleDocumentUpdate);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    }
   }
 
   async start(local: ProjectData) {
@@ -167,15 +183,27 @@ export class RealtimeProjectSyncEngine {
     this.latestLocal = initialLocal;
     this.latestLocalFingerprint = initialFingerprint;
     this.latestLocalByteLength = initialByteLength;
-    const [persisted, persistedEpoch, confirmed] = await Promise.all([
+    const [persisted, persistedEpoch, confirmed, recoveredOutbox] = await Promise.all([
       this.documentStore.read(this.storageKey).catch(() => null),
       this.documentStore.readEpoch?.(this.storageKey).catch(() => 0) ?? Promise.resolve(0),
       this.documentStore.readConfirmed?.(this.storageKey).catch(() => null) ?? Promise.resolve(null),
+      this.documentStore.readOutbox?.(this.storageKey).catch(() => []) ?? Promise.resolve([]),
     ]);
     this.epoch = Number.isSafeInteger(persistedEpoch) && persistedEpoch >= 0 ? persistedEpoch : 0;
     if (persisted?.byteLength) Y.applyUpdate(this.doc, persisted, PERSISTED_ORIGIN);
     if (confirmed?.byteLength) {
       Y.applyUpdate(this.confirmedDoc, confirmed, PERSISTED_ORIGIN);
+    }
+    if (recoveredOutbox.length) {
+      const recoveredUpdate = recoveredOutbox.length === 1
+        ? recoveredOutbox[0].update
+        : Y.mergeUpdates(recoveredOutbox.map((entry) => entry.update));
+      Y.applyUpdate(this.doc, recoveredUpdate, PERSISTED_ORIGIN);
+      this.pendingOfflineUpdate = recoveredUpdate;
+      this.pendingOfflineOpId = recoveredOutbox.length === 1
+        ? recoveredOutbox[0].opId
+        : createId();
+      this.bootstrapLocalDirty = true;
     }
     if (!isProjectDocumentEmpty(this.doc)) {
       const persistedProject = this.options.codec.snapshot(
@@ -183,26 +211,34 @@ export class RealtimeProjectSyncEngine {
       );
       const persistedFingerprint = this.options.codec.fingerprint(persistedProject);
       if (persistedFingerprint !== initialFingerprint) {
-        const initialIsEmpty = this.options.codec.isEmpty(initialLocal);
-        const persistedIsEmpty = this.options.codec.isEmpty(persistedProject);
-        const initialRevision = this.options.codec.revision?.(initialLocal) ?? null;
-        const persistedRevision = this.options.codec.revision?.(persistedProject) ?? null;
-        const persistedIsNewer = initialIsEmpty && !persistedIsEmpty
-          || (
-            !persistedIsEmpty
-            && initialRevision !== null
-            && persistedRevision !== null
-            && persistedRevision > initialRevision
-          );
-        if (persistedIsNewer) {
+        if (recoveredOutbox.length) {
+          // The outbox is an explicit record of edits that were accepted by
+          // this client but not yet acknowledged by the server. It is newer
+          // than a separately debounced localStorage snapshot even when an
+          // action (for example geometry) did not advance the project revision.
           this.applyDocumentToApp();
         } else {
-          this.bootstrapLocalDirty = true;
-          applyProjectSnapshot(
-            this.doc,
-            initialLocal as unknown as Record<string, unknown>,
-            LOCAL_ORIGIN,
-          );
+          const initialIsEmpty = this.options.codec.isEmpty(initialLocal);
+          const persistedIsEmpty = this.options.codec.isEmpty(persistedProject);
+          const initialRevision = this.options.codec.revision?.(initialLocal) ?? null;
+          const persistedRevision = this.options.codec.revision?.(persistedProject) ?? null;
+          const persistedIsNewer = initialIsEmpty && !persistedIsEmpty
+            || (
+              !persistedIsEmpty
+              && initialRevision !== null
+              && persistedRevision !== null
+              && persistedRevision > initialRevision
+            );
+          if (persistedIsNewer) {
+            this.applyDocumentToApp();
+          } else {
+            this.bootstrapLocalDirty = true;
+            applyProjectSnapshot(
+              this.doc,
+              initialLocal as unknown as Record<string, unknown>,
+              LOCAL_ORIGIN,
+            );
+          }
         }
       }
     } else if (!this.options.codec.isEmpty(initialLocal)) {
@@ -337,6 +373,7 @@ export class RealtimeProjectSyncEngine {
     this.detached = true;
     if (this.stageTimer) clearTimeout(this.stageTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.clearHeartbeat();
     this.stageTimer = null;
     this.reconnectTimer = null;
     this.drainTimer = setTimeout(() => this.finalizeDispose(), 8_000);
@@ -355,11 +392,14 @@ export class RealtimeProjectSyncEngine {
     this.ready = false;
     if (this.drainTimer) clearTimeout(this.drainTimer);
     if (this.persistTimer) clearTimeout(this.persistTimer);
+    if (this.outboxPersistTimer) clearTimeout(this.outboxPersistTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.drainTimer = null;
     this.persistTimer = null;
+    this.outboxPersistTimer = null;
     this.reconnectTimer = null;
     if (this.persistDirty) void this.flushDocumentPersistence();
+    if (this.outboxPersistDirty) void this.flushOutboxPersistence();
     this.socket?.close(1000, "Project sync disposed");
     this.socket = null;
     this.pendingAcks.forEach(({ reject, timeout }) => {
@@ -368,6 +408,9 @@ export class RealtimeProjectSyncEngine {
     });
     this.pendingAcks.clear();
     this.doc.off("update", this.handleDocumentUpdate);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    }
     this.confirmedDoc.destroy();
   }
 
@@ -383,15 +426,42 @@ export class RealtimeProjectSyncEngine {
         socket.close();
         return;
       }
+      const superseded = this.socket;
       this.socket = socket;
-      socket.onmessage = (event) => this.handleSocketMessage(event);
-      socket.onclose = () => {
-        if (this.socket === socket) this.socket = null;
+      if (superseded && superseded !== socket) {
+        superseded.onmessage = null;
+        superseded.onclose = null;
+        superseded.onerror = null;
+        this.requeuePendingAcks(new Error("实时连接已替换，未确认的更改将在新连接重发。"));
+        try {
+          superseded.close(1000, "Realtime connection superseded");
+        } catch {
+          // The previous transport is already gone.
+        }
+      }
+      socket.onmessage = (event) => {
+        if (this.socket !== socket) return;
+        this.handleSocketMessage(event);
+      };
+      socket.onclose = (event) => {
+        // A superseded socket can finish its close handshake after a newer
+        // connection has already become active. It must never demote or drain
+        // the current connection's state.
+        if (this.socket !== socket) return;
+        this.socket = null;
         this.ready = false;
+        this.clearHeartbeat();
         this.requeuePendingAcks(new Error("实时连接已中断，未确认的更改将在重连后重发。"));
+        this.options.onStatusChange?.("offline", {
+          error: `Realtime connection closed (${event.code}${event.reason ? `: ${event.reason}` : ""}).`,
+          pendingOps: this.pendingOperationCount(),
+          retryCount: this.reconnectAttempt,
+          lastAttemptAt: Date.now(),
+        });
         if (!this.disposed) this.reconnect();
       };
       socket.onerror = () => {
+        if (this.socket !== socket) return;
         if (isProjectDocumentEmpty(this.doc) && this.latestLocal) {
           applyProjectSnapshot(this.doc, this.latestLocal as unknown as Record<string, unknown>, LOCAL_ORIGIN);
         }
@@ -422,6 +492,12 @@ export class RealtimeProjectSyncEngine {
 
   private handleSocketMessage(event: MessageEvent) {
     if (typeof event.data !== "string") return;
+    if (event.data === "pong") {
+      if (this.heartbeatDeadlineTimer) clearTimeout(this.heartbeatDeadlineTimer);
+      this.heartbeatDeadlineTimer = null;
+      this.scheduleHeartbeat();
+      return;
+    }
     let message: ServerMessage;
     try {
       message = JSON.parse(event.data) as ServerMessage;
@@ -429,6 +505,15 @@ export class RealtimeProjectSyncEngine {
       return;
     }
     if ((message.type === "sync" || message.type === "update") && typeof message.update === "string") {
+      // React has committed the visible edit and stage() has captured it, but
+      // the normal snapshot conversion may still be inside its short debounce.
+      // Materialize it before applying a remote operation so a whole-project
+      // UI projection can never erase that just-committed local edit.
+      if (this.stageApplyTimer) {
+        clearTimeout(this.stageApplyTimer);
+        this.stageApplyTimer = null;
+        this.applyStagedLocal();
+      }
       let remoteUpdate: Uint8Array;
       const serverDoc = message.type === "sync" ? new Y.Doc() : null;
       const serverEpoch = Number(message.epoch);
@@ -439,11 +524,6 @@ export class RealtimeProjectSyncEngine {
         remoteUpdate = decodeUpdateBase64(message.update);
         if (serverDoc) Y.applyUpdate(serverDoc, remoteUpdate, REMOTE_ORIGIN);
         if (epochChanged) {
-          if (this.stageApplyTimer) {
-            clearTimeout(this.stageApplyTimer);
-            this.stageApplyTimer = null;
-            this.applyStagedLocal();
-          }
           const hadLocalChanges = Boolean(
             this.pendingOfflineUpdate
             || this.pendingAcks.size
@@ -512,6 +592,7 @@ export class RealtimeProjectSyncEngine {
       if (message.type === "sync") {
         this.ready = true;
         this.reconnectAttempt = 0;
+        this.scheduleHeartbeat();
         const serverProject = serverDoc && !isProjectDocumentEmpty(serverDoc)
           ? this.options.codec.snapshot(
             readProjectSnapshot<ProjectData & Record<string, unknown>>(serverDoc),
@@ -566,6 +647,7 @@ export class RealtimeProjectSyncEngine {
           // Do not upload that history as an authored project change.
           this.pendingOfflineUpdate = null;
           this.pendingOfflineOpId = null;
+          this.scheduleOutboxPersistence();
         }
         serverDoc.destroy();
         if (this.stageTimer) {
@@ -597,6 +679,7 @@ export class RealtimeProjectSyncEngine {
       this.discardPendingAcks(new Error("项目已在另一台设备重置。"));
       this.pendingOfflineUpdate = null;
       this.pendingOfflineOpId = null;
+      this.scheduleOutboxPersistence();
       this.replaceDocument(new Uint8Array());
       this.replaceConfirmedDocument(new Uint8Array());
       if (Number.isSafeInteger(Number(message.epoch))) {
@@ -621,6 +704,7 @@ export class RealtimeProjectSyncEngine {
       Y.applyUpdate(this.confirmedDoc, pending.update, REMOTE_ORIGIN);
       this.confirmedPersistDirty = true;
       this.scheduleDocumentPersistence();
+      this.scheduleOutboxPersistence();
       this.serverSeq = Math.max(this.serverSeq, Number(message.serverSeq) || 0);
       pending.resolve(this.serverSeq);
       if (this.pendingOfflineUpdate && !this.stageTimer) {
@@ -673,6 +757,49 @@ export class RealtimeProjectSyncEngine {
     this.socket?.close(1002, "Invalid realtime protocol payload");
   }
 
+  private readonly handleVisibilityChange = () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+    if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    this.clearHeartbeat();
+    this.sendHeartbeat();
+  };
+
+  private clearHeartbeat() {
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    if (this.heartbeatDeadlineTimer) clearTimeout(this.heartbeatDeadlineTimer);
+    this.heartbeatTimer = null;
+    this.heartbeatDeadlineTimer = null;
+  }
+
+  private scheduleHeartbeat() {
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        this.scheduleHeartbeat();
+        return;
+      }
+      this.sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private sendHeartbeat() {
+    if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    try {
+      this.socket.send("ping");
+    } catch {
+      this.socket.close(4000, "Realtime heartbeat send failed");
+      return;
+    }
+    if (this.heartbeatDeadlineTimer) clearTimeout(this.heartbeatDeadlineTimer);
+    this.heartbeatDeadlineTimer = setTimeout(() => {
+      this.heartbeatDeadlineTimer = null;
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.close(4000, "Realtime heartbeat timeout");
+      }
+    }, HEARTBEAT_TIMEOUT_MS);
+  }
+
   private readonly handleDocumentUpdate = (update: Uint8Array, origin: unknown) => {
     if (origin === PERSISTED_ORIGIN) return;
     this.scheduleDocumentPersistence();
@@ -694,11 +821,12 @@ export class RealtimeProjectSyncEngine {
       this.pendingOfflineUpdate = Y.mergeUpdates([this.pendingOfflineUpdate, update]);
       // Once separately identified operations are merged, the result needs a
       // new id because a server may have persisted only part of the merge.
-      this.pendingOfflineOpId = null;
+      this.pendingOfflineOpId = createId();
     } else {
       this.pendingOfflineUpdate = update;
-      this.pendingOfflineOpId = retryOpId;
+      this.pendingOfflineOpId = retryOpId || createId();
     }
+    this.scheduleOutboxPersistence();
     if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) {
       this.options.onStatusChange?.("offline", {
         pendingOps: this.pendingOperationCount(),
@@ -707,13 +835,23 @@ export class RealtimeProjectSyncEngine {
     }
   }
 
-  private flushPendingUpdate() {
+  private async flushPendingUpdate() {
     if (!this.pendingOfflineUpdate) return Promise.resolve(this.serverSeq);
+    // Keep one authoritative operation in flight. This makes the durable
+    // client outbox a simple ordered boundary and prevents ACK reordering from
+    // clearing newer edits.
+    if (this.pendingAcks.size > 0) return this.lastLocalSend || this.serverSeq;
     if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.resolve(this.serverSeq);
+      return this.serverSeq;
     }
     const update = this.pendingOfflineUpdate;
-    const opId = this.pendingOfflineOpId;
+    const opId = this.pendingOfflineOpId || createId();
+    // A server ACK must never be the only surviving copy of an edit. Persist
+    // the operation locally before putting it on the wire.
+    await this.flushOutboxPersistence();
+    if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return this.serverSeq;
+    }
     this.pendingOfflineUpdate = null;
     this.pendingOfflineOpId = null;
     return this.sendUpdate(update, opId);
@@ -742,6 +880,7 @@ export class RealtimeProjectSyncEngine {
       }, 15_000);
       this.pendingAcks.set(opId, { update, timeout, resolve, reject });
     });
+    this.scheduleOutboxPersistence();
     this.inFlightSends.add(promise);
     void promise.then(
       () => this.inFlightSends.delete(promise),
@@ -795,10 +934,69 @@ export class RealtimeProjectSyncEngine {
       clearTimeout(entry.timeout);
       entry.reject(error);
     });
+    this.scheduleOutboxPersistence();
   }
 
   private pendingOperationCount() {
     return this.pendingAcks.size + (this.pendingOfflineUpdate ? 1 : 0);
+  }
+
+  private currentOutboxEntries(): RealtimeStoredOutboxEntry[] {
+    const entries = Array.from(this.pendingAcks.entries()).map(([opId, pending]) => ({
+      opId,
+      update: pending.update,
+    }));
+    if (this.pendingOfflineUpdate) {
+      if (!this.pendingOfflineOpId) this.pendingOfflineOpId = createId();
+      entries.push({
+        opId: this.pendingOfflineOpId,
+        update: this.pendingOfflineUpdate,
+      });
+    }
+    return entries;
+  }
+
+  private scheduleOutboxPersistence() {
+    if (!this.documentStore.writeOutbox) return;
+    this.outboxPersistDirty = true;
+    if (this.outboxPersistTimer) return;
+    this.outboxPersistTimer = setTimeout(() => {
+      this.outboxPersistTimer = null;
+      void this.flushOutboxPersistence().catch((error) => {
+        this.options.onError?.(error);
+      });
+    }, 32);
+  }
+
+  private async flushOutboxPersistence(): Promise<void> {
+    if (!this.documentStore.writeOutbox) return;
+    if (this.outboxPersistTimer) {
+      clearTimeout(this.outboxPersistTimer);
+      this.outboxPersistTimer = null;
+    }
+    if (this.outboxPersistInFlight) await this.outboxPersistInFlight;
+    while (this.outboxPersistDirty) {
+      this.outboxPersistDirty = false;
+      const entries = this.currentOutboxEntries();
+      const task = this.documentStore.writeOutbox(this.storageKey, entries);
+      this.outboxPersistInFlight = task;
+      try {
+        await task;
+      } catch (cause) {
+        this.outboxPersistDirty = true;
+        const error = cause instanceof Error
+          ? new Error("无法持久化实时项目待发更改，已暂停网络发送。", { cause })
+          : new Error("无法持久化实时项目待发更改，已暂停网络发送。");
+        this.options.onStatusChange?.("error", {
+          error: error.message,
+          pendingOps: this.pendingOperationCount(),
+          retryCount: this.reconnectAttempt,
+        });
+        throw error;
+      } finally {
+        if (this.outboxPersistInFlight === task) this.outboxPersistInFlight = null;
+      }
+    }
   }
 
   private hasSemanticDifferenceFrom(serverDoc: Y.Doc) {

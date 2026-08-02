@@ -49,6 +49,32 @@ test("staging a semantically unchanged project emits no Yjs update", () => {
   assert.equal(Y.encodeStateAsUpdate(doc, Y.encodeStateVector(doc)).byteLength, 2);
 });
 
+test("Yjs snapshots omit undefined object fields and preserve explicit null", () => {
+  const doc = new Y.Doc();
+  const project = baseProject();
+  project.flow.links = [{
+    id: "link-1",
+    source: "source",
+    target: "target",
+    data: undefined,
+    sourceHandle: null,
+  }];
+
+  applyProjectSnapshot(doc, project, "seed");
+  const initialLink = readProjectSnapshot<any>(doc).flow.links[0];
+  assert.equal(Object.hasOwn(initialLink, "data"), false);
+  assert.equal(initialLink.sourceHandle, null);
+
+  const contaminated = structuredClone(project);
+  contaminated.flow.links[0].data = null;
+  applyProjectSnapshot(doc, contaminated, "legacy-null");
+  assert.equal(readProjectSnapshot<any>(doc).flow.links[0].data, null);
+
+  contaminated.flow.links[0].data = undefined;
+  applyProjectSnapshot(doc, contaminated, "normalized");
+  assert.equal(Object.hasOwn(readProjectSnapshot<any>(doc).flow.links[0], "data"), false);
+});
+
 test("concurrent first nodes in an initially empty graph both survive", () => {
   const { left, right, baseVector } = createPeers();
   const leftProject = baseProject();

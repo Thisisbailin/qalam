@@ -195,13 +195,23 @@ export class AccountApiSession {
 
   async openWebSocket(path: string, applicationProtocol: string) {
     this.signal.throwIfAborted();
-    const token = await this.getToken();
-    if (!token) throw new SyncTransportError("无法取得当前账户的实时认证令牌。", { status: 401 });
+    const ticketResponse = await this.request("/api/realtime-ticket", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    await requireOkResponse(ticketResponse, "无法取得实时连接票据");
+    const payload = await parseJsonResponse<{ ticket?: unknown }>(
+      ticketResponse,
+      "无法解析实时连接票据",
+    );
+    const ticket = typeof payload.ticket === "string" ? payload.ticket : "";
+    if (!ticket) throw new SyncTransportError("实时连接票据为空。", { status: 502 });
     const resolved = this.resolveUrl(path);
     const base = typeof window !== "undefined" ? window.location.href : "http://localhost/";
     const url = new URL(resolved, base);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    return new WebSocket(url, [applicationProtocol, encodeWebSocketCredential(token)]);
+    return new WebSocket(url, [applicationProtocol, encodeWebSocketCredential(ticket)]);
   }
 }
 

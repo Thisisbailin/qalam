@@ -216,6 +216,7 @@ For local D1 development, use the same command with `--local`. The migration fil
 
 - `functions/api/agent.ts`: edge agent runtime over `@openai/agents`
 - `functions/api/project-realtime.ts`: authenticated multi-device realtime project channel
+- `functions/api/realtime-ticket.ts`: short-lived one-time WebSocket ticket issuer
 - `realtime-worker/`: project-scoped Yjs Durable Object coordinator
 - `functions/api/project.ts`: authenticated read-only projection of the realtime document
 - `functions/api/projects.ts`: authenticated cloud-project catalog

@@ -1,13 +1,11 @@
-import { getUserId } from "./_auth";
 import { requireRequestProjectId } from "./_projectScope";
 import { readWebSocketCredential } from "../../utils/websocketAuth";
 import { admitProjectCatalogEntry } from "./_projectCatalog";
 import type { D1DatabaseLike } from "./_types";
+import { consumeRealtimeTicket } from "./_realtimeTicket";
 
 type Env = {
   DB: D1DatabaseLike;
-  CLERK_SECRET_KEY: string;
-  CLERK_JWT_KEY?: string;
   PROJECT_REALTIME: {
     idFromName(name: string): unknown;
     get(id: unknown): { fetch(request: Request): Promise<Response> };
@@ -21,14 +19,9 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
     if ((context.request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
-    const token = readWebSocketCredential(context.request.headers.get("sec-websocket-protocol"));
-    const authenticated = new Request(context.request, {
-      headers: {
-        ...Object.fromEntries(context.request.headers.entries()),
-        authorization: token ? `Bearer ${token}` : "",
-      },
-    });
-    const userId = await getUserId(authenticated, context.env);
+    const ticket = readWebSocketCredential(context.request.headers.get("sec-websocket-protocol"));
+    const userId = await consumeRealtimeTicket(context.env.DB, ticket, context.request.url);
+    if (!userId) return new Response("Realtime ticket is invalid or expired", { status: 401 });
     const projectId = requireRequestProjectId(context.request);
     const admission = await admitProjectCatalogEntry(context.env.DB, userId, projectId);
     if (admission === "deleted") {

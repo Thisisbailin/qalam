@@ -2,6 +2,12 @@ const DB_NAME = "stylo-realtime-projects";
 const STORE_NAME = "documents";
 const epochKey = (key: string) => `${key}:epoch`;
 const confirmedKey = (key: string) => `${key}:confirmed`;
+const outboxKey = (key: string) => `${key}:outbox`;
+
+export type RealtimeStoredOutboxEntry = {
+  opId: string;
+  update: Uint8Array;
+};
 
 const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
   const request = indexedDB.open(DB_NAME, 1);
@@ -137,6 +143,71 @@ export const readRealtimeConfirmedDocument = async (key: string) => {
   }
 };
 
+export const readRealtimeDocumentOutbox = async (
+  key: string,
+): Promise<RealtimeStoredOutboxEntry[]> => {
+  if (typeof indexedDB === "undefined") return [];
+  const database = await openDatabase();
+  try {
+    return await new Promise<RealtimeStoredOutboxEntry[]>((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, "readonly");
+      const request = transaction.objectStore(STORE_NAME).get(outboxKey(key));
+      request.onsuccess = () => {
+        const value = request.result;
+        if (!Array.isArray(value)) {
+          resolve([]);
+          return;
+        }
+        resolve(value.flatMap((entry): RealtimeStoredOutboxEntry[] => {
+          if (!entry || typeof entry !== "object") return [];
+          const candidate = entry as { opId?: unknown; update?: unknown };
+          const update = candidate.update instanceof ArrayBuffer
+            ? new Uint8Array(candidate.update)
+            : candidate.update instanceof Uint8Array
+              ? new Uint8Array(candidate.update)
+              : null;
+          return typeof candidate.opId === "string" && candidate.opId.length > 0 && update?.byteLength
+            ? [{ opId: candidate.opId, update }]
+            : [];
+        }));
+      };
+      request.onerror = () => reject(request.error || new Error("Unable to read realtime project outbox"));
+    });
+  } finally {
+    database.close();
+  }
+};
+
+export const writeRealtimeDocumentOutbox = async (
+  key: string,
+  entries: RealtimeStoredOutboxEntry[],
+) => {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      if (entries.length === 0) {
+        store.delete(outboxKey(key));
+      } else {
+        store.put(entries.map((entry) => ({
+          opId: entry.opId,
+          update: entry.update.buffer.slice(
+            entry.update.byteOffset,
+            entry.update.byteOffset + entry.update.byteLength,
+          ),
+        })), outboxKey(key));
+      }
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Unable to persist realtime project outbox"));
+      transaction.onabort = () => reject(transaction.error || new Error("Realtime project outbox persistence aborted"));
+    });
+  } finally {
+    database.close();
+  }
+};
+
 export const deleteRealtimeDocument = async (key: string) => {
   if (typeof indexedDB === "undefined") return;
   const database = await openDatabase();
@@ -146,6 +217,7 @@ export const deleteRealtimeDocument = async (key: string) => {
       transaction.objectStore(STORE_NAME).delete(key);
       transaction.objectStore(STORE_NAME).delete(epochKey(key));
       transaction.objectStore(STORE_NAME).delete(confirmedKey(key));
+      transaction.objectStore(STORE_NAME).delete(outboxKey(key));
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error || new Error("Unable to clear realtime project"));
     });

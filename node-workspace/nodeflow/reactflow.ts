@@ -43,30 +43,36 @@ export const fromNodeFlowCanvasNode = (node: NodeFlowCanvasNode): NodeFlowNode =
   selected: node.selected,
 });
 
-export const toNodeFlowCanvasLink = (link: NodeFlowLink): NodeFlowCanvasLink => ({
-  id: link.id,
-  source: link.source,
-  target: link.target,
-  sourceHandle: link.sourceHandle ?? undefined,
-  targetHandle: link.targetHandle ?? undefined,
-  data: link.data,
-  selected: link.selected,
-  type: link.type,
-  markerEnd: link.markerEnd,
-  zIndex: 0,
-});
+export const toNodeFlowCanvasLink = (link: NodeFlowLink): NodeFlowCanvasLink => {
+  const { data } = link;
+  return {
+    id: link.id,
+    source: link.source,
+    target: link.target,
+    sourceHandle: link.sourceHandle ?? undefined,
+    targetHandle: link.targetHandle ?? undefined,
+    ...(data == null ? {} : { data }),
+    selected: link.selected,
+    type: link.type,
+    markerEnd: link.markerEnd,
+    zIndex: 0,
+  };
+};
 
-export const fromNodeFlowCanvasLink = (link: NodeFlowCanvasLink): NodeFlowLink => ({
-  id: link.id,
-  source: link.source,
-  target: link.target,
-  sourceHandle: link.sourceHandle ?? null,
-  targetHandle: link.targetHandle ?? null,
-  data: link.data,
-  selected: link.selected,
-  type: link.type,
-  markerEnd: typeof link.markerEnd === "string" ? link.markerEnd : undefined,
-});
+export const fromNodeFlowCanvasLink = (link: NodeFlowCanvasLink): NodeFlowLink => {
+  const { data } = link;
+  return {
+    id: link.id,
+    source: link.source,
+    target: link.target,
+    sourceHandle: link.sourceHandle ?? null,
+    targetHandle: link.targetHandle ?? null,
+    ...(data == null ? {} : { data }),
+    selected: link.selected,
+    type: link.type,
+    markerEnd: typeof link.markerEnd === "string" ? link.markerEnd : undefined,
+  };
+};
 
 export const applyNodeFlowNodeChanges = (
   changes: NodeChange<NodeFlowCanvasNode>[],

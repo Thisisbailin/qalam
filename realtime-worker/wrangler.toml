@@ -1,6 +1,6 @@
 name = "stylo-project-realtime"
 main = "src/index.ts"
-compatibility_date = "2026-07-17"
+compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
 [observability]

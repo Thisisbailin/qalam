@@ -96,6 +96,8 @@ const joinBytes = (chunks: Uint8Array[]) => {
   return result;
 };
 
+const isOpenSocket = (socket: WebSocket) => socket.readyState === WebSocket.OPEN;
+
 const websocketPair = () => {
   const Pair = (globalThis as unknown as { WebSocketPair: new () => {
     0: WebSocket;
@@ -114,11 +116,15 @@ export class AccountCatalogRoom {
 
   constructor(
     private readonly state: DurableObjectState,
-  ) {}
+  ) {
+    this.state.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair("ping", "pong"),
+    );
+  }
 
   private ensureIdentity(requestedUserId: string) {
     if (this.identityPromise) return this.identityPromise;
-    this.identityPromise = this.state.blockConcurrencyWhile(async () => {
+    const task = this.state.blockConcurrencyWhile(async () => {
       const stored = await this.state.storage.get<string>("userId");
       if (stored && stored !== requestedUserId) {
         throw new Error("Account catalog room identity mismatch");
@@ -126,6 +132,14 @@ export class AccountCatalogRoom {
       if (!stored) await this.state.storage.put("userId", requestedUserId);
       return stored || requestedUserId;
     });
+    let guarded!: Promise<string>;
+    guarded = task.catch((error) => {
+      // A transient storage failure must not poison this Durable Object for the
+      // rest of its in-memory lifetime.
+      if (this.identityPromise === guarded) this.identityPromise = null;
+      throw error;
+    });
+    this.identityPromise = guarded;
     return this.identityPromise;
   }
 
@@ -150,13 +164,13 @@ export class AccountCatalogRoom {
         type: "catalog-changed",
         changedAt: Date.now(),
       };
-      for (const peer of this.state.getWebSockets()) this.send(peer, message);
+      for (const peer of this.state.getWebSockets().filter(isOpenSocket)) this.send(peer, message);
       return new Response(null, { status: 204 });
     }
     if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
-    if (this.state.getWebSockets().length >= MAX_ACCOUNT_CATALOG_SOCKETS) {
+    if (this.state.getWebSockets().filter(isOpenSocket).length >= MAX_ACCOUNT_CATALOG_SOCKETS) {
       return new Response("Too many account catalog connections", {
         status: 429,
         headers: { "retry-after": "30" },
@@ -227,6 +241,9 @@ export class ProjectRealtimeRoom {
     private readonly state: DurableObjectState,
     private readonly env: RoomEnv,
   ) {
+    this.state.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair("ping", "pong"),
+    );
     this.schemaReady = this.state.blockConcurrencyWhile(async () => {
       this.migrateSchema();
     });
@@ -440,7 +457,7 @@ export class ProjectRealtimeRoom {
     if (identity) this.assertRoomIdentity(identity);
     if (this.loadPromise) return this.loadPromise;
 
-    this.loadPromise = this.state.blockConcurrencyWhile(async () => {
+    const task = this.state.blockConcurrencyWhile(async () => {
       await this.schemaReady;
       const stored = this.readRoomMeta();
       const resolvedIdentity = identity || (stored
@@ -451,6 +468,11 @@ export class ProjectRealtimeRoom {
       this.identity = resolvedIdentity;
 
       if (stored) {
+        const storedServerSeq = Number(stored.server_seq) || 0;
+        const storedCheckpointSeq = Number(stored.checkpoint_seq) || 0;
+        if (storedCheckpointSeq > storedServerSeq) {
+          throw new Error("Realtime room checkpoint is ahead of server sequence");
+        }
         const checkpoint = this.readCheckpoint(stored);
         if (checkpoint.byteLength) Y.applyUpdate(this.doc, checkpoint, "room-checkpoint");
         const updates = this.state.storage.sql.exec(
@@ -458,12 +480,18 @@ export class ProjectRealtimeRoom {
            FROM room_updates
            WHERE server_seq > ?1
            ORDER BY server_seq ASC`,
-          Number(stored.checkpoint_seq) || 0,
+          storedCheckpointSeq,
         ).toArray() as RoomUpdateRow[];
         for (const row of updates) {
           Y.applyUpdate(this.doc, this.readRoomUpdate(row), `actor:${row.actor_id}`);
         }
-        this.serverSeq = Number(stored.server_seq) || 0;
+        const replayedSeq = updates.length
+          ? Number(updates[updates.length - 1].server_seq) || 0
+          : storedCheckpointSeq;
+        if (replayedSeq !== storedServerSeq) {
+          throw new Error("Realtime room update log does not reach server sequence");
+        }
+        this.serverSeq = storedServerSeq;
         return;
       }
 
@@ -493,6 +521,13 @@ export class ProjectRealtimeRoom {
       );
       this.writeCheckpointChunks(checkpoint, this.serverSeq);
     });
+    let guarded!: Promise<void>;
+    guarded = task.catch((error) => {
+      if (this.loadPromise === guarded) this.loadPromise = null;
+      this.logError("realtime_room_load_failed", error);
+      throw error;
+    });
+    this.loadPromise = guarded;
     return this.loadPromise;
   }
 
@@ -637,7 +672,7 @@ export class ProjectRealtimeRoom {
   }
 
   private compactIdleHistory() {
-    if (this.state.getWebSockets().length !== 0) return false;
+    if (this.state.getWebSockets().some(isOpenSocket)) return false;
     const meta = this.readRoomMeta();
     if (!meta || Number(meta.projected_seq) < this.serverSeq) return false;
     const checkpoint = Y.encodeStateAsUpdate(this.doc);
@@ -731,7 +766,7 @@ export class ProjectRealtimeRoom {
       epoch: Number(this.readRoomMeta()?.epoch) || 0,
       epochReason: "reset",
     });
-    for (const peer of this.state.getWebSockets()) {
+    for (const peer of this.state.getWebSockets().filter(isOpenSocket)) {
       this.sendSocketMessage(peer, message);
       if (mode === "delete") {
         try {
@@ -764,7 +799,7 @@ export class ProjectRealtimeRoom {
       return new Response(null, { status: 204 });
     }
     if (request.method === "POST" && pathname === "/revoke-viewers") {
-      for (const peer of this.state.getWebSockets()) {
+      for (const peer of this.state.getWebSockets().filter(isOpenSocket)) {
         if (this.readSocketIdentity(peer)?.access === "view") {
           try {
             peer.close(4003, "Project visibility changed");
@@ -781,13 +816,19 @@ export class ProjectRealtimeRoom {
     }
     await this.ensureLoaded({ userId, projectId });
 
-    const peers = this.state.getWebSockets();
+    const peers = this.state.getWebSockets().filter(isOpenSocket);
     const identitySocketCount = peers.reduce((count, peer) => {
       const identity = this.readSocketIdentity(peer);
       return count + (identity?.viewerUserId === viewerUserId && identity.access === access ? 1 : 0);
     }, 0);
     const identityLimit = access === "edit" ? MAX_OWNER_EDIT_SOCKETS : MAX_VIEWER_SOCKETS;
     if (peers.length >= MAX_PROJECT_ROOM_SOCKETS || identitySocketCount >= identityLimit) {
+      console.warn(JSON.stringify({
+        event: "realtime_connection_limit",
+        access,
+        roomConnections: peers.length,
+        identityConnections: identitySocketCount,
+      }));
       return new Response("Too many realtime project connections", {
         status: 429,
         headers: { "retry-after": "30" },
@@ -798,7 +839,7 @@ export class ProjectRealtimeRoom {
     const client = pair[0];
     const server = pair[1] as HibernatingWebSocket;
     this.state.acceptWebSocket(server);
-      server.serializeAttachment({ userId, projectId, access, viewerUserId });
+    server.serializeAttachment({ userId, projectId, access, viewerUserId });
     const meta = this.readRoomMeta();
     this.sendSocketMessage(server, JSON.stringify({
       type: "sync",
@@ -995,7 +1036,7 @@ export class ProjectRealtimeRoom {
         epoch: roomEpoch,
         update: message.update,
       });
-      for (const peer of this.state.getWebSockets()) {
+      for (const peer of this.state.getWebSockets().filter(isOpenSocket)) {
         if (peer !== socket) this.sendSocketMessage(peer, broadcast);
       }
     } catch (error) {
@@ -1014,6 +1055,15 @@ export class ProjectRealtimeRoom {
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string) {
+    if (code !== 1000) {
+      console.warn(JSON.stringify({
+        event: "realtime_socket_closed",
+        code,
+        reason: reason.slice(0, 160),
+        access: this.readSocketIdentity(socket)?.access || "unknown",
+        serverSeq: this.serverSeq,
+      }));
+    }
     try {
       socket.close(code, reason);
     } catch (error) {

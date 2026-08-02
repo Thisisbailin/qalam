@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ProjectData, SyncStatus } from "../types";
 import type { AccountApiSession } from "../sync/authenticatedFetch";
 import { createProjectSyncCodec } from "../sync/projectSyncAdapter";
@@ -101,7 +101,11 @@ export const useCloudSync = ({
     };
   }, [accountScope, accountSession, isLoaded, isSignedIn, projectId, saveDebounceMs, sessionGeneration]);
 
-  useEffect(() => {
+  // Enter every committed local edit into Yjs before the browser can deliver a
+  // WebSocket message that might otherwise replace the just-rendered state.
+  // A passive effect left a real data-loss window between React commit and the
+  // next task on the event loop.
+  useLayoutEffect(() => {
     if (!suspendedRef.current) engineRef.current?.stage(projectData);
   }, [projectData]);
 

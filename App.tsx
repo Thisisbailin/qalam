@@ -435,7 +435,7 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
       project: {
         status,
         lastSyncAt: detail?.lastSyncAt ?? prev.project.lastSyncAt,
-        lastError: status === 'error' ? detail?.error ?? prev.project.lastError : status === 'synced' ? undefined : prev.project.lastError,
+        lastError: status === 'synced' ? undefined : detail?.error ?? prev.project.lastError,
         pendingOps: detail?.pendingOps ?? (status === 'syncing' ? prev.project.pendingOps : 0),
         retryCount: detail?.retryCount ?? (status === 'offline' ? prev.project.retryCount : 0),
         lastAttemptAt: detail?.lastAttemptAt ?? prev.project.lastAttemptAt

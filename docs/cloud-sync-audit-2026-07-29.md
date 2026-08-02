@@ -148,6 +148,22 @@ authenticated user. Catalog writes, project deletion, and reset publish a tiny
 invalidation event; clients then read the canonical D1 catalog. The channel is
 server-push only and contains no project payload.
 
+### Browser WebSocket authentication exposed a reusable session credential
+
+Browser WebSockets cannot attach an `Authorization` header, so the client put
+the short-lived Clerk session JWT into `Sec-WebSocket-Protocol`. Pages removed
+it before forwarding to a Durable Object, but an infrastructure access log or
+handshake diagnostic could still capture a credential reusable across the
+account until its normal expiry.
+
+Fix: an authenticated HTTP request now mints a cryptographically random,
+30-second connection ticket. D1 stores only its SHA-256 digest. The ticket is
+bound to one canonical realtime route and its project/public-view parameters,
+then consumed with one atomic `UPDATE ... WHERE consumed_at IS NULL RETURNING`
+during the WebSocket handshake. It cannot be replayed, moved to another
+project, or used as an account API bearer credential. Issuance is rate-limited
+per account and unknown/duplicate query parameters fail closed.
+
 ## Remaining performance and integrity risks
 
 1. The server still accepts opaque Yjs updates from an authenticated owner and
@@ -174,11 +190,10 @@ server-push only and contains no project payload.
    rate, but there is no authoritative per-account total-byte quota yet. Add a
    post-upload ledger/webhook and quota reservation protocol before offering
    high storage allowances or untrusted public signup at scale.
-7. WebSocket authentication currently transports a short-lived Clerk token in
-   the TLS-protected `Sec-WebSocket-Protocol` header because browser WebSockets
-   cannot set `Authorization`. Pages strips it before forwarding to the room
-   and application logs do not record it. A one-time, narrowly scoped socket
-   ticket would further reduce exposure to infrastructure header logging.
+7. Connection tickets remove reusable Clerk JWTs from WebSocket handshakes.
+   Their D1 issuance/consume path adds a small fixed connection-establishment
+   cost; monitor ticket rejection and D1 write latency before substantially
+   increasing per-account connection limits.
 
 ## Incremental action path
 
@@ -194,7 +209,7 @@ made explicit.
 
 ## Deployment order
 
-1. Apply D1 migration `0009_account_project_catalog.sql`.
+1. Apply D1 migrations through `0010_realtime_connection_tickets.sql`.
 2. Deploy the realtime Worker.
 3. Deploy the Pages application/functions.
 
@@ -215,17 +230,67 @@ until the catalog table exists.
   findings; only informational no-policy tables (server-only RLS-denied data)
   and currently-unused indexes.
 
+## Realtime ticket rollout — 2026-08-01
+
+- Applied remote D1 migration `0010_realtime_connection_tickets.sql`; no
+  migrations remain pending.
+- Deployed the scoped one-time ticket gateway and browser client as production
+  Pages deployment `1f2391c0-10cc-4cf2-98fa-7704800ebc39` at
+  `https://1f2391c0.node-qalam.pages.dev`.
+- The production alias returned HTTP 200 after deployment.
+- An unauthenticated ticket request returned HTTP 401, confirming that ticket
+  issuance is behind the normal account authentication boundary.
+- A read-only D1 verification found no unconsumed live tickets after the
+  deployment checks.
+
 ## Validation
 
-- Full test suite: 219 passed.
+- Full test suite: 230 passed.
 - Vite production build: passed.
 - Realtime Worker strict targeted typecheck: passed.
 - Sync/Pages Functions strict targeted typecheck: passed.
 - Wrangler Worker dry-run: passed.
 - All nine D1 migrations applied successfully to an isolated local database.
 - Production dependency audit (`npm audit --omit=dev`): zero vulnerabilities.
-- Production D1 migration state: current through `0009`.
+- Production D1 migration state at the time of the July deployment: current
+  through `0009`; apply `0010` before deploying the ticket-based gateways.
 
 Repository-wide strict typecheck still contains unrelated pre-existing errors
 in GitHub/media response parsing and Flow edge selection code. The changed sync
 and Worker modules pass targeted strict checks.
+
+## Consistency incident follow-up — 2026-08-01
+
+Production testing exposed three additional failure modes that can account for
+visible edits disappearing or a project remaining in `Connection interrupted`:
+
+1. React committed a local edit before the passive sync effect staged it. A
+   remote WebSocket event arriving in that interval projected the remote scoped
+   project over the visible local project. The hook now stages at the layout
+   boundary, and the engine force-materializes any staged local snapshot before
+   applying a remote update.
+2. Unacknowledged edits lived in the Yjs checkpoint but did not have an explicit
+   durable client outbox. A renderer crash inside the checkpoint/localStorage
+   debounce window could therefore lose the only actionable operation. Every
+   operation is now assigned an id and written to IndexedDB before it is sent.
+   Startup replays that outbox ahead of the separately debounced UI snapshot.
+3. A rejected Durable Object initialization promise was cached permanently for
+   that in-memory object lifetime. A transient D1/storage error could therefore
+   make one project fail every reconnect. Failed initialization is now logged,
+   uncached, and retryable. Stored checkpoint/update sequence invariants are
+   checked while rebuilding the room.
+
+The client now permits only one operation awaiting ACK at a time; later local
+updates remain coalesced in the durable outbox and are released after the ACK.
+This removes ACK reordering as a state-deletion hazard. Superseded WebSockets
+cannot deliver messages or close the replacement connection. Application-level
+`ping`/`pong` uses the Durable Object hibernation auto-response path, so it can
+detect half-open transports without waking the room or polling/uploading idle
+project content. Connection limits and broadcasts count only `OPEN` sockets,
+not stale sockets still completing a close handshake.
+
+New failure-injection coverage verifies pre-remote local staging, crash/outbox
+recovery, persist-before-send ordering, single-flight ACK behavior, and stale
+socket isolation. Ticket coverage additionally verifies canonical scoping,
+route-confusion rejection, and exactly-once consumption. The full suite now
+contains 230 tests.

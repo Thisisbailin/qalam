@@ -51,20 +51,24 @@ const codec = (onSnapshot?: () => void): SyncCodec<ProjectData> => ({
 class FakeSocket {
   readyState: number = WebSocket.OPEN;
   onmessage: ((event: MessageEvent) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   readonly sent: Array<Record<string, unknown>> = [];
   throwOnSend = false;
+  beforeSend: ((message: Record<string, unknown>) => void) | null = null;
 
   send(raw: string) {
     if (this.throwOnSend) throw new Error("socket send failed");
-    this.sent.push(JSON.parse(raw) as Record<string, unknown>);
+    if (raw === "ping") return;
+    const message = JSON.parse(raw) as Record<string, unknown>;
+    this.beforeSend?.(message);
+    this.sent.push(message);
   }
 
-  close() {
+  close(code = 1000, reason = "") {
     if (this.readyState === WebSocket.CLOSED) return;
     this.readyState = WebSocket.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code, reason });
   }
 
   emit(message: Record<string, unknown>) {
@@ -504,5 +508,182 @@ test("a disconnected unacknowledged operation reuses its id after reconnect", as
 
   const retriedUpdate = secondSocket.sent.find((message) => message.type === "update");
   assert.equal(retriedUpdate?.opId, firstUpdate.opId);
+  engine.dispose();
+});
+
+test("a remote event flushes the just-committed local edit before projecting to the app", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  const baseDoc = new Y.Doc();
+  applyProjectSnapshot(baseDoc, initial as unknown as Record<string, unknown>, "base");
+  const applied: ProjectData[] = [];
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 10_000,
+    persistenceDebounceMs: 0,
+    onApplyRemote: (value) => applied.push(value),
+    documentStore: {
+      read: async () => Y.encodeStateAsUpdate(baseDoc),
+      readConfirmed: async () => Y.encodeStateAsUpdate(baseDoc),
+      write: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+  await engine.start(initial);
+  socket.emit(serverSyncFromDocument(baseDoc));
+
+  const local = project(2, 84);
+  engine.stage(local);
+  const remoteDoc = new Y.Doc();
+  Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(baseDoc));
+  const remote = project(2, 10);
+  remote.flow!.flowNodes![0].data.markdown = "remote text";
+  applyProjectSnapshot(remoteDoc, remote as unknown as Record<string, unknown>, "remote");
+  const remoteDelta = Y.encodeStateAsUpdate(remoteDoc, Y.encodeStateVector(baseDoc));
+
+  socket.emit({
+    type: "update",
+    serverSeq: 1,
+    update: encodeUpdateBase64(remoteDelta),
+  });
+  await wait();
+
+  const visible = applied.at(-1)!;
+  assert.equal(visible.flow?.flowNodes?.[0]?.position.x, 84);
+  assert.equal(visible.flow?.flowNodes?.[0]?.data.markdown, "remote text");
+  engine.dispose();
+  baseDoc.destroy();
+  remoteDoc.destroy();
+});
+
+test("a recovered durable outbox is persisted before it is resent", async () => {
+  const socket = new FakeSocket();
+  const base = project(1, 10);
+  const local = project(2, 84);
+  const baseDoc = new Y.Doc();
+  const localDoc = new Y.Doc();
+  applyProjectSnapshot(baseDoc, base as unknown as Record<string, unknown>, "base");
+  Y.applyUpdate(localDoc, Y.encodeStateAsUpdate(baseDoc));
+  applyProjectSnapshot(localDoc, local as unknown as Record<string, unknown>, "local");
+  const pendingUpdate = Y.encodeStateAsUpdate(localDoc, Y.encodeStateVector(baseDoc));
+  let outboxPersisted = false;
+  socket.beforeSend = (message) => {
+    if (message.type === "update") assert.equal(outboxPersisted, true);
+  };
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    documentStore: {
+      read: async () => Y.encodeStateAsUpdate(baseDoc),
+      readConfirmed: async () => Y.encodeStateAsUpdate(baseDoc),
+      readOutbox: async () => {
+        outboxPersisted = true;
+        return [{ opId: "operation-recovered-1", update: pendingUpdate }];
+      },
+      writeOutbox: async (_key, entries) => {
+        if (entries.some((entry) => entry.opId === "operation-recovered-1")) {
+          outboxPersisted = true;
+        }
+      },
+      write: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+
+  // Simulate a crash before the separately-debounced localStorage snapshot
+  // caught up. The durable outbox must still restore the newer edit.
+  await engine.start(base);
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>((engine as any).doc)
+      .flow?.flowNodes?.[0]?.position.x,
+    84,
+  );
+  socket.emit(serverSyncFromDocument(baseDoc));
+  await wait(10);
+
+  const sent = socket.sent.find((message) => message.type === "update");
+  assert.equal(sent?.opId, "operation-recovered-1");
+  engine.dispose();
+  baseDoc.destroy();
+  localDoc.destroy();
+});
+
+test("a superseded socket closing cannot demote the active replacement connection", async () => {
+  const first = new FakeSocket();
+  const second = new FakeSocket();
+  const sockets = [first, second];
+  const initial = project(1, 10);
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => sockets.shift() as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    documentStore: {
+      read: async () => null,
+      write: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+  await engine.start(initial);
+  first.emit(serverSync(initial));
+  await (engine as any).connect();
+  second.emit(serverSync(initial));
+
+  first.emit(serverSync(project(99, 999), 99));
+  first.close(1006, "old connection ended");
+
+  assert.equal((engine as any).socket, second);
+  assert.equal((engine as any).ready, true);
+  assert.equal((engine as any).reconnectTimer, null);
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>((engine as any).doc)
+      .flow?.flowNodes?.[0]?.position.x,
+    10,
+  );
+  engine.dispose();
+});
+
+test("the client sends one operation at a time and releases the next batch after ACK", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  const engine = createEngine({ socket });
+  await engine.start(initial);
+  socket.emit(serverSync(initial));
+
+  engine.stage(project(2, 40));
+  await wait(10);
+  const first = socket.sent.find((message) => message.type === "update");
+  assert.ok(first?.opId);
+
+  engine.stage(project(3, 84));
+  await wait(10);
+  assert.equal(socket.sent.filter((message) => message.type === "update").length, 1);
+
+  socket.emit({ type: "ack", opId: first.opId, serverSeq: 1 });
+  await wait(10);
+  assert.equal(socket.sent.filter((message) => message.type === "update").length, 2);
   engine.dispose();
 });

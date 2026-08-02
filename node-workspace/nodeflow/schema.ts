@@ -37,7 +37,7 @@ const linkSchema = z.object({
   target: nonEmptyId,
   sourceHandle: z.string().max(128).nullable().optional(),
   targetHandle: z.string().max(128).nullable().optional(),
-  data: unknownRecord.optional(),
+  data: z.preprocess((value) => value === null ? undefined : value, unknownRecord.optional()),
   selected: z.boolean().optional(),
   type: z.string().max(128).optional(),
   markerEnd: z.string().max(256).optional(),
@@ -305,10 +305,14 @@ export const parseNodeFlowFile = (value: unknown): NodeFlowFile => {
   // The schema validates the shared record envelope; node-type defaults perform
   // the final type-specific hydration after this boundary.
   const nodeFlow = result.data as unknown as NodeFlowFile;
-  nodeFlow.links = nodeFlow.links.map((link, index) => ({
-    ...link,
-    id: link.id || `link-imported-${index + 1}`,
-  }));
+  nodeFlow.links = nodeFlow.links.map((link, index) => {
+    const { data, ...linkWithoutData } = link;
+    return {
+      ...linkWithoutData,
+      ...(data === undefined ? {} : { data }),
+      id: link.id || `link-imported-${index + 1}`,
+    };
+  });
   assertNodeTypeData(nodeFlow);
   assertGraphIntegrity(nodeFlow);
   return nodeFlow;

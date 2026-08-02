@@ -800,6 +800,38 @@ test("Edge Agent rebuilds tool state from the realtime D1 document", () => {
   assert.equal(state.updatedAt, 9);
 });
 
+test("Edge Agent repairs null link data from realtime D1 documents", () => {
+  const state = buildAgentProjectStateFromRealtimeDocument("project-1", {
+    fileName: "Project",
+    roles: [],
+    designAssets: [],
+    canvas: {},
+    activeFlowProjectId: "project-1",
+    flowProjects: [{
+      id: "project-1",
+      title: "Project",
+      flow: {
+        revision: 8,
+        graphLinks: [],
+        flowNodes: [
+          { id: "source", type: "text", position: { x: 0, y: 0 }, data: { text: "A" } },
+          { id: "target", type: "text", position: { x: 100, y: 0 }, data: { text: "B" } },
+        ],
+        links: Array.from({ length: 8 }, (_, index) => ({
+          id: `link-${index + 1}`,
+          source: "source",
+          target: "target",
+          data: null,
+        })),
+      },
+    }],
+  }, 10);
+
+  assert.equal(state.nodeFlow.links.length, 8);
+  assert.equal(state.nodeFlow.links.every((link) => link.data === undefined), true);
+  assert.equal(state.nodeFlow.links.every((link) => !Object.hasOwn(link, "data")), true);
+});
+
 test("runtime core does not mutate process-wide OpenAI Agents SDK defaults", () => {
   const source = readFileSync("agents/runtime/core.ts", "utf8");
   assert.doesNotMatch(source, /setDefaultOpenAIClient|setOpenAIAPI/);

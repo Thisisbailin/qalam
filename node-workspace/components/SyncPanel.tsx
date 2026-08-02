@@ -146,6 +146,11 @@ export const SyncPanel: React.FC<Props> = ({
                     ? ` · ${syncState?.project.pendingOps} queued`
                     : ""}
                 </div>
+                {syncState?.project.status !== "synced" && syncState?.project.lastError ? (
+                  <div className="max-w-xl pt-1 text-[10px] leading-4 text-rose-400">
+                    {syncState.project.lastError}
+                  </div>
+                ) : null}
               </section>
 
               <section className="divide-y divide-[var(--app-border)] border-y border-[var(--app-border)]">

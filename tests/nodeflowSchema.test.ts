@@ -37,6 +37,23 @@ test("schema migrates legacy edges and assigns stable imported link IDs", () => 
   assert.equal("id" in legacy.edges[0], false, "parsing must not mutate caller data");
 });
 
+test("schema repairs null link data from realtime snapshots without accepting invalid shapes", () => {
+  const parsed = parseNodeFlowFile({
+    ...makeProject(),
+    links: [{ source: "source", target: "target", data: null }],
+  });
+
+  assert.equal(parsed.links[0]?.data, undefined);
+  assert.equal(Object.hasOwn(parsed.links[0]!, "data"), false);
+  assert.throws(
+    () => parseNodeFlowFile({
+      ...makeProject(),
+      links: [{ source: "source", target: "target", data: [] }],
+    }),
+    /项目文件结构无效/,
+  );
+});
+
 test("schema rejects unsupported versions and invalid coordinates", () => {
   assert.throws(
     () => parseNodeFlowFile({ ...makeProject(), version: 99 }),

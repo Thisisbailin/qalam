@@ -18,9 +18,7 @@ import {
   Plus,
   SquaresFour,
   Trash,
-  TreeStructure,
   UserCircle,
-  UserList,
   UsersThree,
   X,
 } from "@phosphor-icons/react";
@@ -161,19 +159,15 @@ const ProjectOutline: React.FC<{ project: FlowProject; liveLabel?: string }> = (
       return {
         time: timeline.blocks,
         space: getWeightedAxisBlocks(timeline, "space"),
-        character: getWeightedAxisBlocks(timeline, "character"),
-        scene: getWeightedAxisBlocks(timeline, "scene"),
       };
     } catch {
-      return { time: [], space: [], character: [], scene: [] };
+      return { time: [], space: [] };
     }
   }, [project]);
   const nodes = project.flow.flowNodes?.filter((node) => !(node.data as any)?.foundationRole) || [];
   const axes = [
     { key: "time", title: "时间轴", meta: `${project.durationMin} min`, Icon: FilmStrip, items: outline.time.map((item) => item.title) },
     { key: "space", title: "空间轴", meta: `${outline.space.length} blocks`, Icon: MapTrifold, items: outline.space.map((item) => item.title) },
-    { key: "character", title: "角色层", meta: `${project.roles?.filter((item) => item.kind === "person").length || 0} identities`, Icon: UserList, items: (project.roles || []).filter((item) => item.kind === "person").map((item) => item.displayName) },
-    { key: "scene", title: "场景层", meta: `${project.roles?.filter((item) => item.kind === "scene").length || 0} identities`, Icon: TreeStructure, items: (project.roles || []).filter((item) => item.kind === "scene").map((item) => item.displayName) },
   ];
   return (
     <div className="min-w-0">

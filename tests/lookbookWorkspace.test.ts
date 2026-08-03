@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ProjectData } from "../types";
 import type { NodeFlowNode } from "../node-workspace/types";
@@ -331,6 +331,9 @@ test("Lookbook active UI uses the editable studio with bounded high-frequency in
   assert.match(coverSource, /inputs=\{\["image", "audio", "video", "text"\]\}/);
   assert.doesNotMatch(coverSource, /inputs=\{\["multi"/);
   assert.doesNotMatch(coverSource, /slice\(0,\s*2\)|coverImages/);
+  assert.match(coverSource, /lookbook-node-cover__wrapper-title/);
+  assert.match(coverSource, /lookbook-node-cover__stack/);
+  assert.match(coverSource, /lookbook-node-cover__footer/);
   assert.match(textNodeSource, /script-manuscript-node/);
   assert.match(styleSource, /\.lookbook-spread-item\.is-sticker[\s\S]*background:\s*transparent/);
   assert.doesNotMatch(styleSource, /lookbook-inspector/);
@@ -340,14 +343,46 @@ test("Lookbook active UI uses the editable studio with bounded high-frequency in
   assert.match(nodeflowStyleSource, /\.lookbook-node-cover \{[\s\S]*height:\s*320px/);
   assert.match(nodeflowStyleSource, /data-node-type="script-document"[\s\S]*width:\s*286px\s*!important/);
   assert.match(nodeflowStyleSource, /data-node-type="lookbook-cover"\]\[data-variant="media"\][\s\S]*content:\s*none/);
-  const pageBlockRule = nodeflowStyleSource.match(/\.lookbook-node-cover__page-block \{([\s\S]*?)\n\}/)?.[1] || "";
+  const pageBlockRule = nodeflowStyleSource.match(/\.lookbook-node-cover__page-block \{\n  z-index: 1;([\s\S]*?)\n\}/)?.[1] || "";
   assert.doesNotMatch(pageBlockRule, /repeating-linear-gradient/);
   assert.doesNotMatch(pageBlockRule, /linear-gradient/);
-  const frontBoardRule = nodeflowStyleSource.match(/\.lookbook-node-cover__front-board \{([\s\S]*?)\n\}/)?.[1] || "";
+  const frontBoardRule = nodeflowStyleSource.match(/\.lookbook-node-cover__front-board \{\n  z-index: 3;([\s\S]*?)\n\}/)?.[1] || "";
   assert.doesNotMatch(frontBoardRule, /linear-gradient|white|glow/);
+  assert.match(frontBoardRule, /background:\s*#f7f4ed/);
+  assert.doesNotMatch(frontBoardRule, /rotateY|inset 7px|18px 15px 28px/);
+  assert.match(nodeflowStyleSource, /\.lookbook-node-cover__stack[\s\S]*width:\s*244px[\s\S]*height:\s*244px/);
+  assert.match(nodeflowStyleSource, /\.lookbook-node-cover\.is-closed[\s\S]*translate3d\(4px, -2px, -6px\)/);
   const studioCoverRule = styleSource.match(/\.lookbook-book-cover \{([\s\S]*?)\n\}/)?.[1] || "";
   assert.doesNotMatch(studioCoverRule, /linear-gradient|radial-gradient/);
   const studioMediaRule = styleSource.match(/\.lookbook-spread-item__media \{([\s\S]*?)\n\}/)?.[1] || "";
   assert.doesNotMatch(studioMediaRule, /box-shadow|filter/);
   assert.match(nodeflowStyleSource, /@keyframes wrapper-member-collapse[\s\S]*@keyframes wrapper-member-expand/);
+});
+
+test("Leporello is absent from product registries, creation surfaces, and the desktop bridge", () => {
+  const productSources = [
+    "types.ts",
+    "node-workspace/types/index.ts",
+    "node-workspace/components/FlowSurface.tsx",
+    "node-workspace/components/CreativeWorkspace.tsx",
+    "node-workspace/components/ConnectionDropMenu.tsx",
+    "node-workspace/nodeflow/defaults.ts",
+    "node-workspace/nodeflow/model.ts",
+    "node-workspace/nodeflow/placement.ts",
+    "node-workspace/nodeflow/wrapperProjection.ts",
+    "node-workspace/nodes/index.ts",
+    "node-workspace/styles/nodeflow.css",
+    "node-workspace/utils/handles.ts",
+    "electron/main.cjs",
+    "electron/preload.cjs",
+  ].map((path) => readFileSync(path, "utf8"));
+
+  productSources.forEach((source) => assert.doesNotMatch(source, /leporello/i));
+  [
+    "node-workspace/components/leporello/LeporelloStudioPanel.tsx",
+    "node-workspace/nodes/LeporelloNode.tsx",
+    "node-workspace/styles/leporello-studio.css",
+    "utils/leporelloWorkspace.ts",
+    "tests/leporelloWorkspace.test.ts",
+  ].forEach((path) => assert.equal(existsSync(path), false));
 });

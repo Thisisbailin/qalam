@@ -1292,7 +1292,7 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
 
   return (
     <div
-      className="fixed right-[3px] top-[3px] bottom-[3px] z-[80] min-w-0 overflow-hidden rounded-[18px] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-text-primary)] shadow-[0_30px_80px_rgba(0,0,0,0.24)]"
+      className="fixed right-[3px] top-[3px] bottom-[3px] z-[80] min-w-0 overflow-hidden rounded-[18px] border border-[var(--app-border)] bg-[var(--app-panel-strong)] text-[var(--app-text-primary)] shadow-[0_30px_80px_rgba(0,0,0,0.24)]"
       style={{
         width: panelWidth,
         maxWidth: "calc(100vw - 6px)",
@@ -1305,7 +1305,7 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
         className="absolute left-0 top-0 z-20 h-full w-3 cursor-col-resize bg-transparent touch-none"
       />
       <div className="flex h-full min-w-0 flex-col">
-        <header className="shrink-0 border-b border-[var(--app-border)] bg-[var(--app-panel)] px-5 py-4">
+        <header className="shrink-0 border-b border-[var(--app-border)] bg-[var(--app-panel-strong)] px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="flex min-w-0 items-center gap-3">

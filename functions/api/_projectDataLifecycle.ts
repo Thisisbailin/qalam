@@ -3,6 +3,11 @@ import {
   notifyAccountProjectCatalogChanged,
   type AccountRealtimeEnv,
 } from "./_accountRealtime";
+import {
+  createProjectDeletionCapability,
+  hashProjectDeletionCapability,
+  type ProjectDeletionQueueMessage,
+} from "../../collaboration/projectDeletionProtocol";
 
 export type ProjectLifecycleEnv = AccountRealtimeEnv & {
   DB: any;
@@ -13,6 +18,9 @@ export type ProjectLifecycleEnv = AccountRealtimeEnv & {
   PROJECT_REALTIME?: {
     idFromName(name: string): unknown;
     get(id: unknown): { fetch(request: Request): Promise<Response> };
+  };
+  PROJECT_DELETION_QUEUE?: {
+    send(message: ProjectDeletionQueueMessage): Promise<unknown>;
   };
 };
 
@@ -43,6 +51,14 @@ const ACCOUNT_RESET_PLANS: ResetPlan[] = [
 
 const STORAGE_BUCKETS = ["assets", "public-assets"] as const;
 const STORAGE_LIST_LIMIT = 100;
+const STORAGE_DELETE_CHUNK_LIMIT = 100;
+const STORAGE_DELETE_LIST_LIMIT = 12;
+const STORAGE_DELETE_MAX_PENDING_FOLDERS = 2_048;
+
+export type ProjectStorageDeletionCursor = {
+  bucketIndex: number;
+  folders: string[];
+};
 
 const getExistingTables = async (env: ProjectLifecycleEnv) => {
   const tableRows = await env.DB.prepare(
@@ -92,12 +108,112 @@ export const resetD1UserData = async (
   );
 };
 
-const getSupabaseAdmin = (env: ProjectLifecycleEnv) => {
+export const getSupabaseAdmin = (env: ProjectLifecycleEnv) => {
   const serviceRole = env.SUPABASE_SERVICE_ROLE
     || env.SUPABASE_SERVICE_ROLE_KEY
     || env.SUPABASE_SECRET_KEY;
   if (!env.SUPABASE_URL || !serviceRole) return null;
   return createClient(env.SUPABASE_URL, serviceRole);
+};
+
+const normalizeDeletionCursor = (
+  value: unknown,
+  prefix: string,
+): ProjectStorageDeletionCursor => {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const bucketIndex = Number(record.bucketIndex);
+  const folders = Array.isArray(record.folders)
+    ? Array.from(new Set(record.folders.filter((folder): folder is string =>
+        typeof folder === "string"
+        && (folder === prefix || folder.startsWith(`${prefix}/`))
+        && folder.length <= 512)))
+      .slice(0, STORAGE_DELETE_MAX_PENDING_FOLDERS)
+    : [];
+  const safeBucketIndex = Number.isInteger(bucketIndex)
+    ? Math.max(0, Math.min(STORAGE_BUCKETS.length, bucketIndex))
+    : 0;
+  return {
+    bucketIndex: safeBucketIndex,
+    folders: folders.length || safeBucketIndex >= STORAGE_BUCKETS.length
+      ? folders
+      : [prefix],
+  };
+};
+
+/** Removes at most one bounded storage chunk. Re-running from an old cursor is
+ * safe because Storage removal is idempotent and every listing starts at zero
+ * after earlier files have been removed. */
+export const deleteStorageProjectChunk = async (
+  env: ProjectLifecycleEnv,
+  userId: string,
+  projectId: string,
+  cursorValue: unknown,
+) => {
+  const supabase = getSupabaseAdmin(env);
+  if (!supabase) throw new Error("Project storage administration is unavailable");
+  const prefix = `users/${userId}/projects/${projectId}`;
+  const cursor = normalizeDeletionCursor(cursorValue, prefix);
+  let removed = 0;
+  let listCalls = 0;
+
+  while (
+    cursor.bucketIndex < STORAGE_BUCKETS.length
+    && removed < STORAGE_DELETE_CHUNK_LIMIT
+    && listCalls < STORAGE_DELETE_LIST_LIMIT
+  ) {
+    if (!cursor.folders.length) {
+      cursor.bucketIndex += 1;
+      if (cursor.bucketIndex < STORAGE_BUCKETS.length) cursor.folders = [prefix];
+      continue;
+    }
+    const folder = cursor.folders.pop()!;
+    const bucket = STORAGE_BUCKETS[cursor.bucketIndex];
+    const { data, error } = await supabase.storage.from(bucket).list(folder, {
+      limit: STORAGE_LIST_LIMIT,
+      offset: 0,
+      sortBy: { column: "name", order: "asc" },
+    });
+    listCalls += 1;
+    if (error) throw error;
+    const items = data || [];
+    const childFolders: string[] = [];
+    const filePaths: string[] = [];
+    for (const item of items) {
+      const path = `${folder}/${item.name}`.replace(/^\/+/, "");
+      if (item.id === null) childFolders.push(path);
+      else filePaths.push(path);
+    }
+    const remaining = STORAGE_DELETE_CHUNK_LIMIT - removed;
+    const removalBatch = filePaths.slice(0, remaining);
+    if (filePaths.length > removalBatch.length || items.length >= STORAGE_LIST_LIMIT) {
+      cursor.folders.push(folder);
+    }
+    for (let index = childFolders.length - 1; index >= 0; index -= 1) {
+      if (
+        cursor.folders.length < STORAGE_DELETE_MAX_PENDING_FOLDERS
+        && !cursor.folders.includes(childFolders[index])
+      ) cursor.folders.push(childFolders[index]);
+    }
+    if (removalBatch.length) {
+      const { data: deleted, error: deleteError } = await supabase.storage
+        .from(bucket)
+        .remove(removalBatch);
+      if (deleteError) throw deleteError;
+      removed += Array.isArray(deleted) ? deleted.length : removalBatch.length;
+    }
+  }
+  while (cursor.bucketIndex < STORAGE_BUCKETS.length && !cursor.folders.length) {
+    cursor.bucketIndex += 1;
+    if (cursor.bucketIndex < STORAGE_BUCKETS.length) cursor.folders = [prefix];
+  }
+  return {
+    done: cursor.bucketIndex >= STORAGE_BUCKETS.length,
+    cursor,
+    removed,
+    listCalls,
+  };
 };
 
 const collectStoragePaths = async (
@@ -247,18 +363,56 @@ export const permanentlyDeleteProject = async (
   userId: string,
   projectId: string,
 ) => {
-  // Delete object storage first. If that fails, all authoritative D1 state
-  // remains intact and the operation can safely be retried.
-  const storage = await deleteStorageUserData(env, userId, projectId);
-  if (storage.skipped) {
+  if (!env.PROJECT_DELETION_QUEUE || !getSupabaseAdmin(env)) {
     throw new Error("Project storage administration is unavailable");
   }
-  // From this point on, stale clients must be unable to recreate the ID.
-  await markProjectDeleted(env, userId, projectId);
+  const capability = createProjectDeletionCapability();
+  const capabilityHash = await hashProjectDeletionCapability(capability);
+  const candidateJobId = crypto.randomUUID();
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO user_project_deletions (user_id, project_id, deleted_at)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT(user_id, project_id) DO UPDATE SET deleted_at = excluded.deleted_at`,
+    ).bind(userId, projectId, now),
+    env.DB.prepare(
+      `INSERT INTO project_deletion_jobs
+         (job_id, user_id, project_id, capability_hash, status, cursor_json,
+          attempts, removed_objects, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 'fencing', '{}', 0, 0, ?5, ?5)
+       ON CONFLICT(user_id, project_id) DO UPDATE SET
+         capability_hash = excluded.capability_hash,
+         status = CASE
+           WHEN project_deletion_jobs.status = 'complete' THEN 'complete'
+           ELSE 'fencing'
+         END,
+         last_error = NULL,
+         lease_token = NULL,
+         lease_until = NULL,
+         updated_at = excluded.updated_at`,
+    ).bind(candidateJobId, userId, projectId, capabilityHash, now),
+  ]);
+  const job = await env.DB.prepare(
+    `SELECT job_id, status FROM project_deletion_jobs
+     WHERE user_id = ?1 AND project_id = ?2`,
+  ).bind(userId, projectId).first() as { job_id?: unknown; status?: unknown } | null;
+  const jobId = typeof job?.job_id === "string" ? job.job_id : "";
+  if (!jobId) throw new Error("Project deletion job was not created");
+  if (job?.status === "complete") return { jobId, cleanupStatus: "complete" as const };
+
+  // The tombstone is committed before the room is closed, so no reconnect or
+  // upload signer can recreate the project while deletion is in progress.
   await resetRealtimeRooms(env, userId, [projectId], "delete");
   const d1 = await resetD1UserData(env, userId, false, projectId, true);
+  await env.DB.prepare(
+    `UPDATE project_deletion_jobs
+     SET status = 'queued', updated_at = ?1
+     WHERE job_id = ?2 AND status <> 'complete'`,
+  ).bind(Date.now(), jobId).run();
+  await env.PROJECT_DELETION_QUEUE.send({ jobId, capability });
   await notifyAccountProjectCatalogChanged(env, userId).catch((error) => {
     console.warn("Account catalog realtime notification failed after project deletion", error);
   });
-  return { d1, storage };
+  return { d1, jobId, cleanupStatus: "queued" as const };
 };

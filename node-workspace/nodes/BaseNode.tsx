@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { HandleType } from "../types";
+import type { NodeCardColor } from "../types";
 import { useNodeFlowStore } from "../store/nodeFlowStore";
 
 type NodeHandleSpec =
@@ -22,6 +23,7 @@ type Props = {
   selected?: boolean;
   variant?: "default" | "text" | "media";
   nodeType?: string;
+  cardColor?: NodeCardColor;
   headerActions?: React.ReactNode;
 };
 
@@ -34,6 +36,7 @@ export const BaseNode: React.FC<Props> = ({
   selected,
   variant = "default",
   nodeType,
+  cardColor = "none",
   headerActions,
 }) => {
   const [draftTitle, setDraftTitle] = useState(title);
@@ -110,6 +113,7 @@ export const BaseNode: React.FC<Props> = ({
       data-selected={!!selected}
       data-variant={variant}
       data-node-type={nodeType || ""}
+      data-card-color={cardColor}
       data-reading-mode={readingMode}
     >
       <div className="node-card-floating-header">

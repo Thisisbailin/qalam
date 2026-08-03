@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   collectOwnedStorageObjects,
+  collectUnreferencedOwnedStorageObjects,
 } from "../node-workspace/nodeflow/storageReferences";
 import {
   normalizeStorageDeleteObjects,
@@ -33,6 +34,29 @@ test("image nodes expose every owned Supabase object exactly once", () => {
     { bucket: "assets", path: "users/user-1/projects/project-a/image-inputs/source.png" },
     { bucket: "public-assets", path: "users/user-1/projects/project-a/seedance-assets/review.png" },
   ]);
+});
+
+test("shared copied media is deleted only after its final node reference is removed", () => {
+  const shared = {
+    storageBucket: "assets",
+    storagePath: "users/user-1/projects/project-a/image-inputs/shared.png",
+  };
+  const audit = {
+    assetSourceBucket: "public-assets",
+    assetSourcePath: "users/user-1/projects/project-a/seedance-assets/audit.png",
+  };
+
+  assert.deepEqual(
+    collectUnreferencedOwnedStorageObjects(
+      [{ data: { ...shared, ...audit } }],
+      [{ data: { ...shared } }]
+    ),
+    [{ bucket: "public-assets", path: "users/user-1/projects/project-a/seedance-assets/audit.png" }]
+  );
+  assert.deepEqual(
+    collectUnreferencedOwnedStorageObjects([{ data: { ...shared } }], []),
+    [{ bucket: "assets", path: "users/user-1/projects/project-a/image-inputs/shared.png" }]
+  );
 });
 
 test("storage deletion accepts only allow-listed objects owned by the authenticated user", () => {

@@ -46,7 +46,7 @@ const foundationParameters = {
     axis: {
       type: "string",
       enum: [...FOUNDATION_AXES],
-      description: "Foundation axis for block operations: time, space, character, or scene.",
+      description: "Foundation axis for block operations: time or space.",
     },
     block_node_id: {
       type: "string",
@@ -520,7 +520,7 @@ const disconnectBoundary = (bridge: StyloAgentBridge, args: ReturnType<typeof pa
 export const operateFoundationToolDef = {
   name: "operate_foundation",
   description:
-    "Operate the four-axis Foundation container: create/delete blocks, update block documents, and assign document or media nodes to one block folder. Project root and project index are read-only.",
+    "Operate the two-axis Foundation container: create/delete time or space blocks, update block documents, and assign compatible Flow nodes to one block folder. Character and scene libraries belong to Lookbook. Project root and project index are read-only.",
   parameters: foundationParameters,
   execute: (input: unknown, bridge: StyloAgentBridge) => {
     const args = parseArgs(input);

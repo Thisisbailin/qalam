@@ -134,11 +134,6 @@ const summarizeNodeBody = (node: NodeFlowNode): Record<string, unknown> => {
       return {
         identityId: data.identityId ?? null,
       };
-    case "leporello":
-      return {
-        aspectRatio: data.aspectRatio ?? "21:9",
-        leporelloBook: data.leporelloBook ?? null,
-      };
     case "imageInput":
       return {
         filename: data.filename ?? null,

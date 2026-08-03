@@ -1,5 +1,4 @@
 import React from "react";
-import { Folder } from "lucide-react";
 import { Paperclip } from "@phosphor-icons/react";
 import { BaseNode } from "./BaseNode";
 import type { FolderNodeData } from "../types";
@@ -37,17 +36,10 @@ export const FolderNode: React.FC<Props> = ({ data, selected }) => {
           data-state={isCollapsed ? "collapsed" : "expanded"}
           aria-label={`${title}，Manus，${memberCount} 张稿纸，${isCollapsed ? "已收起" : "已展开"}`}
         >
-          <header className="manus-wrapper-node__title" title={title}>{title}</header>
           <div className="manus-wrapper-node__stack" aria-hidden="true">
             <span className="manus-wrapper-node__sheet manus-wrapper-node__sheet--back" />
             <span className="manus-wrapper-node__sheet manus-wrapper-node__sheet--middle" />
             <div className="manus-wrapper-node__sheet manus-wrapper-node__sheet--front">
-              <Paperclip
-                className="manus-wrapper-node__clip"
-                size={48}
-                weight="light"
-                aria-hidden="true"
-              />
               <div className="manus-wrapper-node__page-head">
                 <span>FADE IN:</span>
                 <span>{String(Math.max(memberCount, 1)).padStart(2, "0")}</span>
@@ -59,10 +51,13 @@ export const FolderNode: React.FC<Props> = ({ data, selected }) => {
               </div>
               <span className="manus-wrapper-node__format">FOUNTAIN · DRAFT</span>
             </div>
+            <Paperclip
+              className="manus-wrapper-node__clip"
+              size={52}
+              weight="light"
+              aria-hidden="true"
+            />
           </div>
-          <footer className="manus-wrapper-node__footer">
-            <strong>Manus</strong>
-          </footer>
         </article>
       </BaseNode>
     );
@@ -77,13 +72,22 @@ export const FolderNode: React.FC<Props> = ({ data, selected }) => {
       inputs={["text"]}
       outputs={["text"]}
     >
-      <div className="folder-node-body">
-        <div className="folder-node-icon" aria-hidden="true">
-          <Folder size={28} strokeWidth={1.75} />
+      <div className="folder-slide-mount" aria-label={`文件夹：${title}`}>
+        <div className="folder-slide-mount__die" aria-hidden="true" />
+        <header className="folder-slide-mount__brand" aria-hidden="true">
+          <strong>Stylo</strong>
+          <span>Archive mount</span>
+        </header>
+        <div className="folder-slide-mount__window">
+          <span>{title}</span>
         </div>
-        <div className="folder-node-copy">
+        <footer className="folder-slide-mount__meta" aria-hidden="true">
           <span>Folder</span>
-          <strong>{title}</strong>
+          <span>Index · {String(memberCount).padStart(2, "0")}</span>
+        </footer>
+        <div className="folder-slide-mount__notch" aria-hidden="true">
+          <i />
+          <i />
         </div>
       </div>
     </BaseNode>

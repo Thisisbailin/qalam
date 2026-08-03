@@ -16,7 +16,6 @@ export const NODE_TYPES = [
   "text",
   "scriptBoard",
   "lookbook",
-  "leporello",
   /** @deprecated Legacy name. New identity wrappers use `lookbook`. */
   "identityCard",
   "imageGen",
@@ -30,6 +29,8 @@ export const NODE_TYPES = [
 export type NodeType = (typeof NODE_TYPES)[number];
 
 export type NodeStatus = "idle" | "loading" | "complete" | "error";
+
+export type NodeCardColor = "none" | "rose" | "amber" | "moss" | "blue" | "slate";
 
 export type LookbookMediaFit = "cover" | "contain";
 
@@ -56,22 +57,6 @@ export interface LookbookBookState {
   entries: LookbookBookEntry[];
 }
 
-export type LeporelloPageKind = "cover" | "panel" | "back";
-export type LeporelloPageFace = "lit" | "shadow";
-
-export interface LeporelloPage {
-  id: string;
-  kind: LeporelloPageKind;
-  face: LeporelloPageFace;
-  imageNodeId?: string;
-}
-
-export interface LeporelloBookState {
-  version: 1;
-  aspectRatio: "21:9";
-  pages: LeporelloPage[];
-}
-
 export interface BaseNodeData extends Record<string, unknown> {
   label?: string;
   title?: string;
@@ -90,6 +75,8 @@ export interface BaseNodeData extends Record<string, unknown> {
   wrapperRoot?: boolean;
   /** Runtime-only content sample rendered on physical wrapper covers. */
   wrapperPreview?: string;
+  /** Optional visual marker applied from the input-node context menu. */
+  cardColor?: NodeCardColor;
 }
 
 export interface ImageInputNodeData extends BaseNodeData {
@@ -331,12 +318,6 @@ export interface IdentityCardNodeData extends BaseNodeData {
 
 export type LookbookNodeData = IdentityCardNodeData;
 
-export interface LeporelloNodeData extends BaseNodeData {
-  title: string;
-  aspectRatio: "21:9";
-  leporelloBook: LeporelloBookState;
-}
-
 export interface PinoardNodeData extends BaseNodeData {
   title: string;
 }
@@ -476,7 +457,6 @@ export type NodeFlowNodeData =
   | FolderNodeData
   | ScriptBoardNodeData
   | IdentityCardNodeData
-  | LeporelloNodeData
   | PinoardNodeData
   | ImageGenNodeData
   | VideoGenNodeData
@@ -512,7 +492,7 @@ export interface NodeFlowNode {
 
 export interface NodeFlowLinkData extends Record<string, unknown> {
   hasPause?: boolean;
-  relation?: "foundation-membership" | "folder-membership" | "lookbook-membership" | "leporello-membership" | "pinoard-membership" | "screenplay-page";
+  relation?: "foundation-membership" | "folder-membership" | "lookbook-membership" | "pinoard-membership" | "screenplay-page";
 }
 
 export interface NodeFlowLink {

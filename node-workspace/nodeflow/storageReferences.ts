@@ -28,3 +28,15 @@ export const collectOwnedStorageObjects = (nodes: StorageBackedNode[]): OwnedSto
   });
   return [...objects.values()];
 };
+
+export const collectUnreferencedOwnedStorageObjects = (
+  removedNodes: StorageBackedNode[],
+  retainedNodes: StorageBackedNode[]
+): OwnedStorageObject[] => {
+  const retainedKeys = new Set(
+    collectOwnedStorageObjects(retainedNodes).map((object) => `${object.bucket}:${object.path}`)
+  );
+  return collectOwnedStorageObjects(removedNodes).filter(
+    (object) => !retainedKeys.has(`${object.bucket}:${object.path}`)
+  );
+};

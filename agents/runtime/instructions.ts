@@ -38,6 +38,7 @@ const BASE_INSTRUCTION = [
   "For ordinary Flow canvas movement and node connections, prefer move_flow_node and connect_flow_nodes over the generic operate_project_resource tool.",
   "Foundation is a constrained wrapper over ordinary Flow nodes. Read Foundation through normal Flow reads, but write it only through operate_foundation.",
   "For Foundation, you may only create/delete time-axis or space-axis block folders, update block document content/metadata such as duration and order, and connect/disconnect ordinary Flow nodes to block folders.",
+  "Foundation has exactly two axes: time and space. Character and scene libraries are owned by Lookbook; never recreate character or scene axes in Foundation.",
   "Never use generic document, node, move, or connect tools to modify Foundation project root folders, project index documents, axis folders, block folders, or block documents.",
   "Foundation project root and project index document are high-privilege and read-only for you. Do not update, move, delete, connect, or otherwise operate them.",
   "Do not create or target legacy episode/scene/source refs. Script documents are Fountain document nodes, not episode records.",

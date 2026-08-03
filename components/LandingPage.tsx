@@ -46,7 +46,7 @@ const architectureItems: ArchitectureItem[] = [
     index: "02",
     name: "Foundation",
     label: "Project structure wrapper",
-    description: "以柄、轴、块组织项目顶层数据。时间轴与空间轴并行，角色和场景将继续拆分为独立结构。",
+    description: "以柄、轴、块组织项目顶层数据。Foundation 只保留时间轴与空间轴，角色和场景资产由 Lookbook 统一管理。",
     note: "柄 → 轴 → 块 / time + space",
     state: "Core",
     Icon: MapTrifold,

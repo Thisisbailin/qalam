@@ -20,3 +20,7 @@ script_name = "stylo-project-realtime"
 name = "ACCOUNT_REALTIME"
 class_name = "AccountCatalogRoom"
 script_name = "stylo-project-realtime"
+
+[[queues.producers]]
+binding = "PROJECT_DELETION_QUEUE"
+queue = "stylo-project-deletion"

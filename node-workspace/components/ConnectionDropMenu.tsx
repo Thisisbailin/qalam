@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { AudioLines, Image as ImageIcon, Sparkles, Video, Plus } from "lucide-react";
-import { BookOpen, FilePdf, Rows } from "@phosphor-icons/react";
+import { BookOpen, FilePdf } from "@phosphor-icons/react";
 import { NodeType } from "../types";
 
 export type ConnectionDropMenuOption<T extends string = NodeType> = {
@@ -27,7 +27,6 @@ type Props<T extends string = NodeType> = {
 const defaultOptions: ConnectionDropMenuOption<NodeType>[] = [
     { label: "Manus", hint: "剧本包装器 · Fountain", type: "scriptPage", Icon: Plus, group: "wrapper", meta: "Fountain" },
     { label: "Lookbook", hint: "角色与场景视觉册", type: "lookbook", Icon: BookOpen, group: "wrapper", meta: "Identity", disabled: true, disabledHint: "由剧本身份生成" },
-    { label: "Leporello", hint: "21:9 手风琴分镜故事板", type: "leporello", Icon: Rows, group: "wrapper", meta: "Storyboard" },
     { label: "文本", hint: "Markdown 文本节点", type: "text", Icon: Plus, group: "input", meta: "Text" },
     { label: "图片", hint: "参考图或分镜", type: "imageInput", Icon: ImageIcon, group: "input", meta: "Input" },
     { label: "音频", hint: "对白或声音参考", type: "audioInput", Icon: AudioLines, group: "input", meta: "Input" },

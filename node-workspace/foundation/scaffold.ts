@@ -88,8 +88,6 @@ const FOUNDATION_LAYOUT = {
   projectIndex: { x: 360, y: 24 },
   timeAxis: { x: 80, y: 260 },
   spaceAxis: { x: 80, y: 780 },
-  characterAxis: { x: 80, y: 1300 },
-  sceneAxis: { x: 80, y: 1820 },
   blockStartX: 360,
   blockArchiveOffsetX: 270,
   blockColumnWidth: 620,
@@ -98,8 +96,6 @@ const FOUNDATION_LAYOUT = {
 const FOUNDATION_AXIS_POSITIONS: Record<FoundationAxis, { x: number; y: number }> = {
   time: FOUNDATION_LAYOUT.timeAxis,
   space: FOUNDATION_LAYOUT.spaceAxis,
-  character: FOUNDATION_LAYOUT.characterAxis,
-  scene: FOUNDATION_LAYOUT.sceneAxis,
 };
 export const FOUNDATION_ROOT_NODE_PREFIX = "project-root-";
 export const FOUNDATION_PROJECT_INDEX_DEPTH = 3;
@@ -128,7 +124,7 @@ type FoundationNodeMeta = {
 
 export const DEFAULT_TIMELINE_HEAD: FoundationProjectHead = {
   title: "项目索引",
-  content: "项目根文档，组织时间、空间、角色与场景四条轴的文件树。",
+  content: "项目根文档，组织时间与空间两条轴的文件树。角色与场景资产由 Lookbook 管理。",
 };
 
 const createTimelineBlock = (
@@ -174,18 +170,7 @@ export const createDefaultSpaceBlocks = (): FoundationSpaceBlock[] => [
 ];
 
 export const createDefaultWeightedAxisBlocks = (axis: FoundationWeightedAxis): FoundationSpaceBlock[] => {
-  if (axis === "space") return createDefaultSpaceBlocks();
-  const definition = getFoundationAxisDefinition(axis);
-  return [
-    createSpaceBlock(
-      `${axis}-block-1`,
-      `${definition.blockLabel} 1`,
-      0,
-      1,
-      axis === "character" ? "amber" : "blue",
-      ""
-    ),
-  ];
+  return axis === "space" ? createDefaultSpaceBlocks() : [];
 };
 
 const distributeRemainder = (blocks: FoundationTimeBlock[], targetDuration: number) => {
@@ -374,9 +359,9 @@ const getFoundationSeedIds = (rootNodeId: string) => ({
   projectIndexId: `${rootNodeId}--project-index`,
   timeAxisId: `${rootNodeId}--time-axis`,
   spaceAxisId: `${rootNodeId}--space-axis`,
-  characterAxisId: `${rootNodeId}--character-axis`,
-  sceneAxisId: `${rootNodeId}--scene-axis`,
 });
+
+const REMOVED_FOUNDATION_AXES = new Set(["character", "scene"]);
 
 const getLegacyAxisIndexIds = (rootNodeId: string) =>
   new Set([`${rootNodeId}--time-axis-index`, `${rootNodeId}--space-axis-index`]);
@@ -416,8 +401,7 @@ export const buildFoundationGraphSeed = (
         "",
         "- 时间轴",
         "- 空间轴",
-        "- 角色轴",
-        "- 场景轴",
+        "- 角色与场景资产由 Lookbook 管理",
       ].join("\n"),
       FOUNDATION_LAYOUT.projectIndex,
       {
@@ -436,23 +420,11 @@ export const buildFoundationGraphSeed = (
       foundationAxis: "space",
       foundationParentId: rootNodeId,
     }),
-    createFoundationFolderNode(ids.characterAxisId, "角色轴", FOUNDATION_LAYOUT.characterAxis, {
-      foundationRole: "axis-folder",
-      foundationAxis: "character",
-      foundationParentId: rootNodeId,
-    }),
-    createFoundationFolderNode(ids.sceneAxisId, "场景轴", FOUNDATION_LAYOUT.sceneAxis, {
-      foundationRole: "axis-folder",
-      foundationAxis: "scene",
-      foundationParentId: rootNodeId,
-    }),
   ];
   const links: FlowState["links"] = [
     createFoundationLink(rootNodeId, ids.projectIndexId),
     createFoundationLink(rootNodeId, ids.timeAxisId),
     createFoundationLink(rootNodeId, ids.spaceAxisId),
-    createFoundationLink(rootNodeId, ids.characterAxisId),
-    createFoundationLink(rootNodeId, ids.sceneAxisId),
   ];
 
   timeBlocks.forEach((block, index) => {
@@ -895,7 +867,7 @@ export const parseFoundationGraph = (
   if (!rootNode) {
     return {
       rootNodeId: project.rootNodeId,
-      axisNodeIds: { time: "", space: "", character: "", scene: "" },
+      axisNodeIds: { time: "", space: "" },
       timeAxisNodeId: "",
       spaceAxisNodeId: "",
       timeline: createDefaultTimeline(project.durationMin),
@@ -1060,12 +1032,30 @@ export const ensureFoundationGraphSkeleton = (
     (flow.globalAssetHistory?.length || 0) === 0;
   const seed = buildFoundationGraphSeed(project.title, project.durationMin, project.rootNodeId);
   const legacyAxisIndexIds = getLegacyAxisIndexIds(project.rootNodeId);
+  const removedAxisNodeIds = new Set(
+    (flow.flowNodes || [])
+      .filter((node) => {
+        const data = node.data as NodeFlowNodeData & { foundationAxis?: unknown };
+        return Boolean(data.foundationRole) && REMOVED_FOUNDATION_AXES.has(String(data.foundationAxis || ""));
+      })
+      .map((node) => node.id)
+  );
   let changed = false;
-  const nodes = (flow.flowNodes || []).filter((node) => {
-    const keep = !legacyAxisIndexIds.has(node.id);
-    if (!keep) changed = true;
-    return keep;
-  });
+  const nodes = (flow.flowNodes || [])
+    .filter((node) => {
+      const keep = !legacyAxisIndexIds.has(node.id) && !removedAxisNodeIds.has(node.id);
+      if (!keep) changed = true;
+      return keep;
+    })
+    .map((node) => {
+      const containerId = (node.data as NodeFlowNodeData & { foundationContainerId?: unknown }).foundationContainerId;
+      if (typeof containerId !== "string" || !removedAxisNodeIds.has(containerId)) return node;
+      changed = true;
+      return {
+        ...node,
+        data: { ...node.data, foundationContainerId: undefined } as NodeFlowNodeData,
+      };
+    });
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const ids = getFoundationSeedIds(project.rootNodeId);
   const axisHasBlock = Object.fromEntries(
@@ -1104,6 +1094,10 @@ export const ensureFoundationGraphSkeleton = (
   );
   const rootTargets = new Set([ids.projectIndexId, ...axisById.keys()]);
   let links = flow.links.filter((link) => {
+    if (removedAxisNodeIds.has(link.source) || removedAxisNodeIds.has(link.target)) {
+      changed = true;
+      return false;
+    }
     if (legacyAxisIndexIds.has(link.source) || legacyAxisIndexIds.has(link.target)) {
       changed = true;
       return false;

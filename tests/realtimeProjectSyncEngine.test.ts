@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as Y from "yjs";
 import {
   applyProjectSnapshot,
+  decodeUpdateBase64,
   encodeUpdateBase64,
   readProjectSnapshot,
 } from "../collaboration/yProjectDocument";
@@ -382,6 +383,79 @@ test("pointer-frame staging performs one expensive snapshot after the burst", as
   assert.equal(snapshots, startupSnapshots);
   await wait(10);
   assert.equal(snapshots, startupSnapshots + 1);
+  engine.dispose();
+});
+
+test("node dragging sends only a geometry CRDT delta without snapshot materialization", async () => {
+  let snapshots = 0;
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  initial.flowProjects = [{
+    id: "project-main",
+    title: "Project",
+    color: "amber",
+    durationMin: 90,
+    rootNodeId: "root-project-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: structuredClone(initial.flow!),
+  }];
+  const changedNode = {
+    ...initial.flowProjects[0].flow.flowNodes![0],
+    position: { x: 84, y: 20 },
+  };
+  const changedProjectFlow = {
+    ...initial.flowProjects[0].flow,
+    flowNodes: [changedNode],
+    // This is the actual React Flow update shape: filter/map may replace the
+    // array container even when every contained link is unchanged.
+    links: [...initial.flowProjects[0].flow.links],
+  };
+  const changed: ProjectData = {
+    ...initial,
+    flow: {
+      ...initial.flow!,
+      flowNodes: [{ ...initial.flow!.flowNodes![0], position: { x: 84, y: 20 } }],
+      links: [...initial.flow!.links],
+    },
+    flowProjects: [{
+      ...initial.flowProjects[0],
+      updatedAt: 2,
+      flow: changedProjectFlow,
+    }],
+  };
+  const engine = createEngine({
+    socket,
+    syncCodec: codec(() => { snapshots += 1; }),
+  });
+  const serverDoc = new Y.Doc();
+  applyProjectSnapshot(serverDoc, initial as unknown as Record<string, unknown>, "server");
+  await engine.start(initial);
+  socket.emit(serverSyncFromDocument(serverDoc));
+  await wait(20);
+  // Mirror the React commit produced by onApplyRemote so the engine's
+  // referential baseline matches the visible application snapshot.
+  engine.stage(initial);
+  await wait(20);
+  const beforeDragSnapshots = snapshots;
+
+  engine.expectNodeGeometryMutation(
+    [{ nodeId: "node-1", position: { x: 84, y: 20 } }],
+    2,
+  );
+  engine.stage(changed);
+  await wait(20);
+
+  const outbound = socket.sent.find((message) => message.type === "update");
+  assert.equal(snapshots, beforeDragSnapshots);
+  assert.equal(typeof outbound?.update, "string");
+  const delta = decodeUpdateBase64(String(outbound!.update));
+  assert.ok(delta.byteLength < 1_024);
+  Y.applyUpdate(serverDoc, delta, "client-delta");
+  const snapshot = readProjectSnapshot<ProjectData & Record<string, unknown>>(serverDoc);
+  assert.equal(snapshot.flowProjects?.[0].flow.flowNodes?.[0]?.position.x, 84);
+  assert.equal(snapshot.flowProjects?.[0].flow.flowNodes?.[0]?.data.markdown, "hello");
+  serverDoc.destroy();
   engine.dispose();
 });
 

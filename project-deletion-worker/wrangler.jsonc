@@ -1,0 +1,59 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "stylo-project-deletion",
+  "main": "src/index.ts",
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-08-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "SUPABASE_URL": "https://icdgsglzrcculwymgluu.supabase.co"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stylo",
+      "database_id": "b7898b3b-2b6a-4173-a3f0-af4a84eefe7c"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PROJECT_REALTIME",
+        "class_name": "ProjectRealtimeRoom",
+        "script_name": "stylo-project-realtime"
+      },
+      {
+        "name": "ACCOUNT_REALTIME",
+        "class_name": "AccountCatalogRoom",
+        "script_name": "stylo-project-realtime"
+      }
+    ]
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "PROJECT_DELETION_QUEUE",
+        "queue": "stylo-project-deletion"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "stylo-project-deletion",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "retry_delay": 30,
+        "dead_letter_queue": "stylo-project-deletion-dlq"
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1.0 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  }
+}

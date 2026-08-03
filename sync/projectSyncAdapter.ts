@@ -73,7 +73,20 @@ const sameShallowValuesExcept = (
 ) => {
   const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
   for (const key of keys) {
-    if (!ignored.has(key) && !Object.is(left[key], right[key])) return false;
+    if (ignored.has(key) || Object.is(left[key], right[key])) continue;
+    const leftValue = left[key];
+    const rightValue = right[key];
+    // React Flow commonly returns a fresh array container whose members are
+    // unchanged (for example links.filter(...) during a node drag). Treating
+    // that as authored project content forced geometry-only gestures back
+    // through whole-project snapshot serialization.
+    if (
+      Array.isArray(leftValue)
+      && Array.isArray(rightValue)
+      && leftValue.length === rightValue.length
+      && leftValue.every((entry, index) => Object.is(entry, rightValue[index]))
+    ) continue;
+    return false;
   }
   return true;
 };

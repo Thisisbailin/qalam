@@ -99,7 +99,7 @@ export interface FlowLink {
   targetHandle?: HandleType;
   data?: {
     hasPause?: boolean;
-    relation?: "foundation-membership" | "folder-membership" | "lookbook-membership" | "leporello-membership" | "pinoard-membership" | "screenplay-page";
+    relation?: "foundation-membership" | "folder-membership" | "lookbook-membership" | "pinoard-membership" | "screenplay-page";
     [key: string]: unknown;
   };
 }

@@ -56,6 +56,8 @@ export type CanvasSurfaceConfig = {
   onBeforeDelete?: OnBeforeDelete<any, any>;
   onNodeClick?: (event: React.MouseEvent, node: Node) => void;
   onNodeDoubleClick?: (event: React.MouseEvent, node: Node) => void;
+  onNodeContextMenu?: (event: React.MouseEvent, node: Node) => void;
+  onNodeLongPress?: (point: { clientX: number; clientY: number }, node: Node) => void;
   onNodeDragStart?: (event: React.MouseEvent, node: Node) => void;
   onNodeDrag?: (event: React.MouseEvent, node: Node) => void;
   onNodeDragStop?: (event: React.MouseEvent, node: Node) => void;

@@ -24,7 +24,6 @@ export const buildWrapperProjection = (
 ): WrapperProjection => {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const lookbookIds = new Set(nodes.filter((node) => isLookbookNodeType(node.type)).map((node) => node.id));
-  const leporelloIds = new Set(nodes.filter((node) => node.type === "leporello").map((node) => node.id));
   const pinoardIds = new Set(nodes.filter((node) => node.type === "pinoard").map((node) => node.id));
   const textNodeIds = new Set(nodes.filter((node) => node.type === "text").map((node) => node.id));
   const scriptNodeIds = new Set(nodes.filter((node) => node.type === "scriptPage").map((node) => node.id));
@@ -41,11 +40,6 @@ export const buildWrapperProjection = (
     if (link.data?.relation === "lookbook-membership") {
       if (lookbookIds.has(link.source) && nodeById.has(link.target)) addMember(memberSets, link.source, link.target);
       if (lookbookIds.has(link.target) && nodeById.has(link.source)) addMember(memberSets, link.target, link.source);
-      return;
-    }
-    if (link.data?.relation === "leporello-membership") {
-      if (leporelloIds.has(link.source) && nodeById.has(link.target)) addMember(memberSets, link.source, link.target);
-      if (leporelloIds.has(link.target) && nodeById.has(link.source)) addMember(memberSets, link.target, link.source);
       return;
     }
     if (link.data?.relation === PINOARD_MEMBERSHIP_RELATION) {

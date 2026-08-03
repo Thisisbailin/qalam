@@ -16,6 +16,7 @@ import {
   OnConnectEnd,
   OnConnectStart,
   Position,
+  useReactFlow,
   useStore,
   useUpdateNodeInternals,
   XYPosition,
@@ -37,16 +38,33 @@ import {
   Sparkles,
   Trash2,
   Video,
-  UserRound,
   Clapperboard,
 } from "lucide-react";
-import { ArrowUp, BookOpen, CircleNotch, FilePdf, PushPinSimple, Rows } from "@phosphor-icons/react";
+import {
+  ArrowUp,
+  BookOpen,
+  Check,
+  CircleNotch,
+  ClipboardText,
+  Copy,
+  FilePdf,
+  Palette,
+  PushPinSimple,
+  Trash,
+} from "@phosphor-icons/react";
 import type {
   ProjectData,
   FlowState,
   CanvasMeasuredSize,
 } from "../../types";
-import type { NodeFlowContextSnapshot, NodeFlowLink, NodeFlowNode, NodeFlowNodeData, NodeType } from "../types";
+import type {
+  NodeCardColor,
+  NodeFlowContextSnapshot,
+  NodeFlowLink,
+  NodeFlowNode,
+  NodeFlowNodeData,
+  NodeType,
+} from "../types";
 import {
   AudioInputNode,
   VideoInputNode,
@@ -57,7 +75,6 @@ import {
   TextNode,
   ScriptBoardNode,
   IdentityCardNode,
-  LeporelloNode,
   PinoardNode,
   ImageGenNode,
   NanoBananaImageGenNode,
@@ -72,7 +89,10 @@ import { createIdleNodeFlowExecutionState } from "../nodeflow/sessionState";
 import { buildNodeFlowFile, hydrateImportedNodeFlow } from "../nodeflow/serialization";
 import { parseNodeFlowFile } from "../nodeflow/schema";
 import { downloadNodeFlowPackage } from "../nodeflow/package";
-import { collectOwnedStorageObjects, deleteOwnedStorageObjects } from "../nodeflow/storageObjects";
+import {
+  collectUnreferencedOwnedStorageObjects,
+  deleteOwnedStorageObjects,
+} from "../nodeflow/storageObjects";
 import { buildWrapperProjection } from "../nodeflow/wrapperProjection";
 import { useNodeFlowStore } from "../store/nodeFlowStore";
 import { useNodeFlowExecutor } from "../store/useNodeFlowExecutor";
@@ -137,7 +157,6 @@ import {
 } from "../foundation/membership";
 import { LOOKBOOK_MEMBERSHIP_RELATION, isLookbookNodeType } from "../../utils/lookbookIdentities";
 import { LOOKBOOK_WRAPPER_DIMENSIONS } from "../lookbook/constants";
-import { createInitialLeporelloData, resolveLeporelloProjectName } from "../../utils/leporelloWorkspace";
 import {
   createManusMembershipLink,
   FOLDER_MEMBERSHIP_RELATION,
@@ -218,6 +237,32 @@ const FLOW_VIRTUALIZATION_BUCKET_SIZE = 960;
 const FOUNDATION_EDGE_OVERSCAN_RATIO = 0.4;
 const FOUNDATION_EDGE_MIN_OVERSCAN = 360;
 
+const INPUT_CARD_NODE_TYPES = new Set<NodeType>([
+  "text",
+  "imageInput",
+  "audioInput",
+  "videoInput",
+  "pdfInput",
+]);
+
+const INPUT_CARD_COLORS: Array<{ value: NodeCardColor; label: string }> = [
+  { value: "none", label: "无标记" },
+  { value: "rose", label: "玫瑰" },
+  { value: "amber", label: "琥珀" },
+  { value: "moss", label: "苔绿" },
+  { value: "blue", label: "蓝色" },
+  { value: "slate", label: "灰蓝" },
+];
+
+type InputNodeContextMenuState = {
+  nodeId: string;
+  x: number;
+  y: number;
+};
+
+const isInputCardNode = (node: Pick<NodeFlowNode, "type"> | undefined | null) =>
+  !!node && INPUT_CARD_NODE_TYPES.has(node.type);
+
 type ScriptConnectionDropState = {
   position: { x: number; y: number };
   flowPosition: { x: number; y: number };
@@ -242,8 +287,8 @@ type Props = {
   setProjectData: React.Dispatch<React.SetStateAction<ProjectData>>;
   onOpenScriptDocument: (nodeId: string) => void;
   onOpenLookbook?: (nodeId: string) => void;
-  onOpenLeporello?: (nodeId: string) => void;
   onOpenPinoard?: (pinoardId: string | null, textNodeId?: string) => void;
+  focusedWrapperId?: string | null;
   canvasControls: SharedCanvasControls;
   screenToFlowPosition: (position: { x: number; y: number }) => XYPosition;
   isActive?: boolean;
@@ -260,6 +305,39 @@ type Props = {
   onOpenProjectSettingsPanel?: (panel: FoundationGatewaySettingsPanel, assetsSection?: FoundationGatewayAssetsSection) => void;
   onOpenVisualLab?: (key?: "glassLab" | "filmRollLab") => void;
   pendingScriptReviewNodeIds?: ReadonlySet<string>;
+};
+
+type FocusedWrapperMemberLayout = {
+  position: XYPosition;
+  width: number;
+  height: number;
+};
+
+const buildFocusedWrapperLayout = (memberIds: string[]) => {
+  const count = memberIds.length;
+  const columns = count <= 1 ? 1 : count <= 4 ? 2 : 3;
+  const width = count <= 1 ? 560 : count <= 4 ? 420 : 340;
+  const height = count <= 1 ? 420 : count <= 4 ? 340 : 270;
+  const gap = count <= 4 ? 44 : 34;
+  const rows = Math.max(1, Math.ceil(count / columns));
+  const totalWidth = columns * width + Math.max(0, columns - 1) * gap;
+  const totalHeight = rows * height + Math.max(0, rows - 1) * gap;
+  const layout = new Map<string, FocusedWrapperMemberLayout>();
+
+  memberIds.forEach((memberId, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    layout.set(memberId, {
+      position: {
+        x: column * (width + gap) - totalWidth / 2,
+        y: row * (height + gap) - totalHeight / 2,
+      },
+      width,
+      height,
+    });
+  });
+
+  return layout;
 };
 
 const ensureFlow = (flow?: FlowState): FlowState => ({
@@ -295,7 +373,6 @@ const scriptCreateOptions: ScriptCreateOption[] = [
   { label: "Pinoard", hint: "灵感构思包装器 · 统合文本贴纸", type: "pinoard", Icon: PushPinSimple, group: "wrapper", meta: "Ideation", tone: "is-rose", surface: "paper" },
   { label: "Manus", hint: "剧本包装器 · 创建第一张稿纸", type: "scriptPage", Icon: FileText, group: "wrapper", meta: "Fountain", tone: "is-slate", surface: "paper" },
   { label: "Lookbook", hint: "角色与场景视觉册", type: "lookbook", Icon: BookOpen, group: "wrapper", meta: "Identity", tone: "is-moss", surface: "card", disabled: true, disabledHint: "由剧本身份生成" },
-  { label: "Leporello", hint: "21:9 手风琴分镜故事板", type: "leporello", Icon: Rows, group: "wrapper", meta: "Storyboard", tone: "is-amber", surface: "paper" },
   { label: "Cinewor", hint: "镜头与调度包装器", type: "scriptBoard", Icon: Clapperboard, group: "wrapper", meta: "Soon", tone: "is-rose", surface: "card", disabled: true, disabledHint: "即将开放" },
   { label: "文件夹", hint: "由 Foundation 自动生成", type: "folder", Icon: Folder, group: "wrapper", meta: "System", tone: "is-blue", surface: "folder", disabled: true, disabledHint: "由系统管理" },
   { label: "文本", hint: "Markdown 文本节点", type: "text", Icon: Pencil, group: "input", meta: "Text", tone: "is-slate", surface: "paper" },
@@ -314,11 +391,9 @@ const scriptCreateOptions: ScriptCreateOption[] = [
 const SCRIPT_PAGE_NODE_SIZE = { width: 286, height: 356 };
 const MARKDOWN_TEXT_NODE_SIZE = { width: 320, height: 252 };
 const PINOARD_NODE_SIZE = { width: 372, height: 278 };
-const LEPORELLO_NODE_SIZE = { width: 356, height: 180 };
 
 const getFixedFlowNodeDimensions = (type?: FlowRenderNode["type"] | null) => {
   if (type === "pinoard") return PINOARD_NODE_SIZE;
-  if (type === "leporello") return LEPORELLO_NODE_SIZE;
   if (type === "scriptPage") return SCRIPT_PAGE_NODE_SIZE;
   if (type && isLookbookNodeType(type)) return LOOKBOOK_WRAPPER_DIMENSIONS;
   return null;
@@ -601,7 +676,6 @@ const nodeTypes: NodeTypes = {
   annotation: withFoundationBoundaryHandle(AnnotationNode),
   scriptBoard: withFoundationBoundaryHandle(ScriptBoardNode),
   lookbook: withFoundationBoundaryHandle(IdentityCardNode),
-  leporello: withFoundationBoundaryHandle(LeporelloNode),
   pinoard: withFoundationBoundaryHandle(PinoardNode),
   identityCard: withFoundationBoundaryHandle(IdentityCardNode),
   imageGen: withFoundationBoundaryHandle(ImageGenNode),
@@ -640,7 +714,6 @@ type ScriptFoundationProps = {
   onCreateScriptNode: () => void;
   onCreateFlowNode: (type: NodeType) => void;
   hasScriptPage: boolean;
-  hasLeporello: boolean;
   hasPinoard: boolean;
   onOpenAgent?: () => void;
   onSubmitAgentMessage?: (text: string) => void;
@@ -793,7 +866,6 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
   onCreateScriptNode,
   onCreateFlowNode,
   hasScriptPage,
-  hasLeporello,
   hasPinoard,
   onOpenAgent,
   onSubmitAgentMessage,
@@ -824,17 +896,14 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
   const availableScriptCreateOptions = useMemo(
     () => scriptCreateOptions.filter((option) =>
       (option.type !== "pinoard" || !hasPinoard) &&
-      (option.type !== "scriptPage" || !hasScriptPage) &&
-      (option.type !== "leporello" || !hasLeporello)
+      (option.type !== "scriptPage" || !hasScriptPage)
     ),
-    [hasLeporello, hasPinoard, hasScriptPage]
+    [hasPinoard, hasScriptPage]
   );
   const head = timeline.head || DEFAULT_TIMELINE_HEAD;
   const weightedBlocksByAxis = useMemo(
     () => ({
       space: getWeightedAxisBlocks(timeline, "space"),
-      character: getWeightedAxisBlocks(timeline, "character"),
-      scene: getWeightedAxisBlocks(timeline, "scene"),
     }),
     [timeline]
   );
@@ -1139,12 +1208,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
           <span className="script-foundation-bar-label__icon" aria-hidden="true">
             {activeAxis === "time" ? (
               <Clock3 size={15} strokeWidth={1.9} />
-            ) : activeAxis === "space" ? (
-              <MapIcon size={15} strokeWidth={1.9} />
-            ) : activeAxis === "character" ? (
-              <UserRound size={15} strokeWidth={1.9} />
             ) : (
-              <Clapperboard size={15} strokeWidth={1.9} />
+              <MapIcon size={15} strokeWidth={1.9} />
             )}
           </span>
           <span className="script-foundation-bar-label__text">
@@ -1169,12 +1234,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
             <span className="script-foundation-head-icon" aria-hidden="true">
               {activeAxis === "time" ? (
                 <Clock3 size={17} strokeWidth={1.9} />
-              ) : activeAxis === "space" ? (
-                <MapIcon size={17} strokeWidth={1.9} />
-              ) : activeAxis === "character" ? (
-                <UserRound size={17} strokeWidth={1.9} />
               ) : (
-                <Clapperboard size={17} strokeWidth={1.9} />
+                <MapIcon size={17} strokeWidth={1.9} />
               )}
             </span>
           </button>
@@ -1653,8 +1714,8 @@ export const useFlowSurface = ({
   setProjectData,
   onOpenScriptDocument,
   onOpenLookbook,
-  onOpenLeporello,
   onOpenPinoard,
+  focusedWrapperId = null,
   canvasControls,
   screenToFlowPosition,
   isActive = false,
@@ -1690,12 +1751,15 @@ export const useFlowSurface = ({
   const [viewportWindowSize, setViewportWindowSize] = useState(getViewportWindowSize);
   const [showFoundationNodes, setShowFoundationNodes] = useState(false);
   const [activePdfNodeId, setActivePdfNodeId] = useState<string | null>(null);
+  const [inputNodeContextMenu, setInputNodeContextMenu] = useState<InputNodeContextMenuState | null>(null);
+  const inputNodeClipboardRef = useRef<NodeFlowNode | null>(null);
   const axisRevealTriggeredRef = useRef(false);
   const applyingFlowRuntimeRef = useRef(false);
   const wrapperClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperMotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperToggleLockRef = useRef(new Map<string, number>());
   const [wrapperMemberMotion, setWrapperMemberMotion] = useState<WrapperMemberMotion | null>(null);
+  const { deleteElements } = useReactFlow<FlowRenderNode, FlowRenderEdge>();
   const updateNodeInternals = useUpdateNodeInternals();
   const { runImageGen, runVideoGen } = useNodeFlowExecutor();
   const flow = useMemo(() => ensureFlow(projectData.flow), [projectData.flow]);
@@ -1718,6 +1782,8 @@ export const useFlowSurface = ({
     hydratedStyloProjectRef.current = activeFlowProjectId;
     setSelectedNodeIds(new Set());
     setSelectedEdgeIds(new Set());
+    setInputNodeContextMenu(null);
+    inputNodeClipboardRef.current = null;
     useNodeFlowStore.setState((state) => ({
       ...state,
       ...createIdleNodeFlowExecutionState(),
@@ -1745,13 +1811,11 @@ export const useFlowSurface = ({
   const foundationWeightedBlocksByAxis = useMemo(
     () => ({
       space: getWeightedAxisBlocks(timeline, "space"),
-      character: getWeightedAxisBlocks(timeline, "character"),
-      scene: getWeightedAxisBlocks(timeline, "scene"),
     }),
     [timeline]
   );
   const allFoundationBlocks = useMemo(
-    () => [...timeline.blocks, ...foundationWeightedBlocksByAxis.space, ...foundationWeightedBlocksByAxis.character, ...foundationWeightedBlocksByAxis.scene],
+    () => [...timeline.blocks, ...foundationWeightedBlocksByAxis.space],
     [foundationWeightedBlocksByAxis, timeline.blocks]
   );
   const foundationScaffoldNodeIds = useMemo(
@@ -1872,7 +1936,7 @@ export const useFlowSurface = ({
   );
 
   const visibleFlowNodeIds = useMemo(() => {
-    if (!shouldVirtualizeFlow) return null;
+    if (focusedWrapperId || !shouldVirtualizeFlow) return null;
     const ids = new Set<string>();
     const minBucketX = Math.floor(virtualizedViewportBounds.left / FLOW_VIRTUALIZATION_BUCKET_SIZE);
     const maxBucketX = Math.floor(virtualizedViewportBounds.right / FLOW_VIRTUALIZATION_BUCKET_SIZE);
@@ -1894,7 +1958,7 @@ export const useFlowSurface = ({
     }
     selectedNodeIds.forEach((nodeId) => ids.add(nodeId));
     return ids;
-  }, [selectedNodeIds, shouldVirtualizeFlow, virtualizedNodeIndex, virtualizedViewportBounds]);
+  }, [focusedWrapperId, selectedNodeIds, shouldVirtualizeFlow, virtualizedNodeIndex, virtualizedViewportBounds]);
 
   const foundationProjectionPositions = useMemo(() => {
     const positions = new Map<string, XYPosition>();
@@ -1919,6 +1983,16 @@ export const useFlowSurface = ({
   const wrapperProjection = useMemo(
     () => buildWrapperProjection(flow.flowNodes || [], flow.links || []),
     [flow.flowNodes, flow.links]
+  );
+  const focusedWrapperMemberIds = useMemo(
+    () => focusedWrapperId
+      ? new Set(wrapperProjection.memberIdsByWrapper.get(focusedWrapperId) || [])
+      : null,
+    [focusedWrapperId, wrapperProjection.memberIdsByWrapper]
+  );
+  const focusedWrapperLayout = useMemo(
+    () => buildFocusedWrapperLayout(Array.from(focusedWrapperMemberIds || [])),
+    [focusedWrapperMemberIds]
   );
   const wrapperGeometrySignature = useMemo(
     () => JSON.stringify(
@@ -1958,6 +2032,7 @@ export const useFlowSurface = ({
   const baseNodes = useMemo<FlowRenderNode[]>(() => {
     return (flow.flowNodes || [])
       .filter((node) => !visibleFlowNodeIds || visibleFlowNodeIds.has(node.id))
+      .filter((node) => !focusedWrapperMemberIds || focusedWrapperMemberIds.has(node.id))
       .filter((node) => showFoundationNodes || !getFoundationNodeRole(node))
       .map((node, index) => {
         const memberMotionOrder = wrapperMemberMotion?.orderById[node.id];
@@ -1980,6 +2055,7 @@ export const useFlowSurface = ({
               .find((value) => value.trim())
           : undefined;
         const baseStyle = getFlowNodeRenderStyle(node);
+        const focusedLayout = focusedWrapperLayout.get(node.id);
         const motionStyle = isMotionMember
           ? {
               ...baseStyle,
@@ -1989,25 +2065,39 @@ export const useFlowSurface = ({
         const existingClassName = (node as NodeFlowNode & { className?: string }).className;
         return {
           ...node,
-          position: node.position || getDefaultFlowNodePosition(index),
-          measured: fixedDimensions || sanitizeScriptMeasured(node.measured),
-          className: [existingClassName, isMotionMember ? `wrapper-member--${wrapperMemberMotion?.mode}` : ""]
+          position: focusedLayout?.position || node.position || getDefaultFlowNodePosition(index),
+          measured: focusedLayout
+            ? { width: focusedLayout.width, height: focusedLayout.height }
+            : fixedDimensions || sanitizeScriptMeasured(node.measured),
+          draggable: focusedLayout ? false : node.draggable,
+          className: [
+            existingClassName,
+            isMotionMember ? `wrapper-member--${wrapperMemberMotion?.mode}` : "",
+            focusedLayout ? "wrapper-focus-node" : "",
+          ]
             .filter(Boolean)
             .join(" "),
-          style: motionStyle,
-          hidden: wrapperProjection.hiddenNodeIds.has(node.id) && !isMotionMember,
+          style: focusedLayout
+            ? {
+                ...motionStyle,
+                width: focusedLayout.width,
+                height: focusedLayout.height,
+                minHeight: focusedLayout.height,
+              }
+            : motionStyle,
+          hidden: focusedLayout ? false : wrapperProjection.hiddenNodeIds.has(node.id) && !isMotionMember,
           selected: selectedNodeIds.has(node.id),
           data: {
             ...createDefaultNodeFlowNodeData(node.type),
             ...(node.data || {}),
             wrapperMemberCount: wrapperMemberIds.length,
-            wrapperRoot: isLookbookNodeType(node.type) || node.type === "leporello" || node.type === "pinoard" || isManusFolderNode(node),
+            wrapperRoot: isLookbookNodeType(node.type) || node.type === "pinoard" || isManusFolderNode(node),
             wrapperPreview,
             agentReviewPending: node.type === "scriptPage" && !!pendingScriptReviewNodeIds?.has(node.id),
           } as NodeFlowNodeData,
         };
       });
-  }, [flow.flowNodes, flowNodeById, pendingScriptReviewNodeIds, selectedNodeIds, showFoundationNodes, visibleFlowNodeIds, wrapperMemberMotion, wrapperProjection]);
+  }, [flow.flowNodes, flowNodeById, focusedWrapperLayout, focusedWrapperMemberIds, pendingScriptReviewNodeIds, selectedNodeIds, showFoundationNodes, visibleFlowNodeIds, wrapperMemberMotion, wrapperProjection]);
 
   const foundationBlockFolderNodes = useMemo(
     () =>
@@ -2913,10 +3003,6 @@ export const useFlowSurface = ({
     ) => {
       if (type === "folder" || isLookbookNodeType(type)) return null;
       if (type === "pinoard" && (flow.flowNodes || []).some((node) => node.type === "pinoard")) return null;
-      if (type === "leporello" && (flow.flowNodes || []).some((node) => node.type === "leporello")) return null;
-      const resolvedExtraData = type === "leporello"
-        ? { ...createInitialLeporelloData(resolveLeporelloProjectName(projectData)), ...(extraData || {}) }
-        : extraData;
       const requestedPosition = position || getDefaultFlowNodePosition(flow.flowNodes?.length || 0);
       const commandState = {
         revision: flow.revision || 0,
@@ -2932,7 +3018,7 @@ export const useFlowSurface = ({
         state: commandState,
         type,
         position: requestedPosition,
-        extraData: resolvedExtraData,
+        extraData,
         allocateNodeId: fixedNodeId ? () => fixedNodeId : createScriptFlowNodeId,
       });
       const createdNode = createResult.state.nodes.find((node) => !commandState.nodes.some((existing) => existing.id === node.id));
@@ -2944,7 +3030,7 @@ export const useFlowSurface = ({
           position: requestedPosition,
           data: {
             ...createDefaultNodeFlowNodeData(type),
-            ...(resolvedExtraData || {}),
+            ...(extraData || {}),
           } as NodeFlowNodeData,
         };
       setProjectData((previous) => {
@@ -3003,6 +3089,102 @@ export const useFlowSurface = ({
           });
     handleAddScriptPage(position);
   }, [handleAddScriptPage, screenToFlowPosition]);
+
+  const openInputNodeContextMenu = useCallback(
+    (point: { clientX: number; clientY: number }, node: FlowRenderNode) => {
+      const sourceNode = (flow.flowNodes || []).find((candidate) => candidate.id === node.id);
+      if (!isInputCardNode(sourceNode)) {
+        setInputNodeContextMenu(null);
+        return;
+      }
+      const menuWidth = 216;
+      const menuHeight = 242;
+      const maxX = typeof window === "undefined" ? point.clientX : window.innerWidth - menuWidth - 8;
+      const maxY = typeof window === "undefined" ? point.clientY : window.innerHeight - menuHeight - 8;
+      setSelectedNodeIds(new Set([node.id]));
+      setInputNodeContextMenu({
+        nodeId: node.id,
+        x: Math.max(8, Math.min(point.clientX, maxX)),
+        y: Math.max(8, Math.min(point.clientY, maxY)),
+      });
+    },
+    [flow.flowNodes]
+  );
+
+  const handleInputNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: FlowRenderNode) => {
+      const sourceNode = (flow.flowNodes || []).find((candidate) => candidate.id === node.id);
+      if (!isInputCardNode(sourceNode)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openInputNodeContextMenu(event, node);
+    },
+    [flow.flowNodes, openInputNodeContextMenu]
+  );
+
+  const handleCopyInputNode = useCallback((nodeId: string) => {
+    const sourceNode = (flow.flowNodes || []).find((node) => node.id === nodeId);
+    if (!isInputCardNode(sourceNode)) return;
+    inputNodeClipboardRef.current = JSON.parse(JSON.stringify(sourceNode)) as NodeFlowNode;
+    setInputNodeContextMenu(null);
+  }, [flow.flowNodes]);
+
+  const handlePasteInputNode = useCallback((targetNodeId: string) => {
+    const clipboardNode = inputNodeClipboardRef.current;
+    const targetNode = (flow.flowNodes || []).find((node) => node.id === targetNodeId);
+    if (!clipboardNode || !isInputCardNode(clipboardNode) || !targetNode) return;
+    const nextData = JSON.parse(JSON.stringify(clipboardNode.data || {})) as NodeFlowNodeData;
+    const createdNodeId = handleAddFlowNode(
+      clipboardNode.type,
+      { x: targetNode.position.x + 42, y: targetNode.position.y + 42 },
+      null,
+      nextData
+    );
+    if (createdNodeId && clipboardNode.style) {
+      persistFlow((currentFlow) => ({
+        ...currentFlow,
+        revision: (currentFlow.revision || 0) + 1,
+        flowNodes: (currentFlow.flowNodes || []).map((node) =>
+          node.id === createdNodeId
+            ? { ...node, style: { ...clipboardNode.style }, measured: undefined }
+            : node
+        ),
+      }));
+    }
+    setInputNodeContextMenu(null);
+  }, [flow.flowNodes, handleAddFlowNode, persistFlow]);
+
+  const handleSetInputNodeColor = useCallback((nodeId: string, cardColor: NodeCardColor) => {
+    persistFlow((currentFlow) => ({
+      ...currentFlow,
+      revision: (currentFlow.revision || 0) + 1,
+      flowNodes: (currentFlow.flowNodes || []).map((node) =>
+        node.id === nodeId
+          ? { ...node, data: { ...(node.data || {}), cardColor } as NodeFlowNodeData }
+          : node
+      ),
+    }));
+    setInputNodeContextMenu(null);
+  }, [persistFlow]);
+
+  const handleDeleteInputNode = useCallback(async (nodeId: string) => {
+    setInputNodeContextMenu(null);
+    await deleteElements({ nodes: [{ id: nodeId }] });
+  }, [deleteElements]);
+
+  useEffect(() => {
+    if (!inputNodeContextMenu) return undefined;
+    const closeMenu = () => setInputNodeContextMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [inputNodeContextMenu]);
 
   const handleImportScriptNodeFlow = useCallback(
     (nodeFlow: unknown) => {
@@ -3147,7 +3329,11 @@ export const useFlowSurface = ({
       );
       if (requestedNodes.length > 0 && deletableNodes.length === 0) return false;
 
-      const storageObjects = collectOwnedStorageObjects(deletableNodes);
+      const deletingNodeIds = new Set(deletableNodes.map((node) => node.id));
+      const storageObjects = collectUnreferencedOwnedStorageObjects(
+        deletableNodes,
+        (flow.flowNodes || []).filter((node) => !deletingNodeIds.has(node.id))
+      );
       if (storageObjects.length > 0) {
         try {
           await deleteOwnedStorageObjects(storageObjects, activeFlowProjectId);
@@ -3160,7 +3346,7 @@ export const useFlowSurface = ({
 
       return { nodes: deletableNodes, edges: deletableEdges };
     },
-    [activeFlowProjectId]
+    [activeFlowProjectId, flow.flowNodes]
   );
 
   const handleNodesChange = useCallback(
@@ -3660,9 +3846,8 @@ export const useFlowSurface = ({
       if (boundaryBlock) setActiveTimelineBlockId(boundaryBlock.id);
       const memberCount = typeof node.data.wrapperMemberCount === "number" ? node.data.wrapperMemberCount : 0;
       const isCollapsibleLookbook = isLookbookNodeType(node.type) && memberCount > 0;
-      const isCollapsibleLeporello = node.type === "leporello" && memberCount > 0;
       const isCollapsibleScreenplay = node.type === "folder" && isManusFolderNode(node as unknown as NodeFlowNode) && memberCount > 0;
-      if (!isCollapsibleLookbook && !isCollapsibleLeporello && !isCollapsibleScreenplay) return;
+      if (!isCollapsibleLookbook && !isCollapsibleScreenplay) return;
       if (wrapperClickTimerRef.current) clearTimeout(wrapperClickTimerRef.current);
       wrapperClickTimerRef.current = setTimeout(() => {
         wrapperClickTimerRef.current = null;
@@ -3679,9 +3864,8 @@ export const useFlowSurface = ({
         wrapperClickTimerRef.current = null;
       }
       if (isLookbookNodeType(node.type)) onOpenLookbook?.(node.id);
-      else if (node.type === "leporello") onOpenLeporello?.(node.id);
       else if (node.type === "pinoard") onOpenPinoard?.(node.id);
-      else if (node.type === "text") onOpenPinoard?.(null, node.id);
+      else if (node.type === "text" && !focusedWrapperId) onOpenPinoard?.(null, node.id);
       else if (node.type === "folder" && isManusFolderNode(node as unknown as NodeFlowNode)) {
         const pageIds = new Set(getManusPageIds(node.id, flow.flowNodes || [], flow.links || []));
         const firstPage = (flow.flowNodes || [])
@@ -3698,18 +3882,88 @@ export const useFlowSurface = ({
       else if (node.type === "scriptPage") onOpenScriptDocument(node.id);
       else if (node.type === "pdfInput") setActivePdfNodeId(node.id);
     },
-    [flow.flowNodes, flow.links, onOpenLeporello, onOpenLookbook, onOpenPinoard, onOpenScriptDocument]
+    [flow.flowNodes, flow.links, focusedWrapperId, onOpenLookbook, onOpenPinoard, onOpenScriptDocument]
   );
+
+  const inputNodeContextTarget = inputNodeContextMenu
+    ? (flow.flowNodes || []).find((node) => node.id === inputNodeContextMenu.nodeId)
+    : null;
 
   const overlays = (
     <>
+      {inputNodeContextMenu && inputNodeContextTarget ? (
+        <div
+          className="input-node-context-layer"
+          onPointerDown={() => setInputNodeContextMenu(null)}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <section
+            className="input-node-context-menu"
+            role="menu"
+            aria-label="输入节点操作"
+            style={{ left: inputNodeContextMenu.x, top: inputNodeContextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="input-node-context-menu__actions">
+              <button type="button" role="menuitem" onClick={() => handleCopyInputNode(inputNodeContextMenu.nodeId)}>
+                <Copy size={16} weight="regular" aria-hidden="true" />
+                <span>复制</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!inputNodeClipboardRef.current}
+                onClick={() => handlePasteInputNode(inputNodeContextMenu.nodeId)}
+              >
+                <ClipboardText size={16} weight="regular" aria-hidden="true" />
+                <span>粘贴</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="is-danger"
+                onClick={() => void handleDeleteInputNode(inputNodeContextMenu.nodeId)}
+              >
+                <Trash size={16} weight="regular" aria-hidden="true" />
+                <span>删除卡片</span>
+              </button>
+            </div>
+            <div className="input-node-context-menu__palette" aria-label="卡片标记颜色">
+              <div className="input-node-context-menu__palette-title">
+                <Palette size={14} weight="regular" aria-hidden="true" />
+                <span>标记颜色</span>
+              </div>
+              <div className="input-node-context-menu__swatches">
+                {INPUT_CARD_COLORS.map((color) => {
+                  const isActive = (inputNodeContextTarget.data?.cardColor || "none") === color.value;
+                  return (
+                    <button
+                      key={color.value}
+                      type="button"
+                      className="input-node-context-menu__swatch"
+                      data-color={color.value}
+                      data-active={isActive}
+                      title={color.label}
+                      aria-label={color.label}
+                      aria-pressed={isActive}
+                      onClick={() => handleSetInputNodeColor(inputNodeContextMenu.nodeId, color.value)}
+                    >
+                      {isActive ? <Check size={11} weight="bold" aria-hidden="true" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {connectionDrop ? (
         <ConnectionDropMenu
           position={connectionDrop.position}
           options={scriptCreateOptions.filter((option) =>
             (option.type !== "pinoard" || !nodes.some((node) => node.type === "pinoard")) &&
-            (option.type !== "scriptPage" || !nodes.some((node) => node.type === "scriptPage")) &&
-            (option.type !== "leporello" || !nodes.some((node) => node.type === "leporello"))
+            (option.type !== "scriptPage" || !nodes.some((node) => node.type === "scriptPage"))
           )}
           subtitle="创建 Flow 节点"
           onCreate={handleDropCreate}
@@ -3728,7 +3982,7 @@ export const useFlowSurface = ({
         </React.Suspense>
       ) : null}
 
-      {nodes.length === 0 && foundationScaffoldNodeIds.size === 0 ? (
+      {!focusedWrapperId && nodes.length === 0 && foundationScaffoldNodeIds.size === 0 ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <button
             type="button"
@@ -3763,7 +4017,6 @@ export const useFlowSurface = ({
           onCreateArchiveNode={handleAddMarkdownNodeFromTail}
           onCreateScriptNode={handleAddScriptPageFromTail}
           hasScriptPage={nodes.some((node) => node.type === "scriptPage")}
-          hasLeporello={nodes.some((node) => node.type === "leporello")}
           hasPinoard={nodes.some((node) => node.type === "pinoard")}
           onCreateFlowNode={(type) => {
             const position =
@@ -3807,10 +4060,12 @@ export const useFlowSurface = ({
     onBeforeDelete: handleBeforeDelete as CanvasSurfaceConfig["onBeforeDelete"],
     onNodeClick: (_, node) => handleScriptNodeClick(node as FlowRenderNode),
     onNodeDoubleClick: (_, node) => handleScriptNodeDoubleClick(node as FlowRenderNode),
+    onNodeContextMenu: (event, node) => handleInputNodeContextMenu(event, node as FlowRenderNode),
+    onNodeLongPress: (point, node) => openInputNodeContextMenu(point, node as FlowRenderNode),
     onNodeDragStart: (_, node) => updateSnapGuide(node.id, node.position),
     onNodeDrag: (_, node) => updateSnapGuide(node.id, node.position),
     onNodeDragStop: (_, node) => finishNodeDrag(node as FlowRenderNode),
-    nodesDraggable: !isLocked,
+    nodesDraggable: !isLocked && !focusedWrapperId,
     nodesConnectable: !isLocked,
     elementsSelectable: !isLocked,
     onlyRenderVisibleElements: false,

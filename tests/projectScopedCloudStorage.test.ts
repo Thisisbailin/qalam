@@ -115,6 +115,7 @@ test("node movement is recognized and applied as an action-level sync patch", ()
       updatedAt: 99,
       flow: {
         ...previous.flowProjects![0].flow,
+        links: [...previous.flowProjects![0].flow.links],
         flowNodes: [{
           ...previous.flowProjects![0].flow.flowNodes![0],
           position: { x: 40, y: 50 },

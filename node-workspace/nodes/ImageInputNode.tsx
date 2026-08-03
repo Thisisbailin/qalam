@@ -670,6 +670,7 @@ export const ImageInputNode: React.FC<Props> = ({ id, data, selected }) => {
       selected={selected}
       variant="media"
       nodeType="imageInput"
+      cardColor={data.cardColor}
     >
       <div ref={shellRef} className="image-input-shell relative w-full h-full">
         {displayImage ? (

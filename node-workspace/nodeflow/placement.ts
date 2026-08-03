@@ -14,7 +14,6 @@ export const DEFAULT_NODE_DIMENSIONS: Partial<Record<NodeType, { width: number; 
   pdfInput: { width: 248, height: 350 },
   scriptBoard: { width: 920 },
   lookbook: LOOKBOOK_WRAPPER_DIMENSIONS,
-  leporello: { width: 356, height: 180 },
   identityCard: LOOKBOOK_WRAPPER_DIMENSIONS,
   imageGen: { width: 380, height: 520 },
   nanoBananaImageGen: { width: 380, height: 520 },

@@ -119,6 +119,77 @@ test("initializing the system Foundation scaffold does not consume a project rev
   }), true);
 });
 
+test("Foundation migration removes legacy character and scene axes without deleting member nodes", () => {
+  const descriptor = {
+    rootNodeId: "project-root-flow-project-main",
+    title: "主项目",
+    durationMin: DEFAULT_TIMELINE_DURATION,
+  };
+  const initialized = ensureFoundationGraphSkeleton({
+    revision: 0,
+    flowNodes: [],
+    links: [],
+    graphLinks: [],
+    globalAssetHistory: [],
+    linkStyle: "curved",
+    activeView: null,
+  }, descriptor);
+  const characterAxisId = `${descriptor.rootNodeId}--character-axis`;
+  const characterBlockId = `${descriptor.rootNodeId}--character-block-1`;
+  const characterArchiveId = `${characterBlockId}--archive`;
+  const memberId = "image-character-reference";
+  const legacyFlow = {
+    ...initialized,
+    flowNodes: [
+      ...(initialized.flowNodes || []),
+      {
+        id: characterAxisId,
+        type: "folder",
+        position: { x: 80, y: 1300 },
+        data: { title: "角色轴", foundationRole: "axis-folder", foundationAxis: "character" },
+      },
+      {
+        id: characterBlockId,
+        type: "folder",
+        position: { x: 360, y: 1540 },
+        data: { title: "角色 1", foundationRole: "block-folder", foundationAxis: "character" },
+      },
+      {
+        id: characterArchiveId,
+        type: "mdText",
+        position: { x: 630, y: 1522 },
+        data: { title: "角色 1档案.md", foundationRole: "block-document", foundationAxis: "character" },
+      },
+      {
+        id: memberId,
+        type: "imageInput",
+        position: { x: 980, y: 1540 },
+        data: { title: "角色参考", foundationContainerId: characterBlockId },
+      },
+    ] as any,
+    links: [
+      ...initialized.links,
+      { id: "legacy-root-axis", source: descriptor.rootNodeId, target: characterAxisId },
+      { id: "legacy-axis-block", source: characterAxisId, target: characterBlockId },
+      { id: "legacy-block-archive", source: characterBlockId, target: characterArchiveId },
+      { id: "legacy-block-member", source: characterBlockId, target: memberId },
+    ],
+  };
+
+  const migrated = ensureFoundationGraphSkeleton(legacyFlow, descriptor);
+  const migratedNodeIds = new Set((migrated.flowNodes || []).map((node) => node.id));
+  assert.equal(migratedNodeIds.has(characterAxisId), false);
+  assert.equal(migratedNodeIds.has(characterBlockId), false);
+  assert.equal(migratedNodeIds.has(characterArchiveId), false);
+  assert.equal(migratedNodeIds.has(memberId), true);
+  assert.equal(
+    (migrated.flowNodes || []).find((node) => node.id === memberId)?.data?.foundationContainerId,
+    undefined,
+  );
+  assert.equal(migrated.links.some((link) => link.source === characterBlockId || link.target === characterBlockId), false);
+  assert.strictEqual(ensureFoundationGraphSkeleton(migrated, descriptor), migrated);
+});
+
 test("project reset clears only the matching account and project Agent memory", () => {
   const storage = new MemoryStorage();
   const accountScope = "user:reset-owner";

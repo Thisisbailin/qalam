@@ -49,12 +49,16 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(workspace, /onOpenLookbook=\{\(identityNodeId\) => \{[\s\S]*setEditingScriptNodeId\(null\);[\s\S]*setActiveLookbookNodeId\(identityNodeId\);/);
   assert.match(workspace, /getConnectedScriptPageSequence\(previous, nodeId\)/);
   assert.match(styles, /\.screenplay-header \{[\s\S]*display: block;/);
-  assert.match(styles, /\.screenplay-document \{[\s\S]*border-radius: 8px;/);
+  assert.match(styles, /\.screenplay-document \{[\s\S]*border-radius: 7px;/);
+  assert.match(styles, /--screenplay-paper: #fbfaf6/);
+  assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
+  assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
+  assert.match(styles, /\.screenplay-header \{[\s\S]*right: -54px;/);
   assert.match(styles, /\.screenplay-identity-dock__rail \{/);
   assert.match(styles, /\.screenplay-identity-dock__rail > button \{[\s\S]*background:/);
   assert.match(styles, /\.screenplay-identity-dock\.is-open \.screenplay-identity-dock__surface \{[\s\S]*width: 286px;/);
   assert.match(styles, /\.screenplay-workspace\.is-agent-open \.screenplay-document-stage\.is-vertical/);
-  assert.match(styles, /\.screenplay-workspace\.is-agent-open \.screenplay-document-stage\.is-vertical \{[\s\S]*padding-right: 8px;/);
+  assert.match(styles, /\.screenplay-workspace\.is-agent-open \.screenplay-document-stage\.is-vertical \{[\s\S]*padding-right: 62px;/);
   assert.match(styles, /\.screenplay-document-stage\.is-vertical \{[\s\S]*gap: 12px;/);
   assert.match(styles, /\.screenplay-selection-command\.is-asking/);
   assert.match(styles, /\.screenplay-identity-removal \{[\s\S]*border-radius: 999px;/);

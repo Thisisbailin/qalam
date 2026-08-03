@@ -1,6 +1,6 @@
 import type { NodeType } from "../types";
 
-export type FoundationAxis = "time" | "space" | "character" | "scene";
+export type FoundationAxis = "time" | "space";
 export type FoundationWeightedAxis = Exclude<FoundationAxis, "time">;
 
 export type FoundationAxisDefinition = {
@@ -15,8 +15,6 @@ export type FoundationAxisDefinition = {
 export const FOUNDATION_AXIS_DEFINITIONS: readonly FoundationAxisDefinition[] = [
   { id: "time", label: "时间轴", blockLabel: "时间区块", layoutY: 500, accepts: "document", sizing: "duration" },
   { id: "space", label: "空间轴", blockLabel: "空间区块", layoutY: 1020, accepts: "document", sizing: "weight" },
-  { id: "character", label: "角色轴", blockLabel: "角色", layoutY: 1540, accepts: "media", sizing: "weight" },
-  { id: "scene", label: "场景轴", blockLabel: "场景", layoutY: 2060, accepts: "media", sizing: "weight" },
 ] as const;
 
 export const FOUNDATION_AXES = FOUNDATION_AXIS_DEFINITIONS.map((definition) => definition.id);

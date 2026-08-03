@@ -183,6 +183,7 @@ export const VideoInputNode: React.FC<Props> = ({ id, data, selected }) => {
       selected={selected}
       variant="media"
       nodeType="videoInput"
+      cardColor={data.cardColor}
     >
       <div className="media-input-frame flex-1">
         {displayVideo ? (

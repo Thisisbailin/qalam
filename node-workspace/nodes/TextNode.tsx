@@ -428,6 +428,7 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
             selected={selected}
             variant="text"
             nodeType={isScriptDocument ? "script-document" : isDocumentTextNode ? "text-document" : "text"}
+            cardColor={data.cardColor}
             headerActions={
                 isAgentReviewPending ? (
                     <span className="text-node-review-status" title="Stylo 修改待审核">

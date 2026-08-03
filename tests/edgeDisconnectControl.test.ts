@@ -35,7 +35,7 @@ test("selected Flow edges expose the shared disconnect control", async () => {
   assert.match(flowSurface, /useUpdateNodeInternals\(\)/);
   assert.match(flowSurface, /wrapperGeometrySignature[\s\S]*updateNodeInternals\(nodeIds\)/);
   assert.match(wrapperEdge, /getBezierPath\([\s\S]*curvature: 0\.28/);
-  assert.match(flowSurface, /getFixedFlowNodeDimensions[\s\S]*measured: fixedDimensions \|\| sanitizeScriptMeasured/);
+  assert.match(flowSurface, /getFixedFlowNodeDimensions[\s\S]*focusedLayout[\s\S]*fixedDimensions \|\| sanitizeScriptMeasured/);
   assert.match(styles, /\.react-flow__edge-interaction \{[\s\S]*stroke-width: 28px;[\s\S]*pointer-events: stroke;/);
   assert.match(styles, /\.flow-edge-disconnect \{[\s\S]*width: 24px;[\s\S]*background: transparent;[\s\S]*border: 0;[\s\S]*pointer-events: all;/);
   assert.doesNotMatch(styles, /translate3d\(var\(--wrapper-motion-/);

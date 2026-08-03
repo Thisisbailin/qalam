@@ -192,6 +192,9 @@ SUPABASE_URL = "https://<project-ref>.supabase.co"
 Notes:
 
 - Keep `SUPABASE_SECRET_KEY` in Cloudflare Pages secrets.
+- Mirror `SUPABASE_SECRET_KEY` to the `stylo-project-deletion` Worker. The
+  Worker consumes bounded, idempotent Storage cleanup jobs; the secret is never
+  embedded in a queue message.
 - `SUPABASE_SERVICE_ROLE` is still supported by the code for backward compatibility, but `SUPABASE_SECRET_KEY` is the preferred current name.
 - Asset uploads expect Supabase Storage buckets `public-assets` and `assets` to exist.
   `assets` must be private, limited to 64 MiB per object, and allow only the
@@ -218,6 +221,8 @@ For local D1 development, use the same command with `--local`. The migration fil
 - `functions/api/project-realtime.ts`: authenticated multi-device realtime project channel
 - `functions/api/realtime-ticket.ts`: short-lived one-time WebSocket ticket issuer
 - `realtime-worker/`: project-scoped Yjs Durable Object coordinator
+- `project-deletion-worker/`: recoverable queue consumer for permanent,
+  project-scoped object-storage deletion
 - `functions/api/project.ts`: authenticated read-only projection of the realtime document
 - `functions/api/projects.ts`: authenticated cloud-project catalog
 - `functions/api/upload-url.ts`: Supabase signed upload URL helper

@@ -1,8 +1,6 @@
 const { app, BrowserWindow, Menu, shell, ipcMain, screen } = require("electron");
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
-const zlib = require("zlib");
 const { pathToFileURL } = require("url");
 const desktopConfig = require("./desktop.config.cjs");
 
@@ -15,59 +13,6 @@ const WINDOW_STATE_FILE = "stylo-window-state.json";
 const WINDOW_STATE_WRITE_DELAY_MS = 240;
 const MIN_VISIBLE_WINDOW_EDGE = 96;
 let mainWindow = null;
-const leporelloSketchSessions = new Map();
-const LEPORELLO_SKETCH_WIDTH = 2100;
-const LEPORELLO_SKETCH_HEIGHT = 900;
-const LEPORELLO_SKETCH_MAX_BYTES = 30 * 1024 * 1024;
-
-const crc32 = (buffer) => {
-  let crc = 0xffffffff;
-  for (const byte of buffer) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) {
-      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-};
-
-const createPngChunk = (type, data) => {
-  const typeBytes = Buffer.from(type, "ascii");
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length, 0);
-  const checksum = Buffer.alloc(4);
-  checksum.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])), 0);
-  return Buffer.concat([length, typeBytes, data, checksum]);
-};
-
-const createBlankLeporelloPng = () => {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(LEPORELLO_SKETCH_WIDTH, 0);
-  ihdr.writeUInt32BE(LEPORELLO_SKETCH_HEIGHT, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 2;
-  const stride = LEPORELLO_SKETCH_WIDTH * 3 + 1;
-  const pixels = Buffer.alloc(stride * LEPORELLO_SKETCH_HEIGHT, 246);
-  for (let row = 0; row < LEPORELLO_SKETCH_HEIGHT; row += 1) pixels[row * stride] = 0;
-  return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    createPngChunk("IHDR", ihdr),
-    createPngChunk("IDAT", zlib.deflateSync(pixels, { level: 9 })),
-    createPngChunk("IEND", Buffer.alloc(0)),
-  ]);
-};
-
-const removeLeporelloSketchSession = (sessionId) => {
-  const session = leporelloSketchSessions.get(sessionId);
-  leporelloSketchSessions.delete(sessionId);
-  if (!session) return;
-  try {
-    fs.rmSync(session.directory, { recursive: true, force: true });
-  } catch (error) {
-    console.warn("Unable to remove Leporello sketch session", error);
-  }
-};
-
 const migrateLegacyUserDataDirectory = () => {
   const currentUserData = app.getPath("userData");
   const appDataRoot = path.dirname(currentUserData);
@@ -432,86 +377,6 @@ ipcMain.handle("stylo-window-control", (event, action) => {
   return { isMaximized: targetWindow.isMaximized() };
 });
 
-ipcMain.handle("stylo-leporello-sketch-start", (_event, payload) => {
-  if (process.platform !== "darwin") {
-    return { ok: false, message: "系统速绘目前仅支持 macOS。" };
-  }
-  const projectName = typeof payload?.projectName === "string" ? payload.projectName.trim().slice(0, 120) : "Leporello";
-  const pageId = typeof payload?.pageId === "string" ? payload.pageId.trim().slice(0, 120) : "panel";
-  if (!pageId || !/^[a-zA-Z0-9_-]+$/.test(pageId)) {
-    return { ok: false, message: "折页标识无效。" };
-  }
-  for (const [sessionId, session] of leporelloSketchSessions) {
-    if (Date.now() - session.createdAt > 6 * 60 * 60 * 1000) removeLeporelloSketchSession(sessionId);
-  }
-  try {
-    const sessionId = crypto.randomUUID();
-    const directory = path.join(app.getPath("temp"), "stylo-leporello", sessionId);
-    const safeProjectName = (projectName || "Leporello")
-      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 64) || "Leporello";
-    const filePath = path.join(directory, `${safeProjectName}-${pageId}-21x9.png`);
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(filePath, createBlankLeporelloPng(), { flag: "wx", mode: 0o600 });
-    leporelloSketchSessions.set(sessionId, { directory, filePath, createdAt: Date.now() });
-    shell.showItemInFolder(filePath);
-    return {
-      ok: true,
-      sessionId,
-      message: "已在 Finder 中准备 2100 × 900 画纸。使用快速操作中的标记，并在设备按钮中选择附近的 iPad 或 iPhone。",
-    };
-  } catch (error) {
-    console.warn("Unable to start Leporello sketch", error);
-    return { ok: false, message: "无法创建系统速绘画纸。" };
-  }
-});
-
-ipcMain.handle("stylo-leporello-sketch-complete", (_event, sessionId) => {
-  if (typeof sessionId !== "string" || !/^[0-9a-f-]{36}$/i.test(sessionId)) {
-    return { ok: false, message: "速绘会话无效。" };
-  }
-  const session = leporelloSketchSessions.get(sessionId);
-  if (!session) return { ok: false, message: "速绘会话已失效，请重新开始。" };
-  try {
-    const stat = fs.statSync(session.filePath);
-    if (!stat.isFile() || stat.size <= 0 || stat.size > LEPORELLO_SKETCH_MAX_BYTES) {
-      return { ok: false, message: "速绘文件大小无效。" };
-    }
-    const bytes = fs.readFileSync(session.filePath);
-    const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-    if (bytes.length < 24 || !bytes.subarray(0, 8).equals(pngSignature)) {
-      return { ok: false, message: "速绘文件不是有效的 PNG。" };
-    }
-    const width = bytes.readUInt32BE(16);
-    const height = bytes.readUInt32BE(20);
-    if (width <= 0 || height <= 0 || width * height > 40_000_000) {
-      return { ok: false, message: "速绘画纸尺寸无效。" };
-    }
-    const result = {
-      ok: true,
-      name: path.basename(session.filePath),
-      dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
-      mimeType: "image/png",
-      width,
-      height,
-      hasAlpha: false,
-    };
-    removeLeporelloSketchSession(sessionId);
-    return result;
-  } catch (error) {
-    console.warn("Unable to complete Leporello sketch", error);
-    return { ok: false, message: "无法读取系统速绘文件，请确认标记窗口已经保存。" };
-  }
-});
-
-ipcMain.handle("stylo-leporello-sketch-cancel", (_event, sessionId) => {
-  if (typeof sessionId === "string" && /^[0-9a-f-]{36}$/i.test(sessionId)) {
-    removeLeporelloSketchSession(sessionId);
-  }
-  return { ok: true };
-});
-
 const createMainWindow = () => {
   const startUrl = getStartUrl();
   const isMac = process.platform === "darwin";
@@ -648,8 +513,4 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
-});
-
-app.on("before-quit", () => {
-  for (const sessionId of leporelloSketchSessions.keys()) removeLeporelloSketchSession(sessionId);
 });

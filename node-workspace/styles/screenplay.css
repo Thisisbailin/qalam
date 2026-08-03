@@ -6,17 +6,17 @@
   --screenplay-chrome-line: var(--app-border);
   --screenplay-chrome-text: var(--app-text-primary);
   --screenplay-chrome-muted: var(--app-text-secondary);
-  --screenplay-paper: var(--app-panel-strong);
-  --screenplay-paper-line: var(--app-border);
-  --screenplay-ink: var(--app-text-primary);
-  --screenplay-muted: var(--app-text-muted);
+  --screenplay-paper: #fbfaf6;
+  --screenplay-paper-line: rgba(91, 84, 72, 0.16);
+  --screenplay-ink: #292722;
+  --screenplay-muted: rgba(67, 63, 55, 0.48);
   --screenplay-agent-inset: 0px;
   position: fixed;
   inset: 0;
   z-index: 61;
   min-height: 100dvh;
   overflow: hidden;
-  background: var(--app-bg);
+  background: transparent;
   color: var(--screenplay-ink);
   font-family: "Geist", "Avenir Next", system-ui, sans-serif;
   isolation: isolate;
@@ -51,9 +51,9 @@
 .screenplay-header {
   position: absolute;
   top: 42px;
-  right: -68px;
+  right: -54px;
   z-index: 4;
-  width: 68px;
+  width: 50px;
   height: 370px;
   display: block;
   color: var(--screenplay-chrome-text);
@@ -68,7 +68,7 @@
 .screenplay-header__actions {
   position: absolute;
   top: 0;
-  right: 10px;
+  right: 0;
   display: flex;
   width: 44px;
   min-height: 304px;
@@ -420,11 +420,7 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  background:
-    var(--app-pattern),
-    linear-gradient(90deg, color-mix(in srgb, var(--app-text-primary) 4%, transparent) 1px, transparent 1px),
-    var(--app-bg);
-  background-size: 48px 48px;
+  background: transparent;
   scroll-padding-top: 78px;
   padding-top: 56px;
 }
@@ -432,7 +428,7 @@
 .screenplay-document-stage {
   width: 100%;
   min-height: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .screenplay-document-stage.is-vertical {
@@ -467,13 +463,21 @@
 
 .screenplay-document {
   position: relative;
-  width: min(816px, calc(100% - 52px));
+  width: min(816px, calc(100% - 124px));
   min-height: 1056px;
   margin: 28px auto 80px;
   border: 1px solid var(--screenplay-paper-line);
-  border-radius: 8px;
-  background: var(--screenplay-paper);
-  box-shadow: 0 28px 76px -48px rgba(34, 30, 25, 0.34), inset 0 1px 0 color-mix(in srgb, var(--app-text-primary) 7%, transparent);
+  border-radius: 7px;
+  background:
+    radial-gradient(ellipse at 14% 9%, rgba(116, 105, 84, 0.032), transparent 28%),
+    radial-gradient(ellipse at 82% 74%, rgba(116, 105, 84, 0.026), transparent 34%),
+    repeating-linear-gradient(8deg, rgba(104, 94, 75, 0.014) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(97deg, rgba(255, 255, 255, 0.24) 0 1px, transparent 1px 7px),
+    var(--screenplay-paper);
+  box-shadow:
+    0 24px 58px -42px rgba(54, 49, 39, 0.3),
+    0 4px 14px -10px rgba(54, 49, 39, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .screenplay-document-stage.is-horizontal .screenplay-document {
@@ -494,7 +498,10 @@
 .screenplay-document.is-preview:hover,
 .screenplay-document.is-preview:focus-visible {
   border-color: color-mix(in srgb, var(--screenplay-accent) 38%, var(--screenplay-paper-line));
-  box-shadow: 0 32px 82px -48px rgba(34, 30, 25, 0.42), inset 0 1px 0 color-mix(in srgb, var(--app-text-primary) 7%, transparent);
+  box-shadow:
+    0 30px 68px -44px rgba(54, 49, 39, 0.36),
+    0 5px 16px -11px rgba(54, 49, 39, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
   transform: translate3d(0, -2px, 0);
 }
 
@@ -1809,20 +1816,18 @@
 }
 
 .screenplay-workspace.is-focus-mode .screenplay-header {
-  right: 10px;
+  right: -54px;
 }
 
 .screenplay-workspace.is-focus-mode .screenplay-document-viewport {
-  background: var(--screenplay-paper);
+  background: transparent;
   padding-top: 0;
 }
 
 .screenplay-workspace.is-focus-mode .screenplay-document {
-  width: min(1040px, 100%);
+  width: min(1040px, calc(100% - 124px));
   min-height: 100dvh;
   margin: 0 auto;
-  border: 0;
-  box-shadow: none;
 }
 
 .screenplay-workspace.is-focus-mode .screenplay-document__masthead {
@@ -1929,13 +1934,13 @@
 
 /* Manus floating chrome shares the compact material language of the canvas dock. */
 .screenplay-header {
-  right: 4px;
-  width: 52px;
+  right: -54px;
+  width: 50px;
   display: block;
 }
 
 .screenplay-header__actions {
-  right: 4px;
+  right: 0;
   width: 44px;
   border-color: color-mix(in srgb, var(--app-border-strong) 58%, transparent);
   border-radius: 999px;
@@ -1955,7 +1960,7 @@
 
 .screenplay-workspace.is-agent-open .screenplay-document-stage.is-vertical {
   align-items: flex-end;
-  padding-right: 8px;
+  padding-right: 62px;
 }
 
 .screenplay-workspace.is-agent-open .screenplay-document-stage.is-vertical .screenplay-document {
@@ -1965,7 +1970,7 @@
 
 .screenplay-workspace.is-agent-open .screenplay-document-stage.is-filmstrip {
   justify-content: flex-end;
-  padding-right: 8px;
+  padding-right: 62px;
 }
 
 .screenplay-workspace.is-agent-open .screenplay-document-stage.is-filmstrip .screenplay-document {
@@ -2277,7 +2282,7 @@
 @media (max-width: 720px) {
   .screenplay-workspace.is-agent-open .screenplay-document-stage.is-vertical,
   .screenplay-workspace.is-agent-open .screenplay-document-stage.is-filmstrip {
-    padding-right: 8px;
+    padding-right: 10px;
   }
 
   .screenplay-identity-dock,

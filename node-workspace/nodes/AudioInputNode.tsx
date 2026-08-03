@@ -96,6 +96,7 @@ export const AudioInputNode: React.FC<Props> = ({ id, data, selected }) => {
       selected={selected}
       variant="media"
       nodeType="audioInput"
+      cardColor={data.cardColor}
     >
       <div className="media-input-frame flex-1">
         {displayAudio ? (

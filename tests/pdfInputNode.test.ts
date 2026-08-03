@@ -71,13 +71,13 @@ const makePdfProject = (pdf: string): NodeFlowFile => ({
   }],
 });
 
-test("PDF input defaults, handles, and Foundation classification share media architecture", () => {
+test("PDF input defaults and handles stay outside the document-only Foundation axes", () => {
   const defaults = createDefaultNodeFlowNodeData("pdfInput") as PdfInputNodeData;
   assert.equal(defaults.pdf, null);
   assert.equal(defaults.mimeType, "application/pdf");
   assert.deepEqual(defaults.highlights, []);
   assert.deepEqual(getNodeHandles("pdfInput"), { inputs: ["text"], outputs: [] });
-  assert.equal(isNodeTypeAllowedInFoundationAxis("character", "pdfInput"), true);
+  assert.equal(isNodeTypeAllowedInFoundationAxis("space", "pdfInput"), false);
   assert.equal(isNodeTypeAllowedInFoundationAxis("time", "pdfInput"), false);
 });
 

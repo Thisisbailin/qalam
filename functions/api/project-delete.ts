@@ -15,7 +15,9 @@ export const onRequestDelete = async (context: { request: Request; env: Env }) =
     const userId = await getUserId(context.request, context.env);
     const projectId = requireRequestProjectId(context.request);
     const result = await permanentlyDeleteProject(context.env, userId, projectId);
-    return jsonResponse({ ok: true, projectId, ...result });
+    return jsonResponse({ ok: true, projectId, ...result }, {
+      status: result.cleanupStatus === "queued" ? 202 : 200,
+    });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("DELETE /api/project-delete error", error);

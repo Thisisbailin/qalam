@@ -178,6 +178,7 @@ export const PdfInputNode: React.FC<Props> = ({ id, data, selected }) => {
       selected={selected}
       variant="media"
       nodeType="pdfInput"
+      cardColor={data.cardColor}
     >
       <div className="pdf-input-shell">
         {displayPdf ? (

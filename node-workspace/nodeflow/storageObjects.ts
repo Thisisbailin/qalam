@@ -2,10 +2,15 @@ import { buildApiUrl } from "../../utils/api";
 import { buildAuthorizedJsonHeaders } from "../../utils/authToken";
 import {
   collectOwnedStorageObjects,
+  collectUnreferencedOwnedStorageObjects,
   type OwnedStorageObject,
 } from "./storageReferences";
 
-export { collectOwnedStorageObjects, type OwnedStorageObject } from "./storageReferences";
+export {
+  collectOwnedStorageObjects,
+  collectUnreferencedOwnedStorageObjects,
+  type OwnedStorageObject,
+} from "./storageReferences";
 
 export const deleteOwnedStorageObjects = async (objects: OwnedStorageObject[], projectId: string) => {
   const uniqueObjects = collectOwnedStorageObjects(objects.map((object) => ({

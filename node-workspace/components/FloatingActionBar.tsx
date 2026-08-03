@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, FilePdf, GearSix, SquaresFour, UsersThree } from "@phosphor-icons/react";
+import { BookOpen, FilePdf, GearSix, LinkSimple, SquaresFour, UsersThree } from "@phosphor-icons/react";
 import {
   Plus,
   User,
@@ -29,6 +29,7 @@ type AccountInfo = {
   onUploadAvatar?: () => void;
   onOpenAccountWorkspace?: () => void;
   onOpenUserSquare?: () => void;
+  onConnectCodex?: () => void;
 };
 
 type Props = {
@@ -699,7 +700,7 @@ export const FloatingActionBar: React.FC<Props> = ({
                             </div>
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 divide-x divide-[var(--app-border)] border-y border-[var(--app-border)]">
+                    <div className="grid grid-cols-3 divide-x divide-[var(--app-border)] border-y border-[var(--app-border)]">
                       <button
                         type="button"
                         onClick={() => {
@@ -721,6 +722,17 @@ export const FloatingActionBar: React.FC<Props> = ({
                       >
                         <UsersThree size={15} weight="thin" />
                         <span>用户广场</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          accountInfo?.onConnectCodex?.();
+                          closeMenus();
+                        }}
+                        className="flex items-center gap-2 px-3 py-3 text-left text-[11px] text-[var(--app-text-secondary)] transition hover:bg-[var(--app-panel-muted)] hover:text-[var(--app-text-primary)] active:translate-y-px"
+                      >
+                        <LinkSimple size={15} weight="thin" />
+                        <span>连接 Codex</span>
                       </button>
                     </div>
                     {accountThemeControls ? (

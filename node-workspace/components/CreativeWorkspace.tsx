@@ -86,6 +86,7 @@ interface CreativeWorkspaceProps {
     onSignIn?: () => void;
     onSignOut?: () => void;
     onUploadAvatar?: () => void;
+    onConnectCodex?: () => void;
     username?: string;
   };
 }

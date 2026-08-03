@@ -14,6 +14,7 @@ import { useTheme } from './hooks/useTheme';
 import { useSecretsSync } from './hooks/useSecretsSync';
 import { AppShell } from './components/layout/AppShell';
 import { CloudAccountGate } from './components/CloudAccountGate';
+import { CodexConnectDialog } from './components/CodexConnectDialog';
 import { CreativeWorkspace } from './node-workspace/components/CreativeWorkspace';
 import { resetNodeFlowAccountState, resetNodeFlowProjectState } from './node-workspace/store/nodeFlowStore';
 import type { ProjectSettingsPanelKey } from './node-workspace/components/ProjectSettingsPanel';
@@ -140,6 +141,19 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
     () => new AccountApiSession(accountScope, getAuthToken, getDeviceId(), fetch, buildApiUrl),
     [accountScope, getAuthToken]
   );
+  const initialCodexPairingCode = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return new URL(window.location.href).searchParams.get("codex_pair") || "";
+  }, []);
+  const [showCodexConnect, setShowCodexConnect] = useState(Boolean(initialCodexPairingCode));
+  const approveCodexPairing = useCallback(async (userCode: string) => {
+    const response = await accountSession.request('/api/codex-pairing', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'approve', userCode }),
+    });
+    await requireOkResponse(response, '无法授权 Codex');
+  }, [accountSession]);
   useEffect(() => accountSession.retain(), [accountSession]);
   useEffect(() => {
     setApiAuthTokenProvider(authSignedIn ? getAuthToken : null);
@@ -774,6 +788,7 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
           onSignIn: () => openSignIn(),
           onSignOut: handleExitProject,
           onUploadAvatar: handleAvatarUploadClick,
+          onConnectCodex: () => setShowCodexConnect(true),
         }}
       />
     </div>
@@ -791,6 +806,12 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
           ref={avatarFileInputRef}
           className="hidden"
           onChange={handleAvatarFileChange}
+        />
+        <CodexConnectDialog
+          isOpen={showCodexConnect}
+          initialCode={initialCodexPairingCode}
+          onClose={() => setShowCodexConnect(false)}
+          onApprove={approveCodexPairing}
         />
         {renderMainContent()}
         <GlassEffectLab isOpen={openLabModal === "glassLab"} onClose={closeLabModal} />

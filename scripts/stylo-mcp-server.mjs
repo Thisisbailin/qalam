@@ -6,10 +6,14 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { loadStyloCredential } from "./stylo-credential-store.mjs";
 
 const DEFAULT_API_BASE_URL = "https://node-qalam.pages.dev";
-const apiBaseUrl = (process.env.STYLO_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
-const authToken = (process.env.STYLO_AUTH_TOKEN || "").trim();
+let apiBaseUrl = (process.env.STYLO_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+const environmentAuthToken = (process.env.STYLO_AUTH_TOKEN || "").trim();
+let authToken = environmentAuthToken;
+let authSource = environmentAuthToken ? "environment" : "none";
+let authExpiresAt = null;
 let activeProjectId = (process.env.STYLO_PROJECT_ID || "").trim();
 let manifestCache = null;
 let manifestCacheTime = 0;
@@ -84,8 +88,9 @@ const parseResponse = async (response, action) => {
 };
 
 const styloRequest = async (path, init = {}) => {
+  await refreshCredential();
   if (!authToken) {
-    throw new Error("STYLO_AUTH_TOKEN is not configured for this MCP process.");
+    throw new Error("Stylo is not connected. Run `npm run mcp:stylo:connect` and approve the pairing code in the Stylo desktop app.");
   }
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
@@ -99,6 +104,7 @@ const styloRequest = async (path, init = {}) => {
 };
 
 const loadManifest = async ({ force = false } = {}) => {
+  await refreshCredential();
   if (!authToken) return [];
   const now = Date.now();
   if (!force && manifestCache && now - manifestCacheTime < 30_000) return manifestCache;
@@ -115,7 +121,7 @@ const loadManifest = async ({ force = false } = {}) => {
 };
 
 const listProjects = async ({ query = "", maxItems = 12 } = {}) => {
-  const payload = await styloRequest("/api/projects");
+  const payload = await styloRequest("/api/agent-projects");
   const normalizedQuery = String(query || "").trim().toLocaleLowerCase();
   const limit = Math.max(1, Math.min(50, Number.isInteger(maxItems) ? maxItems : 12));
   const projects = (Array.isArray(payload.projects) ? payload.projects : [])
@@ -158,11 +164,32 @@ const errorResult = (error) => ({
 const server = new Server(
   { name: "stylo-agentic-gateway", version: "0.1.0" },
   {
-    capabilities: { tools: { listChanged: false } },
+    capabilities: { tools: { listChanged: true } },
     instructions:
       "Stylo exposes project-native capabilities without preloading project content. Start with project identity, then inspect identity/detail/slice views as needed. Read only the smallest useful scope and follow stable refs for deeper exploration.",
   }
 );
+
+const refreshCredential = async () => {
+  if (environmentAuthToken) return;
+  const credential = await loadStyloCredential();
+  const nextToken = credential?.accessToken || "";
+  const changed = nextToken !== authToken;
+  authToken = nextToken;
+  authSource = credential ? "temporary_file" : "none";
+  authExpiresAt = credential?.expiresAt || null;
+  if (credential?.apiBaseUrl && !process.env.STYLO_API_BASE_URL) {
+    apiBaseUrl = credential.apiBaseUrl.replace(/\/+$/, "");
+  }
+  if (changed) {
+    manifestCache = null;
+    manifestCacheTime = 0;
+    lastManifestError = "";
+    await server.sendToolListChanged().catch(() => undefined);
+  }
+};
+
+await refreshCredential();
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [...MANAGEMENT_TOOLS, ...(await loadManifest())],
@@ -177,6 +204,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return successResult({
         apiBaseUrl,
         authenticated: Boolean(authToken),
+        authSource,
+        authExpiresAt,
         activeProjectId: activeProjectId || null,
         sharedToolsAvailable: manifestCache?.length || 0,
         manifestError: lastManifestError || null,
@@ -230,4 +259,3 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 await server.connect(new StdioServerTransport());
-

@@ -8,7 +8,8 @@ import {
 } from "../../agents/tools/manifest";
 import { getStyloToolDescriptor } from "../../agents/runtime/toolCatalog";
 import { assertStyloProjectScope } from "../../agents/runtime/projectScope";
-import { getUserId, jsonResponse } from "./_auth";
+import { authenticateAgentRequest } from "./_agentAccess";
+import { jsonResponse } from "./_auth";
 import { createAgentProjectData, createNodeFlowBridgeState } from "./_agentBridgeState";
 import { loadAgentProjectState } from "./_agentProjectState";
 import { hasProjectCatalogEntry } from "./_projectCatalog";
@@ -35,7 +36,7 @@ type AgentToolRequest = {
 const MAX_REQUEST_BYTES = 64 * 1024;
 
 const authenticate = async (context: PagesContext<AgentToolsEnv>, namespace: string) => {
-  const userId = await getUserId(context.request, context.env);
+  const { userId } = await authenticateAgentRequest(context.request, context.env);
   await enforceRateLimit({
     db: context.env.DB,
     namespace,
@@ -129,4 +130,3 @@ export const onRequestPost = async (context: PagesContext<AgentToolsEnv>) => {
     }, { status: 400 });
   }
 };
-

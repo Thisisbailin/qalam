@@ -12,9 +12,33 @@ Stylo Codex Gateway 是独立的 MCP Agent Host Adapter。它不运行 Stylo 内
 4. `read_document` 或 `read_project_resource` 按 `identity`、`detail`、`slice`、`full` 逐步展开。
 5. 使用 `max_items`、`max_chars` 控制每次读取范围。
 
-## 启动
+## 推荐连接方式（本地 Stylo 客户端）
 
-MCP Host 从进程环境读取配置，不持久化认证信息：
+本机 Codex 使用一次性设备配对，不需要复制 Clerk session token：
+
+```bash
+npm run mcp:stylo:connect
+```
+
+脚本会显示一个 8 位配对码并唤起 Stylo。打开本地客户端右上角 `Account → 连接 Codex`，核对并输入该码后确认。后端签发的凭证：
+
+- 只允许 `project_read`；
+- 最长 8 小时；
+- 服务端只保存哈希；
+- 本机只写入权限为 `0600` 的系统临时文件；
+- 不进入仓库、Codex 配置或日志。
+
+撤销当前连接：
+
+```bash
+npm run mcp:stylo:disconnect
+```
+
+MCP Host 会自动发现临时凭证。已启动的 Codex Host 可以通过连接状态检查刷新；若当前任务尚未加载 Stylo 工具，开启一个新任务即可。
+
+## 兼容的环境变量启动方式
+
+开发和自动化环境仍可从进程环境读取配置：
 
 ```bash
 export STYLO_AUTH_TOKEN="<short-lived Clerk session token>"
@@ -35,7 +59,7 @@ args = ["/absolute/path/to/Qalam/scripts/stylo-mcp-server.mjs"]
 required = true
 ```
 
-让 Codex 进程从启动环境继承 `STYLO_AUTH_TOKEN`、`STYLO_API_BASE_URL` 与可选的 `STYLO_PROJECT_ID`。不要使用 `codex mcp add --env STYLO_AUTH_TOKEN=...`，因为该方式会把值写入配置文件；也不要把真实 token 写进 `.codex/config.toml`、仓库或日志。修改环境变量或 MCP 配置后，在新 Codex 任务中加载连接。
+环境变量优先于设备配对产生的临时凭证。不要使用 `codex mcp add --env STYLO_AUTH_TOKEN=...`，因为该方式会把值写入配置文件；也不要把真实 token 写进 `.codex/config.toml`、仓库或日志。
 
 ## 当前能力边界
 

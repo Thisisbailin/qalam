@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import {
+  AGENT_ACCESS_TOKEN_PREFIX,
+  AGENT_ACCESS_TTL_MS,
+  DEVICE_CODE_PREFIX,
+  PAIRING_TTL_MS,
+  createUserCode,
+  normalizeUserCode,
+  randomSecret,
+  sha256Base64Url,
+} from "../functions/api/_agentAccess";
 import type { StyloAgentBridge } from "../agents/bridge/styloBridge";
 import { STYLO_TOOL_CATALOG } from "../agents/runtime/toolCatalog";
 import {
@@ -131,6 +141,41 @@ test("external MCP and API adapters do not import the internal Agent runtime pip
   assert.match(endpointSource, /executeStyloCapability/);
 });
 
+test("Codex device pairing uses short-lived high-entropy secrets and normalized human codes", async () => {
+  assert.equal(PAIRING_TTL_MS, 10 * 60 * 1_000);
+  assert.equal(AGENT_ACCESS_TTL_MS, 8 * 60 * 60 * 1_000);
+  assert.equal(normalizeUserCode("abcd efgh"), "ABCD-EFGH");
+  assert.equal(normalizeUserCode("abc"), "");
+
+  const userCode = createUserCode();
+  assert.match(userCode, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+  const deviceCode = randomSecret(DEVICE_CODE_PREFIX);
+  const accessToken = randomSecret(AGENT_ACCESS_TOKEN_PREFIX);
+  assert.match(deviceCode, /^stylo_device_[A-Za-z0-9_-]{43}$/);
+  assert.match(accessToken, /^stylo_agent_[A-Za-z0-9_-]{43}$/);
+  assert.equal((await sha256Base64Url(accessToken)).length, 43);
+  assert.notEqual(await sha256Base64Url(accessToken), accessToken);
+});
+
+test("pairing adapters keep credentials out of browser storage, logs, and the internal Agent runtime", () => {
+  const endpointSource = readFileSync("functions/api/codex-pairing.ts", "utf8");
+  const authSource = readFileSync("functions/api/_agentAccess.ts", "utf8");
+  const dialogSource = readFileSync("components/CodexConnectDialog.tsx", "utf8");
+  const connectSource = readFileSync("scripts/stylo-connect.mjs", "utf8");
+  const mcpSource = readFileSync("scripts/stylo-mcp-server.mjs", "utf8");
+
+  assert.match(endpointSource, /sha256Base64Url\(accessToken\)/);
+  assert.doesNotMatch(endpointSource, /\.bind\(\s*accessToken\s*,/);
+  assert.doesNotMatch(dialogSource, /localStorage|indexedDB|document\.cookie|getToken/);
+  assert.doesNotMatch(connectSource, /console\.log\([^\n]*accessToken/);
+  assert.match(mcpSource, /loadStyloCredential/);
+  assert.match(mcpSource, /\/api\/agent-projects/);
+
+  for (const source of [endpointSource, authSource, dialogSource, connectSource, mcpSource]) {
+    assert.doesNotMatch(source, /runStyloAgentCore|runtime\/memory|streamProjector|styloMessageState|_agentTracing/);
+  }
+});
+
 test("stdio MCP host initializes with identity-only management tools when unauthenticated", async (t) => {
   const child = spawn(process.execPath, ["scripts/stylo-mcp-server.mjs"], {
     cwd: process.cwd(),
@@ -139,6 +184,7 @@ test("stdio MCP host initializes with identity-only management tools when unauth
       STYLO_AUTH_TOKEN: "",
       STYLO_PROJECT_ID: "",
       STYLO_API_BASE_URL: "https://example.invalid",
+      STYLO_CREDENTIAL_FILE: `/tmp/stylo-codex-test-missing-${process.pid}.json`,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });

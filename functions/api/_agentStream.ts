@@ -2,7 +2,7 @@ import {
   AGENT_HTTP_STREAM_CONTENT_TYPE,
   serializeAgentStreamPacket,
 } from "../../agents/runtime/httpProtocol";
-import type { AgentRuntimeEvent, StyloRunResult } from "../../agents/runtime/types";
+import type { AgentRuntimeEvent } from "../../agents/runtime/types";
 
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -45,18 +45,6 @@ export const emitEvent = (controller: ReadableStreamDefaultController<Uint8Array
   }
 };
 
-export const emitResult = (controller: ReadableStreamDefaultController<Uint8Array>, result: StyloRunResult) => {
-  try {
-    controller.enqueue(
-      new TextEncoder().encode(serializeAgentStreamPacket({ kind: "result", result }))
-    );
-    return true;
-  } catch (error: unknown) {
-    if (!isClosedStreamControllerError(error)) throw error;
-    return false;
-  }
-};
-
 export const emitError = (controller: ReadableStreamDefaultController<Uint8Array>, error: string) => {
   try {
     controller.enqueue(
@@ -67,28 +55,4 @@ export const emitError = (controller: ReadableStreamDefaultController<Uint8Array
     if (!isClosedStreamControllerError(errorLike)) throw errorLike;
     return false;
   }
-};
-
-export const emitTrace = (
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  runId: string,
-  stage: "runtime" | "session" | "model" | "tool" | "result",
-  status: "info" | "running" | "success" | "error",
-  title: string,
-  detail?: string,
-  payload?: string
-) => {
-  return emitEvent(controller, {
-    type: "trace",
-    runId,
-    entry: {
-      id: `${stage}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      at: Date.now(),
-      stage,
-      status,
-      title,
-      detail,
-      payload,
-    },
-  });
 };

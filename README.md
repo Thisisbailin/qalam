@@ -86,6 +86,8 @@ They collaborate around the same central `Canvas + Flow` world:
 - Styling: Tailwind CSS 4
 - Canvas/workflow: `@xyflow/react`, `konva`, `zustand`
 - Agent runtime: `@openai/agents`
+- Agent protocol: one Conversation/Turn/Item event model with a single terminal
+  `turn_completed` or `turn_failed` event
 - Auth: Clerk
 - Cloud persistence: Cloudflare Pages Functions + D1
 - Asset upload helpers: Supabase Storage signed upload URLs

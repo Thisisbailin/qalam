@@ -1,9 +1,13 @@
 import type { RunStreamEvent } from "@openai/agents";
-import type { AgentRuntimeEvent } from "./types";
+import type {
+  AgentMessageThreadItem,
+  AgentReasoningThreadItem,
+  AgentRuntimeEvent,
+} from "./types";
 
 type MessageRuntimeEvent = Extract<
   AgentRuntimeEvent,
-  { type: "message_delta" | "message_completed" | "reasoning_delta" | "reasoning_completed" }
+  { type: "item_started" | "item_delta" | "item_updated" | "item_completed" }
 >;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -51,9 +55,6 @@ export const extractReasoningFromModelOutput = (output: unknown): string => {
   return Array.from(new Set(parts.map((part) => part.trim()).filter(Boolean))).join("\n").trim();
 };
 
-export const modelOutputHasToolCalls = (output: unknown) =>
-  Array.isArray(output) && output.some((item) => asRecord(item)?.type === "function_call");
-
 const unwrapProviderEvent = (value: unknown) => {
   const record = asRecord(value);
   return asRecord(record?.event) || asRecord(record?.providerData) || record;
@@ -70,10 +71,12 @@ const mergeCompletedText = (streamedText: string, completedText?: string) => {
 
 export class AgentMessageStreamProjector {
   private textSegmentIndex = 0;
+  private reasoningSegmentIndex = 0;
   private activeMessageId = "";
   private activeMessageText = "";
+  private activeReasoningId = "";
   private activeReasoningText = "";
-  private readonly completedMessages: Array<{ messageId: string; text: string; isFinal: boolean }> = [];
+  private readonly completedMessages: AgentMessageThreadItem[] = [];
 
   streamedText = "";
   streamedResponseText = "";
@@ -84,52 +87,130 @@ export class AgentMessageStreamProjector {
     private readonly emit: (event: MessageRuntimeEvent) => void
   ) {}
 
-  private ensureMessageId() {
+  private ensureMessageId(preferredId?: string) {
     if (!this.activeMessageId) {
       this.textSegmentIndex += 1;
-      this.activeMessageId = `${this.runId}-message-${this.textSegmentIndex}`;
+      this.activeMessageId = preferredId || `${this.runId}-message-${this.textSegmentIndex}`;
       this.activeMessageText = "";
+      this.emit({
+        type: "item_started",
+        runId: this.runId,
+        item: {
+          id: this.activeMessageId,
+          type: "agent_message",
+          status: "in_progress",
+          text: "",
+          phase: "commentary",
+        },
+      });
     }
     return this.activeMessageId;
   }
 
-  private emitMessageDelta(delta: string) {
+  private ensureReasoningId(preferredId?: string) {
+    if (!this.activeReasoningId) {
+      this.reasoningSegmentIndex += 1;
+      this.activeReasoningId = preferredId || `${this.runId}-reasoning-${this.reasoningSegmentIndex}`;
+      this.activeReasoningText = "";
+      this.emit({
+        type: "item_started",
+        runId: this.runId,
+        item: {
+          id: this.activeReasoningId,
+          type: "reasoning",
+          status: "in_progress",
+          text: "",
+        },
+      });
+    }
+    return this.activeReasoningId;
+  }
+
+  private emitMessageDelta(delta: string, preferredId?: string) {
     if (!delta) return;
-    const messageId = this.ensureMessageId();
+    const messageId = this.ensureMessageId(preferredId);
     this.activeMessageText += delta;
     this.streamedText += delta;
-    this.emit({ type: "message_delta", runId: this.runId, messageId, delta, accumulatedText: this.activeMessageText });
+    this.emit({
+      type: "item_delta",
+      runId: this.runId,
+      itemId: messageId,
+      itemType: "agent_message",
+      delta,
+      accumulatedText: this.activeMessageText,
+    });
   }
 
-  private emitReasoningDelta(delta: string) {
+  private emitReasoningDelta(delta: string, preferredId?: string) {
     if (!delta) return;
+    const reasoningId = this.ensureReasoningId(preferredId);
     this.activeReasoningText += delta;
     this.streamedReasoningText += delta;
-    this.emit({ type: "reasoning_delta", runId: this.runId, delta, accumulatedText: this.activeReasoningText });
+    this.emit({
+      type: "item_delta",
+      runId: this.runId,
+      itemId: reasoningId,
+      itemType: "reasoning",
+      delta,
+      accumulatedText: this.activeReasoningText,
+    });
   }
 
-  private completeReasoning(completedText?: string) {
+  private completeReasoning(completedText?: string, preferredId?: string) {
     const text = mergeCompletedText(this.activeReasoningText, completedText);
     if (!text.trim()) return;
+    const id = this.ensureReasoningId(preferredId);
     this.activeReasoningText = "";
-    this.emit({ type: "reasoning_completed", runId: this.runId, text });
+    this.activeReasoningId = "";
+    const item: AgentReasoningThreadItem = {
+      id,
+      type: "reasoning",
+      status: "completed",
+      text,
+    };
+    this.emit({ type: "item_completed", runId: this.runId, item });
   }
 
-  private completeMessage(completedText?: string, isFinal = false) {
+  private completeMessage(completedText?: string, isFinal = false, preferredId?: string) {
     if (!this.activeMessageText.trim() && !completedText?.trim()) return;
-    const messageId = this.ensureMessageId();
+    const messageId = this.ensureMessageId(preferredId);
     this.activeMessageText = mergeCompletedText(this.activeMessageText, completedText);
-    this.completedMessages.push({ messageId, text: this.activeMessageText, isFinal });
-    this.emit({ type: "message_completed", runId: this.runId, messageId, text: this.activeMessageText, isFinal });
+    const item: AgentMessageThreadItem = {
+      id: messageId,
+      type: "agent_message",
+      status: "completed",
+      text: this.activeMessageText,
+      phase: isFinal ? "final_answer" : "commentary",
+    };
+    this.completedMessages.push(item);
+    this.emit({ type: "item_completed", runId: this.runId, item });
     this.activeMessageId = "";
     this.activeMessageText = "";
   }
 
   consume(event: RunStreamEvent) {
+    if (event.type === "run_item_stream_event") {
+      const item = event.item as unknown as Record<string, unknown>;
+      const rawItem = asRecord(item.rawItem);
+      const itemId = typeof rawItem?.id === "string" ? rawItem.id : undefined;
+      if (event.name === "message_output_created") {
+        const completedText =
+          typeof item.content === "string"
+            ? item.content
+            : extractTextFromModelOutput(rawItem ? [rawItem] : []);
+        this.completeMessage(completedText, false, itemId);
+      }
+      if (event.name === "reasoning_item_created") {
+        const completedText = extractReasoningFromModelOutput(rawItem ? [rawItem] : []);
+        this.completeReasoning(completedText, itemId);
+      }
+      return;
+    }
     if (event.type !== "raw_model_stream_event") return;
     const raw = asRecord(event.data);
     const provider = unwrapProviderEvent(event.data);
     const rawType = String(raw?.type || provider?.type || "");
+    const rawItemId = typeof raw?.item_id === "string" ? raw.item_id : undefined;
     const choices = getArray(provider, "choices");
     const firstChoice = asRecord(choices[0]);
     const chatDelta = asRecord(firstChoice?.delta);
@@ -139,22 +220,22 @@ export class AgentMessageStreamProjector {
         : typeof chatDelta?.reasoning === "string"
           ? chatDelta.reasoning
           : "";
-    this.emitReasoningDelta(chatReasoning);
+    this.emitReasoningDelta(chatReasoning, rawItemId);
 
     if (rawType === "output_text_delta" && typeof raw?.delta === "string") {
-      this.emitMessageDelta(raw.delta);
+      this.emitMessageDelta(raw.delta, rawItemId);
     }
 
     const reasoningDelta =
       typeof raw?.delta === "string" ? raw.delta : typeof provider?.delta === "string" ? provider.delta : "";
     if (["response.reasoning_summary_text.delta", "reasoning_summary_text.delta"].includes(rawType)) {
-      this.emitReasoningDelta(reasoningDelta);
+      this.emitReasoningDelta(reasoningDelta, rawItemId);
     }
     if (
       ["response.reasoning_summary_text.done", "reasoning_summary_text.done"].includes(rawType) &&
       typeof raw?.text === "string"
     ) {
-      this.completeReasoning(raw.text);
+      this.completeReasoning(raw.text, rawItemId);
     }
     if (rawType === "response_done") {
       const response = asRecord(raw?.response) || asRecord(provider?.response);
@@ -162,7 +243,6 @@ export class AgentMessageStreamProjector {
       if (candidate) this.streamedResponseText = candidate;
       const reasoning = extractReasoningFromModelOutput(response?.output);
       if (reasoning) this.completeReasoning(reasoning);
-      this.completeMessage(candidate, !modelOutputHasToolCalls(response?.output));
     }
   }
 
@@ -174,18 +254,30 @@ export class AgentMessageStreamProjector {
   finalize(finalText: string) {
     const normalized = finalText.trim();
     if (!normalized) return;
-    const completed = this.completedMessages.find((item) => {
-      const text = item.text.trim();
-      return text === normalized || text.includes(normalized) || normalized.includes(text);
-    });
+    let completed: AgentMessageThreadItem | undefined;
+    let completedIndex = -1;
+    for (let index = this.completedMessages.length - 1; index >= 0; index -= 1) {
+      const candidate = this.completedMessages[index];
+      const text = candidate.text.trim();
+      if (text === normalized || text.includes(normalized) || normalized.includes(text)) {
+        completed = candidate;
+        completedIndex = index;
+        break;
+      }
+    }
     if (completed) {
-      if (!completed.isFinal) {
-        completed.isFinal = true;
-        this.emit({ type: "message_completed", runId: this.runId, messageId: completed.messageId, text: completed.text, isFinal: true });
+      const resolvedText = normalized.includes(completed.text.trim()) ? normalized : completed.text;
+      if (completed.phase !== "final_answer" || completed.text !== resolvedText) {
+        const updated: AgentMessageThreadItem = {
+          ...completed,
+          phase: "final_answer",
+          text: resolvedText,
+        };
+        this.completedMessages[completedIndex] = updated;
+        this.emit({ type: "item_updated", runId: this.runId, item: updated });
       }
       return;
     }
     this.completeMessage(normalized, true);
   }
 }
-

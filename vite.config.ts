@@ -70,7 +70,6 @@ export default defineConfig(({ mode }) => {
             if (!id.includes('/node_modules/')) {
               if (id.includes('/agents/')) return 'stylo-core';
               if (id.includes('/services/')) return 'provider-services';
-              if (id.includes('/interactive-35mm-film-roll/')) return 'film-roll';
               if (id.includes('/node-workspace/nodes/')) return 'flow-nodes';
               if (id.includes('/node-workspace/foundation/')) return 'stylo-core';
               if (

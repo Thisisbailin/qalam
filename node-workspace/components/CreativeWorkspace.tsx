@@ -33,7 +33,7 @@ import type { ModuleKey } from "./ModuleBar";
 import { FileText, List } from "lucide-react";
 import { ChatCenteredDots, Plus, X } from "@phosphor-icons/react";
 import type { EdgeAlignmentGuide } from "../utils/edgeAlignment";
-import type { SharedCanvasControls, SharedCanvasViewport } from "./canvas/types";
+import type { BottomDockTray, SharedCanvasControls, SharedCanvasViewport } from "./canvas/types";
 import { locateCanvasContent, type CanvasContentDirection } from "./canvas/contentLocator";
 import type {
   AgentScriptEditProposalBatch,
@@ -55,6 +55,7 @@ import {
 } from "../manus/folder";
 import type { EnsureProjectSynced } from "../../hooks/useCloudSync";
 import type { AccountApiSession } from "../../sync/authenticatedFetch";
+import { SyncStatusBanner } from "../../components/SyncStatusBanner";
 
 interface CreativeWorkspaceProps {
   accountScope: string;
@@ -488,8 +489,10 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
   const [showMiniMap, setShowMiniMap] = useState(false);
+  const [activeDockTray, setActiveDockTray] = useState<BottomDockTray | null>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [foundationViewportHost, setFoundationViewportHost] = useState<HTMLElement | null>(null);
+  const [foundationViewportTrayHost, setFoundationViewportTrayHost] = useState<HTMLElement | null>(null);
   const [snapToGrid] = useState(true);
   const [snapGuide, setSnapGuide] = useState<EdgeAlignmentGuide | null>(null);
   const initialCanvasViewport = projectData.canvas?.viewport || null;
@@ -869,6 +872,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     if (typeof document === "undefined") return;
     const syncHost = () => {
       setFoundationViewportHost(document.getElementById("script-foundation-viewport-host"));
+      setFoundationViewportTrayHost(document.getElementById("script-foundation-viewport-tray-host"));
     };
     syncHost();
     const frame = window.requestAnimationFrame(syncHost);
@@ -926,8 +930,10 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     isAgentSending: isStyloSending,
     isAgentFirstMode: isStyloFirstMode,
     onOpenProjectSettingsPanel: (panel, assetsSection) => openProjectSettingsPanel(panel, assetsSection),
-    onOpenVisualLab: (key = "filmRollLab") => onOpenModule?.(key),
+    onOpenVisualLab: (key = "glassLab") => onOpenModule?.(key),
     pendingScriptReviewNodeIds,
+    activeDockTray,
+    onDockTrayChange: setActiveDockTray,
   });
 
   const focusedPinoardNodeSignature = activePinoard
@@ -1427,6 +1433,11 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
       showUsageBadge={false}
       allowLegacyConversationMigration={false}
       conversationResetToken={projectResetToken}
+      titleStatus={
+        syncState ? (
+          <SyncStatusBanner syncState={syncState} isSignedIn={!!isSignedIn} />
+        ) : null
+      }
     />
   );
 

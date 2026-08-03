@@ -1,7 +1,9 @@
 import type { CSSProperties } from "react";
 import { DesignAssetItem, Episode, ProjectRoleIdentity, SeedanceModel, ViduReferenceMode } from "../../types";
+import type { NodeFlowHandleType } from "../nodeflow/handleTypes";
 
-export type HandleType = "image" | "text" | "audio" | "video" | "multi" | "contains";
+export type HandleType = NodeFlowHandleType;
+export { NODE_FLOW_HANDLE_TYPES, isNodeFlowHandleType } from "../nodeflow/handleTypes";
 
 export const NODE_TYPES = [
   "pinoard",

@@ -90,7 +90,7 @@ type Props = {
   onOrganizeFoundationScaffold?: () => void;
   onSetFoundationNodeView?: (visible: boolean) => void;
   foundationNodeView?: boolean;
-  onOpenVisualLab?: (key?: Extract<ModuleKey, "glassLab" | "filmRollLab" | "agentLab" | "cineworLab" | "designSystemLab">) => void;
+  onOpenVisualLab?: (key?: Extract<ModuleKey, "glassLab" | "agentLab" | "cineworLab" | "designSystemLab">) => void;
 };
 
 export type ProjectSettingsPanelKey =
@@ -1191,11 +1191,11 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
                     title: "Sync",
                     description: "同步诊断与云端快照直接并入设置侧栏。",
                   }
-                : selectedPanel === "info"
+              : selectedPanel === "info"
                   ? {
-                      label: "Info",
-                      title: "Info",
-                      description: "产品信息入口并入总设置面板。",
+                      label: "信息",
+                      title: "产品信息",
+                      description: "查看 Stylo 的产品定位、工作面结构与后续路线。",
                     }
                   : {
                       label: "History",
@@ -1206,10 +1206,10 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
     { key: "provider", label: "Provider", Icon: Sparkles, meta: "3" },
     { key: "ability", label: "Ability", Icon: Code2, meta: `${TOOL_ITEMS.length + availableAgentSkills.length}` },
     { key: "assets", label: "Assets", Icon: Boxes, meta: `${imageAssetCount + videoAssetCount + promptAssetCount + (projectData.roles?.length || 0)}` },
-    { key: "lab", label: "Lab", Icon: ScanSearch, meta: "6" },
+    { key: "lab", label: "Lab", Icon: ScanSearch, meta: "5" },
     { key: "history", label: "History", Icon: Cloud, meta: `${conversationState.items.length}` },
     { key: "sync", label: "Sync", Icon: Cloud, meta: syncState?.project.status || "local" },
-    { key: "info", label: "Info", Icon: FileText },
+    { key: "info", label: "信息", Icon: FileText },
   ];
 
   const subTabClass = (active: boolean) =>
@@ -2871,7 +2871,6 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                   {([
                     { key: "glassLab", actionKey: "glassLab" as const, title: "Glass Lab", detail: "调试玻璃、折射与悬浮面板的视觉参数。", Icon: ScanSearch, status: "independent lab" },
-                    { key: "filmRollLab", actionKey: "filmRollLab" as const, title: "Film Lab", detail: "校准胶卷盒、leader、阴影和胶片实验室视觉系统。", Icon: ScanSearch, status: "independent lab" },
                     { key: "agentLab", actionKey: "agentLab" as const, title: "Agent Lab", detail: "检查 Agent runtime、工具调用与实验性能力面板。", Icon: Braces, status: "independent lab" },
                     { key: "designSystemLab", actionKey: "designSystemLab" as const, title: "Design System", detail: "统一 Stylo 的视觉 token、组件层级、包装器材质与动效规则。当前为规范工作台占位。", Icon: ScanSearch, status: "foundation placeholder" },
                     { key: "manus", title: "Manus", detail: "剧本写作包装器：Fountain 解析、专业格式编辑、角色绑定与保存协调。", Icon: FileText, status: "source repository", href: PRODUCT_REPOSITORIES.manus },
@@ -2883,7 +2882,7 @@ export const ProjectSettingsPanel: React.FC<Props> = ({
                     detail: string;
                     Icon: React.ComponentType<{ size?: number }>;
                     status: string;
-                    actionKey?: Extract<ModuleKey, "glassLab" | "filmRollLab" | "agentLab" | "cineworLab" | "designSystemLab">;
+                    actionKey?: Extract<ModuleKey, "glassLab" | "agentLab" | "cineworLab" | "designSystemLab">;
                     href?: string;
                   }>).map((lab) => {
                     const content = (

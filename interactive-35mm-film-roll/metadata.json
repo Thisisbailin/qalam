@@ -1,6 +1,0 @@
-{
-  "name": "Interactive 35mm Film Roll",
-  "description": "An extremely realistic, interactive 35mm film laboratory and Polaroid 600 station featuring physical pull/retract spring damping mechanics, positive slide mounts, double exposures, flash, environment-responsive chemical development simulation, and synthesized mechanical soundscapes.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

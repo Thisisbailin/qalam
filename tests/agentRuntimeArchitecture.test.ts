@@ -7,6 +7,7 @@ import { AgentStreamEventBuffer } from "../agents/react/streamEventBuffer";
 import { createHttpStyloAgentRuntime } from "../agents/runtime/httpClient";
 import {
   AgentEventSequenceGuard,
+  AgentTurnLifecycleGuard,
   parseAgentStreamPacket,
   serializeAgentStreamPacket,
   type AgentHttpRunRequest,
@@ -45,7 +46,13 @@ const emptyResult = (projectId = "project-1"): StyloRunResult => ({
   projectId,
   sessionId: "session-1",
   finalText: "done",
-  outputItems: [{ kind: "text", text: "done" }],
+  outputItems: [{
+    id: "message-1",
+    type: "agent_message",
+    status: "completed",
+    text: "done",
+    phase: "final_answer",
+  }],
   toolCalls: [],
 });
 
@@ -204,20 +211,46 @@ test("SDK stream projection merges deltas and emits a single final completion", 
   } as any);
   projector.consume({ type: "raw_model_stream_event", data: { type: "output_text_delta", delta: "Hel" } } as any);
   projector.consume({
-    type: "raw_model_stream_event",
-    data: {
-      type: "response_done",
-      response: { output: [{ type: "message", content: [{ type: "output_text", text: "Hello" }] }] },
+    type: "run_item_stream_event",
+    name: "message_output_created",
+    item: {
+      type: "message_output_item",
+      content: "Hello",
+      rawItem: {
+        id: "message-1",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "Hello" }],
+      },
     },
   } as any);
   projector.finish();
-  projector.finalize("Hello");
+  projector.finalize("Hello world");
 
-  assert.equal(events.filter((event) => event.type === "reasoning_delta").length, 1);
-  const completed = events.filter((event) => event.type === "message_completed");
+  assert.equal(events.filter((event) => event.type === "item_delta" && event.itemType === "reasoning").length, 1);
+  const completed = events.filter((event) => event.type === "item_completed" && event.item.type === "agent_message");
   assert.equal(completed.length, 1);
-  assert.equal(completed[0].type === "message_completed" && completed[0].text, "Hello");
-  assert.equal(completed[0].type === "message_completed" && completed[0].isFinal, true);
+  const completedMessage = completed[0];
+  assert.equal(
+    completedMessage.type === "item_completed" && completedMessage.item.type === "agent_message"
+      ? completedMessage.item.text
+      : "",
+    "Hello"
+  );
+  const finalUpdate = events.find((event) => event.type === "item_updated" && event.item.type === "agent_message");
+  assert.equal(
+    finalUpdate?.type === "item_updated" && finalUpdate.item.type === "agent_message"
+      ? finalUpdate.item.phase
+      : "",
+    "final_answer"
+  );
+  assert.equal(
+    finalUpdate?.type === "item_updated" && finalUpdate.item.type === "agent_message"
+      ? finalUpdate.item.text
+      : "",
+    "Hello world"
+  );
 });
 
 test("React message projection is idempotent for replayed terminal events and trips on distinct repeated failures", () => {
@@ -228,32 +261,29 @@ test("React message projection is idempotent for replayed terminal events and tr
     messages = projected.messages;
     return projected;
   };
-  apply({ type: "run_started", runId: "run-1", sessionId: "session-1", sequence: 1 });
-  apply({ type: "message_delta", runId: "run-1", messageId: "message-1", delta: "Hi", accumulatedText: "Hi", sequence: 2 });
+  apply({ type: "turn_started", runId: "run-1", sessionId: "session-1", sequence: 1 });
+  apply({ type: "item_delta", runId: "run-1", itemId: "message-1", itemType: "agent_message", delta: "Hi", accumulatedText: "Hi", sequence: 2 });
   const completedEvent: AgentRuntimeEvent = {
-    type: "message_completed",
+    type: "item_completed",
     runId: "run-1",
-    messageId: "message-1",
-    text: "Hi",
-    isFinal: true,
+    item: { id: "message-1", type: "agent_message", status: "completed", text: "Hi", phase: "final_answer" },
     sequence: 3,
   };
   apply(completedEvent);
   apply(completedEvent);
   assert.equal(messages.filter((message) => message.kind === "chat" && message.role === "assistant").length, 1);
 
-  const settledCall = { callId: "call-1", name: "read_document", status: "success" as const, summary: "read" };
-  apply({ type: "tool_completed", runId: "run-1", call: settledCall, sequence: 4 });
-  apply({ type: "tool_completed", runId: "run-1", call: settledCall, sequence: 4 });
+  const settledCall = { id: "call-1", type: "tool_call" as const, name: "read_document", status: "completed" as const, summary: "read" };
+  apply({ type: "item_completed", runId: "run-1", item: settledCall, sequence: 4 });
+  apply({ type: "item_completed", runId: "run-1", item: settledCall, sequence: 4 });
   assert.equal(messages.filter((message) => message.kind === "tool_result" && message.tool.callId === "call-1").length, 1);
 
   let abortReason = "";
   for (let index = 0; index < 5; index += 1) {
     const failure = apply({
-      type: "tool_failed",
+      type: "item_completed",
       runId: "run-1",
-      call: { callId: `failed-${index}`, name: "read_document", status: "error" },
-      error: "failed",
+      item: { id: `failed-${index}`, type: "tool_call", name: "read_document", status: "failed", error: "failed" },
       sequence: 5 + index,
     });
     abortReason = failure.abortReason || abortReason;
@@ -264,39 +294,44 @@ test("React message projection is idempotent for replayed terminal events and tr
 test("stream event buffering coalesces text deltas without swallowing ordered terminal events", () => {
   const buffer = new AgentStreamEventBuffer();
   assert.equal(buffer.push({
-    type: "reasoning_delta",
+    type: "item_delta",
     runId: "run-1",
+    itemId: "reasoning-1",
+    itemType: "reasoning",
     delta: "a",
     accumulatedText: "a",
     sequence: 1,
   }), true);
   assert.equal(buffer.push({
-    type: "reasoning_delta",
+    type: "item_delta",
     runId: "run-1",
+    itemId: "reasoning-1",
+    itemType: "reasoning",
     delta: "b",
     accumulatedText: "ab",
     sequence: 2,
   }), true);
   assert.equal(buffer.push({
-    type: "message_delta",
+    type: "item_delta",
     runId: "run-1",
-    messageId: "answer-1",
+    itemId: "answer-1",
+    itemType: "agent_message",
     delta: "x",
     accumulatedText: "x",
     sequence: 3,
   }), true);
   assert.equal(buffer.push({
-    type: "tool_called",
+    type: "item_started",
     runId: "run-1",
-    call: { callId: "call-1", name: "read_document", status: "running" },
+    item: { id: "call-1", type: "tool_call", name: "read_document", status: "in_progress" },
     sequence: 4,
   }), false);
 
   const events = buffer.drain();
   assert.equal(events.length, 2);
-  assert.equal(events[0].type, "reasoning_delta");
-  assert.equal(events[0].type === "reasoning_delta" && events[0].accumulatedText, "ab");
-  assert.equal(events[1].type, "message_delta");
+  assert.equal(events[0].type, "item_delta");
+  assert.equal(events[0].type === "item_delta" && events[0].accumulatedText, "ab");
+  assert.equal(events[1].type, "item_delta");
   assert.deepEqual(buffer.drain(), []);
 });
 
@@ -313,21 +348,9 @@ test("preflight cancellation is projected as a stopped task instead of a connect
   assert.equal(status.statusCard.detail, "当前任务已由你手动停止。");
 });
 
-test("preflight failures replace wrapper diagnostics with the actionable error", () => {
+test("preflight failures project the actionable transport error", () => {
   const state = new StyloMessageEventState();
   let messages = state.createPreflight([], "preflight-1");
-  messages = state.apply(messages, {
-    type: "trace",
-    runId: "wrapper-1",
-    entry: {
-      id: "trace-1",
-      at: Date.now(),
-      stage: "result",
-      status: "error",
-      title: "Agent 初始化或执行失败",
-      detail: "云端 Flow 修订为 7，本地请求修订为 9。",
-    },
-  }).messages;
   messages = state.failPreflight(messages, "云端 Flow 修订为 7，本地请求修订为 9。");
   const status = messages.find((message) => message.kind === "status");
 
@@ -632,30 +655,58 @@ test("stale durable Agent results cannot overwrite a newer Flow revision", () =>
 test("HTTP stream packets validate shape and sequence guard rejects replay", () => {
   const event = parseAgentStreamPacket(JSON.stringify({
     kind: "event",
-    event: { type: "message_delta", runId: "run-1", sequence: 2, delta: "a", accumulatedText: "a" },
+    event: { type: "item_delta", runId: "run-1", sequence: 2, itemId: "message-1", itemType: "agent_message", delta: "a", accumulatedText: "a" },
   }));
   assert.equal(event.kind, "event");
   assert.throws(
-    () => parseAgentStreamPacket(JSON.stringify({ kind: "event", event: { type: "message_delta", runId: "run-1" } })),
+    () => parseAgentStreamPacket(JSON.stringify({ kind: "event", event: { type: "item_delta", runId: "run-1" } })),
     /Malformed Agent stream packet/
   );
   assert.throws(
     () => parseAgentStreamPacket(JSON.stringify({ kind: "event", event: { type: "unknown", runId: "run-1" } })),
     /Malformed Agent stream packet/
   );
-  const resultPacket = parseAgentStreamPacket(JSON.stringify({ kind: "result", result: emptyResult() }));
-  assert.equal(resultPacket.kind === "result" && resultPacket.result.projectId, "project-1");
+  assert.throws(
+    () => parseAgentStreamPacket(JSON.stringify({
+      kind: "event",
+      event: { type: "trace", runId: "wrapper-1", entry: {} },
+    })),
+    /Malformed Agent stream packet/
+  );
+  assert.throws(
+    () => parseAgentStreamPacket(JSON.stringify({ kind: "result", result: emptyResult() })),
+    /Malformed Agent stream packet/
+  );
+  const terminalPacket = parseAgentStreamPacket(JSON.stringify({
+    kind: "event",
+    event: { type: "turn_completed", runId: "run-1", sequence: 3, result: emptyResult() },
+  }));
+  assert.equal(terminalPacket.kind === "event" && terminalPacket.event.type, "turn_completed");
 
   const guard = new AgentEventSequenceGuard();
   const sequenced = event.kind === "event" ? event.event : null;
   assert.ok(sequenced);
   assert.equal(guard.accept(sequenced), true);
   assert.equal(guard.accept(sequenced), false);
+
+  const lifecycle = new AgentTurnLifecycleGuard();
+  lifecycle.accept({ type: "turn_started", runId: "run-1", sessionId: "session-1" });
+  lifecycle.accept(sequenced);
+  lifecycle.accept({ type: "turn_completed", runId: "run-1", result: emptyResult() });
+  lifecycle.assertTerminal();
+  assert.throws(
+    () => lifecycle.accept({
+      type: "item_completed",
+      runId: "run-1",
+      item: emptyResult().outputItems[0],
+    }),
+    /终态之后/
+  );
 });
 
 test("SSE decoder handles CRLF frames, comments, and multi-line data", () => {
-  const first = drainAgentSseBuffer(": heartbeat\r\ndata: {\"kind\":\r\ndata: \"result\"}\r\n\r\ndata: next");
-  assert.deepEqual(first.packets, ['{"kind":\n"result"}']);
+  const first = drainAgentSseBuffer(": heartbeat\r\ndata: {\"kind\":\r\ndata: \"event\"}\r\n\r\ndata: next");
+  assert.deepEqual(first.packets, ['{"kind":\n"event"}']);
   assert.equal(first.remainder, "data: next");
   const flushed = drainAgentSseBuffer(first.remainder, true);
   assert.deepEqual(flushed.packets, ["next"]);
@@ -689,10 +740,28 @@ test("HTTP Agent runtime flushes sync before sending the minimal request", async
       body: JSON.parse(String(init?.body || "{}")) as AgentHttpRunRequest,
       syncFinished,
     });
-    return new Response(serializeAgentStreamPacket({ kind: "result", result: emptyResult("project-1") }), {
+    return new Response(
+      serializeAgentStreamPacket({
+        kind: "event",
+        event: {
+          type: "turn_started",
+          runId: "run-1",
+          sequence: 1,
+          sessionId: "session-1",
+        },
+      }) + serializeAgentStreamPacket({
+        kind: "event",
+        event: {
+          type: "turn_completed",
+          runId: "run-1",
+          sequence: 2,
+          result: emptyResult("project-1"),
+        },
+      }), {
       status: 200,
       headers: { "content-type": "text/event-stream; charset=utf-8" },
-    });
+      }
+    );
   }) as typeof fetch;
 
   try {
@@ -732,7 +801,7 @@ test("HTTP Agent runtime flushes sync before sending the minimal request", async
 
 test("Agent project sync barrier uses an immutable snapshot lease instead of UI polling", () => {
   const syncSource = readFileSync("hooks/useCloudSync.ts", "utf8");
-  assert.match(syncSource, /return engine\.acquire\(snapshot, expectedRevision\)/);
+  assert.match(syncSource, /return scopedEngine\.engine\.acquire\(snapshot, expectedRevision\)/);
   assert.doesNotMatch(syncSource, /while \(readActiveFlowRevision/);
   assert.doesNotMatch(syncSource, /isSavingRef|pendingOpRef|saveRetryTimeout/);
 

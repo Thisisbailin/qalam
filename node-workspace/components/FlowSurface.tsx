@@ -109,7 +109,7 @@ import { publishProjectNodeGeometryMutation } from "../../sync/projectMutationBu
 import { appendUniqueFlowLink, removeFlowLinksById } from "../nodeflow/flowLinks";
 import { applyEdgeSelectionUpdates, type EdgeSelectionUpdate } from "../nodeflow/edgeSelection";
 import { ConnectionDropMenu, type ConnectionDropMenuOption } from "./ConnectionDropMenu";
-import type { CanvasSurfaceConfig, SharedCanvasControls, SharedCanvasViewport } from "./canvas/types";
+import type { BottomDockTray, CanvasSurfaceConfig, SharedCanvasControls, SharedCanvasViewport } from "./canvas/types";
 import {
   DEFAULT_TIMELINE_DURATION,
   DEFAULT_TIMELINE_HEAD,
@@ -303,8 +303,10 @@ type Props = {
   isAgentSending?: boolean;
   isAgentFirstMode?: boolean;
   onOpenProjectSettingsPanel?: (panel: FoundationGatewaySettingsPanel, assetsSection?: FoundationGatewayAssetsSection) => void;
-  onOpenVisualLab?: (key?: "glassLab" | "filmRollLab") => void;
+  onOpenVisualLab?: (key?: "glassLab") => void;
   pendingScriptReviewNodeIds?: ReadonlySet<string>;
+  activeDockTray: BottomDockTray | null;
+  onDockTrayChange: (tray: BottomDockTray | null) => void;
 };
 
 type FocusedWrapperMemberLayout = {
@@ -723,10 +725,12 @@ type ScriptFoundationProps = {
   isAgentSending?: boolean;
   isAgentFirstMode?: boolean;
   onOpenProjectSettingsPanel?: (panel: FoundationGatewaySettingsPanel, assetsSection?: FoundationGatewayAssetsSection) => void;
-  onOpenVisualLab?: (key?: "glassLab" | "filmRollLab") => void;
+  onOpenVisualLab?: (key?: "glassLab") => void;
   onOpenMarkdownCard?: () => void;
   onCloseMarkdownCard?: () => void;
   onFoundationProjectionChange?: (projection: ScriptFoundationProjection) => void;
+  activeDockTray: BottomDockTray | null;
+  onDockTrayChange: (tray: BottomDockTray | null) => void;
 };
 
 type ScriptAxisMode = FoundationAxis;
@@ -879,6 +883,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
   onOpenMarkdownCard,
   onCloseMarkdownCard,
   onFoundationProjectionChange,
+  activeDockTray,
+  onDockTrayChange,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const agentComposerRef = useRef<HTMLTextAreaElement>(null);
@@ -889,10 +895,11 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
   const [isAxisSwitching, setIsAxisSwitching] = useState(false);
   const [menuState, setMenuState] = useState<ScriptFoundationMenuState | null>(null);
   const [editingTarget, setEditingTarget] = useState<ScriptFoundationEditTarget | null>(null);
-  const [isFoundationGatewayOpen, setIsFoundationGatewayOpen] = useState(false);
-  const [isFoundationExpanded, setIsFoundationExpanded] = useState(false);
-  const [isAgentTailOpen, setIsAgentTailOpen] = useState(false);
-  const [nodeCreateMenu, setNodeCreateMenu] = useState<ScriptFoundationCreateMenuState>(null);
+  const [nodeCreateAnchor, setNodeCreateAnchor] = useState<ScriptFoundationCreateMenuState>(null);
+  const isFoundationGatewayOpen = activeDockTray === "foundationCards";
+  const isFoundationExpanded = activeDockTray === "foundation";
+  const isAgentTailOpen = activeDockTray === "agent";
+  const nodeCreateMenu = activeDockTray === "nodes" ? nodeCreateAnchor : null;
   const availableScriptCreateOptions = useMemo(
     () => scriptCreateOptions.filter((option) =>
       (option.type !== "pinoard" || !hasPinoard) &&
@@ -928,9 +935,9 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
 
   const closeMarkdownCard = useCallback(() => {
     setEditingTarget(null);
-    setIsFoundationGatewayOpen(false);
+    if (activeDockTray === "foundationCards") onDockTrayChange(null);
     onCloseMarkdownCard?.();
-  }, [onCloseMarkdownCard]);
+  }, [activeDockTray, onCloseMarkdownCard, onDockTrayChange]);
 
   useEffect(
     () => () => {
@@ -950,11 +957,10 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
 
   const switchAxisWithFilmMotion = useCallback(() => {
     if (axisSwitchTimerRef.current) window.clearTimeout(axisSwitchTimerRef.current);
-    setIsAgentTailOpen(false);
+    onDockTrayChange(null);
     setIsAxisSwitching(true);
     setMenuState(null);
     setEditingTarget(null);
-    setIsFoundationGatewayOpen(false);
     const nextAxis = getNextFoundationAxis(activeAxis);
     axisSwitchTimerRef.current = window.setTimeout(() => {
       setActiveAxis(nextAxis);
@@ -963,7 +969,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
       setIsAxisSwitching(false);
       axisSwitchTimerRef.current = null;
     }, 180);
-  }, [activeAxis, onActiveBlockChange, timeline.blocks, weightedBlocksByAxis]);
+  }, [activeAxis, onActiveBlockChange, onDockTrayChange, timeline.blocks, weightedBlocksByAxis]);
 
   useEffect(() => {
     if (!axisRevealRequest) return;
@@ -983,19 +989,20 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
         return;
       }
       setMenuState(null);
-      setNodeCreateMenu(null);
+      setNodeCreateAnchor(null);
+      if (activeDockTray === "nodes") onDockTrayChange(null);
     };
 
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [menuState, nodeCreateMenu]);
+  }, [activeDockTray, menuState, nodeCreateMenu, onDockTrayChange]);
 
   useEffect(() => {
     if (!editingBlock && !isFoundationGatewayOpen) return;
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest(".script-foundation-md-card, .script-foundation-gateway")) return;
+      if (target?.closest(".script-foundation-md-card, .script-foundation-gateway-card")) return;
       closeMarkdownCard();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1078,16 +1085,19 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
     }
     onOpenMarkdownCard?.();
     setMenuState(null);
-    setNodeCreateMenu(null);
+    setNodeCreateAnchor(null);
     setEditingTarget(null);
-    setIsAgentTailOpen(false);
-    setIsFoundationGatewayOpen(true);
+    onDockTrayChange("foundationCards");
   };
 
   const handleHeadClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     if (clickTimerRef.current) {
       window.clearTimeout(clickTimerRef.current);
+    }
+    if (event.detail > 1) {
+      clickTimerRef.current = null;
+      return;
     }
     clickTimerRef.current = window.setTimeout(() => {
       clickTimerRef.current = null;
@@ -1108,13 +1118,13 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
     assetsSection?: FoundationGatewayAssetsSection
   ) => {
     onOpenProjectSettingsPanel?.(panel, assetsSection);
-    setIsFoundationGatewayOpen(false);
+    onDockTrayChange(null);
     onCloseMarkdownCard?.();
   };
 
-  const openGatewayVisualLab = (key: "glassLab" | "filmRollLab") => {
+  const openGatewayVisualLab = (key: "glassLab") => {
     onOpenVisualLab?.(key);
-    setIsFoundationGatewayOpen(false);
+    onDockTrayChange(null);
     onCloseMarkdownCard?.();
   };
 
@@ -1139,23 +1149,22 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
     onOpenMarkdownCard?.();
     onActiveBlockChange(blockId);
     setMenuState(null);
-    setIsFoundationGatewayOpen(false);
+    if (activeDockTray === "foundationCards") onDockTrayChange(null);
     setEditingTarget({ type: activeAxis, id: blockId });
   };
 
   const handleTailNodeClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-    setNodeCreateMenu((current) =>
-      current ? null : { x: event.clientX, y: event.clientY }
-    );
-    setIsFoundationExpanded(false);
+    const nextAnchor = nodeCreateMenu ? null : { x: event.clientX, y: event.clientY };
+    setNodeCreateAnchor(nextAnchor);
+    onDockTrayChange(nextAnchor ? "nodes" : null);
     setMenuState(null);
     setEditingTarget(null);
-    setIsFoundationGatewayOpen(false);
   };
 
   const runNodeCreateAction = (action: () => void) => {
     action();
-    setNodeCreateMenu(null);
+    setNodeCreateAnchor(null);
+    onDockTrayChange(null);
   };
 
   const handleAgentTailSend = () => {
@@ -1194,12 +1203,10 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
           type="button"
           className={`script-foundation-bar-label script-foundation-bar-label--foundation ${isFoundationExpanded && !isAgentTailOpen ? "is-active" : ""}`}
           onClick={() => {
-            setIsFoundationExpanded((current) => !current);
-            setIsAgentTailOpen(false);
-            setNodeCreateMenu(null);
+            onDockTrayChange(isFoundationExpanded ? null : "foundation");
+            setNodeCreateAnchor(null);
             setMenuState(null);
             setEditingTarget(null);
-            setIsFoundationGatewayOpen(false);
           }}
           title={isFoundationExpanded && !isAgentTailOpen ? "收起 Foundation" : "展开 Foundation"}
           aria-label={isFoundationExpanded && !isAgentTailOpen ? "收起 Foundation" : "展开 Foundation"}
@@ -1346,7 +1353,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
               <button
                 type="button"
                 className="script-foundation-bar-label script-foundation-bar-label--agent is-active"
-                onClick={() => setIsAgentTailOpen(false)}
+                onClick={() => onDockTrayChange(null)}
                 title="收起 Agent"
                 aria-label="收起 Agent"
                 aria-expanded="true"
@@ -1368,7 +1375,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                     handleAgentTailSend();
                   }
                   if (event.key === "Escape") {
-                    setIsAgentTailOpen(false);
+                    onDockTrayChange(null);
                   }
                 }}
               />
@@ -1420,12 +1427,10 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                 type="button"
                 className="script-foundation-bar-label script-foundation-bar-label--agent"
                 onClick={() => {
-                  setIsAgentTailOpen(true);
-                  setIsFoundationExpanded(false);
+                  onDockTrayChange("agent");
                   setMenuState(null);
-                  setNodeCreateMenu(null);
+                  setNodeCreateAnchor(null);
                   setEditingTarget(null);
-                  setIsFoundationGatewayOpen(false);
                 }}
                 title="打开轴尾 Agent"
                 aria-label="打开轴尾 Agent"
@@ -1558,12 +1563,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
 
       {isFoundationGatewayOpen ? (
         <section className="script-foundation-gateway" role="dialog" aria-label="Foundation 卡牌组">
-          <div className="script-foundation-gateway__section script-foundation-gateway__section--cards">
-            <div className="script-foundation-gateway__section-head">
-              <span>Foundation Cards</span>
-              <strong>{head.title || "项目索引"}</strong>
-            </div>
-            <div className="script-foundation-gateway__grid">
+          <div className="script-foundation-gateway__grid">
               <article className="script-foundation-gateway-card script-foundation-gateway-card--index">
                 <div className="script-foundation-gateway-card__title">
                   <span className="script-foundation-gateway-card__icon">
@@ -1577,18 +1577,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                 <textarea value={projectIndexMarkdown} readOnly />
               </article>
 
-              <article
-                className="script-foundation-gateway-card"
-                role="button"
-                tabIndex={0}
-                onClick={() => openGatewayVisualLab("filmRollLab")}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    openGatewayVisualLab("filmRollLab");
-                  }
-                }}
-              >
+              <article className="script-foundation-gateway-card">
                 <div className="script-foundation-gateway-card__title">
                   <span className="script-foundation-gateway-card__icon">
                     <Boxes size={18} strokeWidth={1.9} />
@@ -1644,22 +1633,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                   <button type="button" onClick={(event) => { event.stopPropagation(); openGatewayVisualLab("glassLab"); }}>
                     Glass
                   </button>
-                  <button type="button" onClick={(event) => { event.stopPropagation(); openGatewayVisualLab("filmRollLab"); }}>
-                    Film
-                  </button>
                 </div>
               </article>
-            </div>
-          </div>
-
-          <div className="script-foundation-gateway__section">
-            <div className="script-foundation-gateway__section-head">
-              <span>Account-owned hierarchy</span>
-              <strong>项目目录已迁移</strong>
-            </div>
-            <p className="text-[11px] leading-6 text-[var(--app-text-secondary)]">
-              新建、切换、公开与删除项目现在统一由账户工作台管理；Foundation 只保留当前项目内部的时间与空间结构。
-            </p>
           </div>
         </section>
       ) : null}
@@ -1732,6 +1707,8 @@ export const useFlowSurface = ({
   onOpenProjectSettingsPanel,
   onOpenVisualLab,
   pendingScriptReviewNodeIds,
+  activeDockTray,
+  onDockTrayChange,
 }: Props): CanvasSurfaceConfig => {
   const {
     isLocked,
@@ -4040,6 +4017,8 @@ export const useFlowSurface = ({
           onOpenMarkdownCard={onCollapseCanvasCards}
           onCloseMarkdownCard={onRestoreCanvasCards}
           onFoundationProjectionChange={handleFoundationProjectionChange}
+          activeDockTray={activeDockTray}
+          onDockTrayChange={onDockTrayChange}
         />
       ) : null}
 

@@ -27,6 +27,7 @@ import { toNodeFlowNodeRecord } from "../node-workspace/nodeflow/model";
 import {
   findAutomaticPageBreakLine,
   getConnectedScriptPageSequence,
+  mergeScreenplayLineWithPrevious,
   splitScreenplayDocumentAtLine,
   splitScreenplayLineAtSelection,
 } from "../node-workspace/screenplay/manusPages";
@@ -73,6 +74,21 @@ test("enter splits screenplay content at the actual cursor position", () => {
   assert.equal(splitScreenplayLineAtSelection(body, line, 0), "\n!风吹过空旷的站台。");
   assert.equal(splitScreenplayLineAtSelection(body, line, 4), "!风吹过空\n!旷的站台。");
   assert.equal(splitScreenplayLineAtSelection(body, line, line.content.length), "!风吹过空旷的站台。\n");
+});
+
+test("backspace at a populated line start merges content into the previous screenplay line", () => {
+  const body = "!前一行\n!后一行";
+  const line = analyzeFountainLines(body)[1];
+  assert.deepEqual(mergeScreenplayLineWithPrevious(body, line), {
+    body: "!前一行后一行",
+    cursor: 3,
+  });
+
+  const emptyLine = analyzeFountainLines("!前一行\n")[1];
+  assert.deepEqual(mergeScreenplayLineWithPrevious("!前一行\n", emptyLine), {
+    body: "!前一行",
+    cursor: 3,
+  });
 });
 
 test("Manus resolves a connected page sequence from any page and splits at line boundaries", () => {

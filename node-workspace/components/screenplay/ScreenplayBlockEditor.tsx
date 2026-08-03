@@ -22,7 +22,6 @@ import {
   getNextScreenplayLineKind,
   insertScreenplayLine,
   parseSceneHeading,
-  removeScreenplayLine,
   replaceScreenplayLine,
   SCENE_BOUNDARIES,
   SCENE_TIMES,
@@ -34,7 +33,10 @@ import {
   type ScreenplayLine,
   type ScreenplayLineKind,
 } from "../../screenplay/fountainEngine";
-import { splitScreenplayLineAtSelection } from "../../screenplay/manusPages";
+import {
+  mergeScreenplayLineWithPrevious,
+  splitScreenplayLineAtSelection,
+} from "../../screenplay/manusPages";
 
 export type ScreenplayCharacterSuggestion = {
   id: string;
@@ -108,11 +110,11 @@ type RowProps = {
   isActive: boolean;
   readOnly: boolean;
   registerEditor: (lineIndex: number, element: HTMLTextAreaElement | HTMLInputElement | null) => void;
-  requestFocus: (lineIndex: number, position?: "start" | "end", waitForMount?: boolean) => void;
+  requestFocus: (lineIndex: number, position?: "start" | "end" | number, waitForMount?: boolean) => void;
   onReplaceLine: (lineIndex: number, raw: string) => void;
   onInsertAfter: (lineIndex: number, raw: string) => void;
   onSplitLine: (line: ScreenplayLine, selectionStart: number, selectionEnd: number) => void;
-  onRemoveLine: (lineIndex: number) => void;
+  onMergeWithPrevious: (line: ScreenplayLine) => number;
   onCreatePageFromLine?: (lineIndex: number) => void;
   onActive: (lineIndex: number) => void;
   onSelectionChange?: (selection: SelectionPayload | null) => void;
@@ -132,7 +134,7 @@ const ScreenplayBlockRow = memo(({
   onReplaceLine,
   onInsertAfter,
   onSplitLine,
-  onRemoveLine,
+  onMergeWithPrevious,
   onCreatePageFromLine,
   onActive,
   onSelectionChange,
@@ -186,12 +188,22 @@ const ScreenplayBlockRow = memo(({
     requestFocus(line.index + 1, "start", true);
   };
 
+  const cyclePrimaryKind = (reverse = false) => {
+    const currentIndex = PRIMARY_KINDS.indexOf(line.kind);
+    const startIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = (startIndex + (reverse ? -1 : 1) + PRIMARY_KINDS.length) % PRIMARY_KINDS.length;
+    changeKind(PRIMARY_KINDS[nextIndex]);
+  };
+
+  const handleFormatCycle = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || mentionOpen) return false;
+    event.preventDefault();
+    cyclePrimaryKind(event.shiftKey);
+    return true;
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((event.metaKey || event.ctrlKey) && /^[1-6]$/.test(event.key)) {
-      event.preventDefault();
-      changeKind(PRIMARY_KINDS[Number(event.key) - 1]);
-      return;
-    }
+    if (handleFormatCycle(event)) return;
     if (event.key === "@" && (["character", "dual_dialogue"].includes(line.kind) || !line.content.trim())) {
       event.preventDefault();
       if (!["character", "dual_dialogue"].includes(line.kind)) {
@@ -213,10 +225,15 @@ const ScreenplayBlockRow = memo(({
       requestFocus(line.index + 1, "start", true);
       return;
     }
-    if (event.key === "Backspace" && !line.content && event.currentTarget.selectionStart === 0 && line.index > 0) {
+    if (
+      event.key === "Backspace" &&
+      event.currentTarget.selectionStart === 0 &&
+      event.currentTarget.selectionEnd === 0 &&
+      line.index > 0
+    ) {
       event.preventDefault();
-      onRemoveLine(line.index);
-      requestFocus(line.index - 1, "end");
+      const cursor = onMergeWithPrevious(line);
+      requestFocus(line.index - 1, cursor, true);
       return;
     }
     if (event.key === "ArrowUp" && event.currentTarget.selectionStart === 0 && line.index > 0) {
@@ -308,6 +325,7 @@ const ScreenplayBlockRow = memo(({
                 value={scene.boundary}
                 onFocus={() => onActive(line.index)}
                 onChange={(event) => onReplaceLine(line.index, serializeSceneHeading({ ...scene, boundary: event.target.value }))}
+                onKeyDown={handleFormatCycle}
                 disabled={readOnly}
               >
                 {SCENE_BOUNDARIES.map((boundary) => <option key={boundary} value={boundary}>{boundary}</option>)}
@@ -323,6 +341,7 @@ const ScreenplayBlockRow = memo(({
                 onFocus={() => onActive(line.index)}
                 onChange={(event) => onReplaceLine(line.index, serializeSceneHeading({ ...scene, location: event.target.value }))}
                 onKeyDown={(event) => {
+                  if (handleFormatCycle(event)) return;
                   if (event.key === "Enter") {
                     event.preventDefault();
                     insertNextLine();
@@ -338,6 +357,7 @@ const ScreenplayBlockRow = memo(({
                 value={scene.time}
                 onFocus={() => onActive(line.index)}
                 onChange={(event) => onReplaceLine(line.index, serializeSceneHeading({ ...scene, time: event.target.value }))}
+                onKeyDown={handleFormatCycle}
                 disabled={readOnly}
               >
                 {SCENE_TIMES.map((time) => <option key={time} value={time}>{time}</option>)}
@@ -441,7 +461,7 @@ export const ScreenplayBlockEditor: React.FC<Props> = ({
   locationOptionsId = "screenplay-location-options",
 }) => {
   const editorsRef = useRef(new Map<number, HTMLTextAreaElement | HTMLInputElement>());
-  const pendingFocusRef = useRef<{ lineIndex: number; position: "start" | "end" } | null>(null);
+  const pendingFocusRef = useRef<{ lineIndex: number; position: "start" | "end" | number } | null>(null);
   const [mentionLineIndex, setMentionLineIndex] = useState<number | null>(null);
   const bodyRef = useRef(body);
   const lineCountRef = useRef(lines.length);
@@ -465,11 +485,13 @@ export const ScreenplayBlockEditor: React.FC<Props> = ({
     onChange(splitScreenplayLineAtSelection(bodyRef.current, line, selectionStart, selectionEnd));
   }, [onChange]);
 
-  const removeLine = useCallback((lineIndex: number) => {
-    onChange(removeScreenplayLine(bodyRef.current, lineIndex));
+  const mergeWithPrevious = useCallback((line: ScreenplayLine) => {
+    const merged = mergeScreenplayLineWithPrevious(bodyRef.current, line);
+    onChange(merged.body);
+    return merged.cursor;
   }, [onChange]);
 
-  const focusLine = useCallback((lineIndex: number, position: "start" | "end" = "start", waitForMount = false) => {
+  const focusLine = useCallback((lineIndex: number, position: "start" | "end" | number = "start", waitForMount = false) => {
     const safeIndex = waitForMount
       ? Math.max(0, lineIndex)
       : Math.min(lineCountRef.current - 1, Math.max(0, lineIndex));
@@ -479,7 +501,9 @@ export const ScreenplayBlockEditor: React.FC<Props> = ({
       const editor = editorsRef.current.get(safeIndex);
       if (!editor) return;
       editor.focus();
-      const cursor = position === "end" ? editor.value.length : 0;
+      const cursor = typeof position === "number"
+        ? Math.min(editor.value.length, Math.max(0, position))
+        : position === "end" ? editor.value.length : 0;
       editor.setSelectionRange(cursor, cursor);
       editor.scrollIntoView({ block: "center", behavior: "smooth" });
       pendingFocusRef.current = null;
@@ -499,7 +523,9 @@ export const ScreenplayBlockEditor: React.FC<Props> = ({
     const editor = editorsRef.current.get(pending.lineIndex);
     if (!editor) return;
     editor.focus();
-    const cursor = pending.position === "end" ? editor.value.length : 0;
+    const cursor = typeof pending.position === "number"
+      ? Math.min(editor.value.length, Math.max(0, pending.position))
+      : pending.position === "end" ? editor.value.length : 0;
     editor.setSelectionRange(cursor, cursor);
     pendingFocusRef.current = null;
   }, [lines.length]);
@@ -531,7 +557,7 @@ export const ScreenplayBlockEditor: React.FC<Props> = ({
           onReplaceLine={replaceLine}
           onInsertAfter={insertAfter}
           onSplitLine={splitLine}
-          onRemoveLine={removeLine}
+          onMergeWithPrevious={mergeWithPrevious}
           onCreatePageFromLine={onCreatePageFromLine}
           onActive={onActiveLineChange}
           onSelectionChange={onSelectionChange}

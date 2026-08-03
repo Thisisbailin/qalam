@@ -13,6 +13,10 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
     path.join(root, "node-workspace/components/WritingPanel.tsx"),
     "utf8"
   );
+  const blockEditor = await readFile(
+    path.join(root, "node-workspace/components/screenplay/ScreenplayBlockEditor.tsx"),
+    "utf8"
+  );
   const workspace = await readFile(
     path.join(root, "node-workspace/components/CreativeWorkspace.tsx"),
     "utf8"
@@ -50,7 +54,7 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(workspace, /getConnectedScriptPageSequence\(previous, nodeId\)/);
   assert.match(styles, /\.screenplay-header \{[\s\S]*display: block;/);
   assert.match(styles, /\.screenplay-document \{[\s\S]*border-radius: 7px;/);
-  assert.match(styles, /--screenplay-paper: #fbfaf6/);
+  assert.match(styles, /--screenplay-paper: #ffffff/);
   assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-header \{[\s\S]*right: -54px;/);
@@ -63,6 +67,13 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /\.screenplay-selection-command\.is-asking/);
   assert.match(styles, /\.screenplay-identity-removal \{[\s\S]*border-radius: 999px;/);
   assert.match(styles, /scrollbar-width: none;/);
+  assert.match(styles, /\.screenplay-document-stage\.is-focus \{/);
+  assert.match(styles, /\.screenplay-workspace\.is-focus-mode \.screenplay-document \{[\s\S]*background: transparent;[\s\S]*box-shadow: none;/);
+  assert.match(writingPanel, /isFocusMode \|\| pageArrangement === "vertical"/);
+  assert.match(writingPanel, /pageArrangement === "vertical"[\s\S]*filter\(\(node\) => node\.id === scriptNode\?\.id\)/);
+  assert.match(blockEditor, /mergeScreenplayLineWithPrevious/);
+  assert.match(blockEditor, /event\.key !== "Tab"/);
+  assert.doesNotMatch(blockEditor, /\^\[1-6\]\$/);
 });
 
 test("Manus owns screenplay creation and offers continuous paper layouts", async () => {

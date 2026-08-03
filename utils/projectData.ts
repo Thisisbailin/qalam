@@ -18,14 +18,13 @@ import {
   slugifyIdentityKey,
 } from "./projectRoles";
 import { normalizeNodeFlowNode } from "../node-workspace/nodeflow/state";
+import { isNodeFlowHandleType } from "../node-workspace/nodeflow/handleTypes";
 import { normalizeManusFolderStructure } from "../node-workspace/manus/folder";
 import { normalizeFlowProjectDuration } from "./flowProject";
 import { normalizeCineworWorkspace } from "./cineworWorkspace";
 
-const HANDLE_TYPES = new Set(["image", "text", "audio", "video", "multi", "contains"]);
-
 const normalizeHandleType = (value: unknown) =>
-  typeof value === "string" && HANDLE_TYPES.has(value) ? value as any : undefined;
+  isNodeFlowHandleType(value) ? value : undefined;
 
 const stripConflictMarkers = (value: string) => {
   const cleaned = value
@@ -144,6 +143,25 @@ const normalizeFlow = (value: any): NonNullable<ProjectData["flow"]> => {
 
 const FLOW_PROJECT_COLORS = ["amber", "moss", "blue", "rose", "violet", "slate"];
 const MAX_FLOW_PROJECTS = 24;
+const DEFAULT_PROJECT_TITLES = new Set(["主项目", "项目"]);
+
+const normalizeProjectTitle = (
+  rawTitle: unknown,
+  options: { active: boolean; fileName?: string; index: number },
+) => {
+  const title = toSafeString(rawTitle).trim();
+  const fileName = toSafeString(options.fileName).trim();
+  // Older project packages kept the user-facing name only in fileName while
+  // the first Flow descriptor remained the synthetic "主项目". Promote that
+  // meaningful active name once, then use the descriptor as the authority.
+  if (
+    options.active
+    && DEFAULT_PROJECT_TITLES.has(title)
+    && fileName
+    && !DEFAULT_PROJECT_TITLES.has(fileName)
+  ) return fileName;
+  return title || (options.index === 0 ? fileName || "主项目" : `项目 ${options.index + 1}`);
+};
 
 const normalizeFlowProjects = (
   value: unknown,
@@ -165,9 +183,10 @@ const normalizeFlowProjects = (
     }
     usedProjectIds.add(id);
     const durationMin = normalizeFlowProjectDuration(project?.durationMin, 120);
+    const isActive = id === (activeProjectId || rawProjects[0]?.id || id);
     return {
       id,
-      title: toSafeString(project?.title || (index === 0 ? fileName || "主项目" : `项目 ${index + 1}`)),
+      title: normalizeProjectTitle(project?.title, { active: isActive, fileName, index }),
       color: toSafeString(project?.color || FLOW_PROJECT_COLORS[index % FLOW_PROJECT_COLORS.length]),
       durationMin,
       rootNodeId: toSafeString(project?.rootNodeId || `project-root-${id}`),
@@ -560,6 +579,9 @@ export const normalizeProjectData = (data: any): ProjectData => {
     };
   });
   const activeProject = base.flowProjects.find((project) => project.id === base.activeFlowProjectId);
+  // `fileName` is retained as an active-project compatibility projection. It
+  // must not remain a second independently editable project-name authority.
+  if (activeProject?.title) base.fileName = activeProject.title;
   base.roles = activeProject?.roles || [];
   base.designAssets = activeProject?.designAssets || [];
   return sanitizeValue(base) as ProjectData;

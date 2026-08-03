@@ -20,9 +20,7 @@ import { getStyloToolDescriptor } from "./toolCatalog";
 import type {
   AgentExecutedToolCall,
   AgentRuntimeEvent,
-  AgentTraceEntry,
-  AgentTraceStage,
-  AgentTraceStatus,
+  AgentThreadItem,
   AgentSessionMessage,
   StyloAgentConfig,
   StyloRunContext,
@@ -30,22 +28,6 @@ import type {
   StyloRunResult,
   StyloResolvedSkill,
 } from "./types";
-
-const createTraceEntry = (
-  stage: AgentTraceStage,
-  status: AgentTraceStatus,
-  title: string,
-  detail?: string,
-  payload?: string
-): AgentTraceEntry => ({
-  id: `${stage}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  at: Date.now(),
-  stage,
-  status,
-  title,
-  detail,
-  payload,
-});
 
 const summarizeSuccessfulToolCalls = (toolCalls: AgentExecutedToolCall[]) => {
   const successfulCalls = toolCalls.filter((toolCall) => toolCall.status === "success" && toolCall.summary?.trim());
@@ -84,7 +66,7 @@ type RunStyloAgentCoreOptions = {
   onEvent?: (event: AgentRuntimeEvent) => void;
   onDebug?: (label: string, payload?: unknown) => void;
   getExtraResult?: () => Partial<StyloRunResult>;
-  runStartedMeta?: Pick<Extract<AgentRuntimeEvent, { type: "run_started" }>, "traceId" | "tracingEnabled">;
+  runStartedMeta?: Pick<Extract<AgentRuntimeEvent, { type: "turn_started" }>, "traceId" | "tracingEnabled">;
   recoverFallbackOnAnyError?: boolean;
   traceId?: string;
   groupId?: string;
@@ -119,29 +101,29 @@ export const runStyloAgentCore = async ({
 }: RunStyloAgentCoreOptions): Promise<StyloRunResult> => {
   const runId = `${runtimeMode === "edge_full" ? "edge-run" : "run"}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   let runtimeEventSequence = 0;
+  const completedItems = new Map<string, AgentThreadItem>();
   const emitRuntimeEvent = (event: AgentRuntimeEvent) => {
+    if (event.type === "item_completed" || event.type === "item_updated") {
+      completedItems.set(event.item.id, event.item);
+    }
     runtimeEventSequence += 1;
     onEvent?.({ ...event, sequence: runtimeEventSequence } as AgentRuntimeEvent);
   };
-  const emitTrace = (
-    stage: AgentTraceStage,
-    status: AgentTraceStatus,
+  const debugTrace = (
+    stage: "runtime" | "session" | "model" | "tool" | "result",
+    status: "info" | "running" | "success" | "error",
     title: string,
     detail?: string,
     payload?: string
   ) => {
-    emitRuntimeEvent({
-      type: "trace",
-      runId,
-      entry: createTraceEntry(stage, status, title, detail, payload),
+    onDebug?.("trace", {
+      stage,
+      status,
+      title,
+      detail,
+      payload,
     });
   };
-
-  if (input.attachments?.length) {
-    const message = "新的 Agent runtime 暂不支持图片附件，请先移除附件后再发送。";
-    emitRuntimeEvent({ type: "run_failed", runId, error: message });
-    throw new Error(message);
-  }
 
   onDebug?.("run input", {
     projectId: input.projectId,
@@ -152,24 +134,23 @@ export const runStyloAgentCore = async ({
   });
 
   emitRuntimeEvent({
-    type: "run_started",
+    type: "turn_started",
     sessionId: input.sessionId,
     runId,
     traceId: runStartedMeta?.traceId,
     tracingEnabled: runStartedMeta?.tracingEnabled,
   });
-  emitTrace("runtime", "running", "Run started", `session=${input.sessionId}`);
+  debugTrace("runtime", "running", "Run started", `session=${input.sessionId}`);
 
-  const providerRuntime = createStyloProviderRuntime({
-    apiKey: config.apiKey,
-    baseUrl: config.baseUrl,
-    defaultHeaders: config.defaultHeaders,
-    allowBrowserClient: runtimeMode === "browser",
-  });
+  if (input.attachments?.length) {
+    const message = "新的 Agent runtime 暂不支持图片附件，请先移除附件后再发送。";
+    emitRuntimeEvent({ type: "turn_failed", runId, error: message });
+    throw new Error(message);
+  }
 
   const toolEvents: AgentExecutedToolCall[] = [];
-  const toolBudget = createStyloToolBudgetPolicy();
   const messageProjector = new AgentMessageStreamProjector(runId, emitRuntimeEvent);
+  let providerRuntime: ReturnType<typeof createStyloProviderRuntime> | null = null;
 
   const emitToolEvent = (
     event:
@@ -185,75 +166,99 @@ export const runStyloAgentCore = async ({
       if (index >= 0) toolEvents[index] = event.call;
       else toolEvents.push(event.call);
     }
-    emitRuntimeEvent({ ...event, runId } as AgentRuntimeEvent);
+    const item: AgentThreadItem = {
+      id: event.call.callId,
+      type: "tool_call",
+      status:
+        event.type === "tool_called"
+          ? "in_progress"
+          : event.type === "tool_completed"
+            ? "completed"
+            : "failed",
+      name: event.call.name,
+      summary: event.call.summary,
+      input: event.call.input,
+      output: event.call.output,
+      error: event.type === "tool_failed" ? event.error : event.call.error,
+    };
+    emitRuntimeEvent({
+      type: event.type === "tool_called" ? "item_started" : "item_completed",
+      runId,
+      item,
+    });
   };
-
-  const tools = createStyloTools({
-    bridge,
-    emitEvent: emitToolEvent,
-    disabledTools,
-    toolBudget,
-  });
-  const initialToolBudgetSnapshot = toolBudget.snapshot();
-  const runContext: StyloRunContext = {
-    runtimeMode,
-    toolBudget: {
-      totalCalls: initialToolBudgetSnapshot.totalCalls,
-      lookupCalls: initialToolBudgetSnapshot.lookupCalls,
-      mutationCalls: initialToolBudgetSnapshot.mutationCalls,
-      fullReadCalls: initialToolBudgetSnapshot.fullReadCalls,
-      limits: {
-        totalCalls: initialToolBudgetSnapshot.limits.totalCalls,
-        lookupCalls: initialToolBudgetSnapshot.limits.lookupCalls,
-        mutationCalls: initialToolBudgetSnapshot.limits.mutationCalls,
-        fullReadCalls: initialToolBudgetSnapshot.limits.fullReadCalls,
-      },
-    },
-    uiContext: input.uiContext,
-  };
-  const runInputItems = buildRunInputItems(input);
-  const resolvedToolChoice = tools.length > 0 ? "auto" : "none";
-
-  emitTrace("runtime", "info", "Config resolved", `${config.provider} · ${config.model}`, config.baseUrl);
-  emitTrace("session", "info", "Session attached", `id=${input.sessionId} · items=${sessionMessages.length}`);
-  emitTrace(
-    "tool",
-    "info",
-    "Tools prepared",
-    `${tools.length} tools enabled`,
-    JSON.stringify({
-      tools: tools.map((tool) => tool.name),
-      budget: initialToolBudgetSnapshot.limits,
-    }, null, 2)
-  );
-
-  const agent = new Agent<StyloRunContext>({
-    name: runtimeLabel,
-    instructions: composeAgentInstructions({
-      enabledSkills,
-    }),
-    handoffDescription: "Single all-purpose Stylo creative agent.",
-    model: config.model,
-    modelSettings: { ...providerRuntime.modelSettings, toolChoice: resolvedToolChoice },
-    inputGuardrails: createStyloInputGuardrails(),
-    outputGuardrails: createStyloOutputGuardrails(),
-    resetToolChoice: true,
-    tools,
-  });
-
-  emitTrace(
-    "model",
-    "running",
-    "Agent run started",
-    `model=${config.model} · sessionMemory=${sessionMessages.length}`,
-    JSON.stringify({
-      runtimeMode,
-      enabledTools: tools.map((tool) => tool.name),
-      skills: enabledSkills.map((skill) => skill.id),
-    }, null, 2)
-  );
 
   try {
+    providerRuntime = createStyloProviderRuntime({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      defaultHeaders: config.defaultHeaders,
+      allowBrowserClient: runtimeMode === "browser",
+    });
+    const toolBudget = createStyloToolBudgetPolicy();
+    const tools = createStyloTools({
+      bridge,
+      emitEvent: emitToolEvent,
+      disabledTools,
+      toolBudget,
+    });
+    const initialToolBudgetSnapshot = toolBudget.snapshot();
+    const runContext: StyloRunContext = {
+      runtimeMode,
+      toolBudget: {
+        totalCalls: initialToolBudgetSnapshot.totalCalls,
+        lookupCalls: initialToolBudgetSnapshot.lookupCalls,
+        mutationCalls: initialToolBudgetSnapshot.mutationCalls,
+        fullReadCalls: initialToolBudgetSnapshot.fullReadCalls,
+        limits: {
+          totalCalls: initialToolBudgetSnapshot.limits.totalCalls,
+          lookupCalls: initialToolBudgetSnapshot.limits.lookupCalls,
+          mutationCalls: initialToolBudgetSnapshot.limits.mutationCalls,
+          fullReadCalls: initialToolBudgetSnapshot.limits.fullReadCalls,
+        },
+      },
+      uiContext: input.uiContext,
+    };
+    const runInputItems = buildRunInputItems(input);
+    const resolvedToolChoice = tools.length > 0 ? "auto" : "none";
+
+    debugTrace("runtime", "info", "Config resolved", `${config.provider} · ${config.model}`, config.baseUrl);
+    debugTrace("session", "info", "Session attached", `id=${input.sessionId} · items=${sessionMessages.length}`);
+    debugTrace(
+      "tool",
+      "info",
+      "Tools prepared",
+      `${tools.length} tools enabled`,
+      JSON.stringify({
+        tools: tools.map((tool) => tool.name),
+        budget: initialToolBudgetSnapshot.limits,
+      }, null, 2)
+    );
+
+    const agent = new Agent<StyloRunContext>({
+      name: runtimeLabel,
+      instructions: composeAgentInstructions({ enabledSkills }),
+      handoffDescription: "Single all-purpose Stylo creative agent.",
+      model: config.model,
+      modelSettings: { ...providerRuntime.modelSettings, toolChoice: resolvedToolChoice },
+      inputGuardrails: createStyloInputGuardrails(),
+      outputGuardrails: createStyloOutputGuardrails(),
+      resetToolChoice: true,
+      tools,
+    });
+
+    debugTrace(
+      "model",
+      "running",
+      "Agent run started",
+      `model=${config.model} · sessionMemory=${sessionMessages.length}`,
+      JSON.stringify({
+        runtimeMode,
+        enabledTools: tools.map((tool) => tool.name),
+        skills: enabledSkills.map((skill) => skill.id),
+      }, null, 2)
+    );
+
     const runner = new Runner({
       modelProvider: providerRuntime.modelProvider,
       tracingDisabled: tracingDisabled ?? true,
@@ -284,15 +289,13 @@ export const runStyloAgentCore = async ({
       extractTextFromModelOutput(result.rawResponses?.at(-1)?.output) ||
       messageProjector.streamedText.trim() ||
       synthesizedToolText;
+    messageProjector.finalize(finalText);
 
     const runResult: StyloRunResult = {
       projectId: input.projectId,
       finalText,
       sessionId: input.sessionId,
-      outputItems: [
-        ...toolEvents.map((toolCall) => ({ kind: "tool_result", toolCall }) as const),
-        { kind: "text", text: finalText } as const,
-      ],
+      outputItems: Array.from(completedItems.values()),
       toolCalls: toolEvents,
       usage: result.rawResponses?.at(-1)?.usage
         ? {
@@ -315,15 +318,14 @@ export const runStyloAgentCore = async ({
       })),
       usage: runResult.usage,
     });
-    emitTrace(
+    debugTrace(
       "result",
       "success",
       "Run completed",
       `tools=${toolEvents.length} · response=${result.lastResponseId || "n/a"}`,
       `text=${finalText.length} chars`
     );
-    messageProjector.finalize(finalText);
-    emitRuntimeEvent({ type: "run_completed", runId, result: runResult });
+    emitRuntimeEvent({ type: "turn_completed", runId, result: runResult });
     return runResult;
   } catch (error: any) {
     const isMaxTurns = error?.name === "MaxTurnsExceededError" || String(error?.message || "").includes("Max turns");
@@ -368,18 +370,16 @@ export const runStyloAgentCore = async ({
 
     if (shouldRecover) {
       const recoveredText = fallbackText;
+      messageProjector.finalize(recoveredText);
       const runResult: StyloRunResult = {
         projectId: input.projectId,
         finalText: recoveredText,
         sessionId: input.sessionId,
-        outputItems: [
-          ...toolEvents.map((toolCall) => ({ kind: "tool_result", toolCall }) as const),
-          { kind: "text", text: recoveredText } as const,
-        ],
+        outputItems: Array.from(completedItems.values()),
         toolCalls: toolEvents,
         ...(getExtraResult?.() || {}),
       };
-      emitTrace(
+      debugTrace(
         "result",
         "success",
         "Fallback text recovered",
@@ -388,8 +388,7 @@ export const runStyloAgentCore = async ({
           : "运行中断，但已从已知结果恢复文本。",
         `text=${recoveredText.length} chars`
       );
-      messageProjector.finalize(recoveredText);
-      emitRuntimeEvent({ type: "run_completed", runId, result: runResult });
+      emitRuntimeEvent({ type: "turn_completed", runId, result: runResult });
       return runResult;
     }
 
@@ -403,11 +402,11 @@ export const runStyloAgentCore = async ({
           ? formatModelAccessError(config.provider, config.model, error?.message || String(error))
           : error?.message || "Agent runtime 执行失败";
 
-    emitTrace("result", "error", "Run failed", message);
-    emitRuntimeEvent({ type: "run_failed", runId, error: message });
+    debugTrace("result", "error", "Run failed", message);
+    emitRuntimeEvent({ type: "turn_failed", runId, error: message });
     throw new Error(message);
   } finally {
-    await providerRuntime.close().catch((error) => {
+    await providerRuntime?.close().catch((error) => {
       onDebug?.("provider close failed", error instanceof Error ? error.message : String(error));
     });
   }

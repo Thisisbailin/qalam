@@ -103,12 +103,12 @@ export const SCREENPLAY_FORMAT_LABELS: Record<ScreenplayLineKind, string> = {
 };
 
 export const SCREENPLAY_FORMAT_SHORTCUTS: Partial<Record<ScreenplayLineKind, string>> = {
-  action: "⌘1",
-  scene_heading: "⌘2",
-  character: "⌘3",
-  dialogue: "⌘4",
-  parenthetical: "⌘5",
-  transition: "⌘6",
+  action: "Tab · 1",
+  scene_heading: "Tab · 2",
+  character: "Tab · 3",
+  dialogue: "Tab · 4",
+  parenthetical: "Tab · 5",
+  transition: "Tab · 6",
 };
 
 export const SCENE_BOUNDARIES = ["INT.", "EXT.", "INT./EXT.", "I/E"] as const;

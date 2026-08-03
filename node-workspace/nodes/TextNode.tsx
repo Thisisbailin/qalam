@@ -443,7 +443,6 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
                 className={`text-node-shell relative flex-1 ${isScriptDocument ? "script-node-preview-shell" : ""}`}
                 data-has-content={draftText.trim().length > 0 ? "true" : "false"}
             >
-                <div className="text-node-drag-rail" aria-hidden="true" />
                 {isScriptDocument ? (
                     <div
                         className="script-manuscript-node is-single-sheet is-open"

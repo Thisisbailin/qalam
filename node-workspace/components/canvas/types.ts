@@ -23,6 +23,14 @@ export type SharedCanvasViewport = {
   zoom: number;
 };
 
+export type BottomDockTray =
+  | "foundation"
+  | "foundationCards"
+  | "nodes"
+  | "agent"
+  | "account"
+  | "viewport";
+
 export type SharedCanvasViewportApi = {
   getViewport: () => SharedCanvasViewport;
   setViewport: (viewport: SharedCanvasViewport, options?: { duration?: number }) => void;

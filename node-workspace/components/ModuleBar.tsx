@@ -5,7 +5,6 @@ export type ModuleKey =
   | "characters"
   | "scenes"
   | "glassLab"
-  | "filmRollLab"
   | "agentLab"
   | "cineworLab"
   | "designSystemLab";
@@ -26,7 +25,6 @@ export const ModuleBar: React.FC<Props> = ({ modules, onOpen }) => {
     characters: "#34d399",
     scenes: "#22d3ee",
     glassLab: "#a3a3a3",
-    filmRollLab: "#f0b429",
     agentLab: "#f26b4f",
     cineworLab: "#6f8f88",
     designSystemLab: "#7c827d",

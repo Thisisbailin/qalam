@@ -56,16 +56,24 @@ test("client checkpoint persistence is coalesced and sync errors leave syncing",
   assert.match(engine, /pendingOperationCount\(\) === 0[\s\S]*onStatusChange\?\.\("synced"/);
 });
 
-test("sync activity is a delayed top-center label, not a persistent control", () => {
+test("sync activity lives beside the Stylo title and reports the full lifecycle", () => {
   const banner = readFileSync("components/SyncStatusBanner.tsx", "utf8");
   const app = readFileSync("App.tsx", "utf8");
+  const workspace = readFileSync("node-workspace/components/CreativeWorkspace.tsx", "utf8");
+  const agent = readFileSync("node-workspace/components/StyloAgent.tsx", "utf8");
 
   assert.match(banner, /project\.status === "syncing"/);
-  assert.match(banner, /\(project\.pendingOps \?\? 0\) > 0/);
-  assert.match(banner, /setTimeout\(\(\) => setIsVisible\(true\), 320\)/);
-  assert.match(banner, /fixed left-1\/2 top-4/);
+  assert.match(banner, /if \(pendingOps === 0\) return null/);
+  assert.match(banner, /正在连接云端/);
   assert.match(banner, /正在同步更改/);
-  assert.doesNotMatch(banner, /<button|right-5|backdrop-blur|bg-\[color-mix/);
+  assert.match(banner, /已保存到云端/);
+  assert.match(banner, /同步失败/);
+  assert.match(banner, /SUCCESS_VISIBLE_MS = 1600/);
+  assert.doesNotMatch(banner, /fixed left-1\/2 top-4|<button|backdrop-blur|rounded-full/);
+  assert.match(workspace, /titleStatus=\{/);
+  assert.match(agent, /flex min-w-0 flex-col items-start/);
+  assert.match(agent, /\{titleStatus\}/);
+  assert.doesNotMatch(app, /<SyncStatusBanner/);
   assert.match(app, /usePersistedState<ProjectData>[\s\S]*debounceMs: 240/);
 });
 

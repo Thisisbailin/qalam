@@ -2,6 +2,7 @@ import type { StyloAgentRuntime, StyloRunInput, StyloRunOptions, StyloRunResult 
 import {
   AGENT_HTTP_STREAM_CONTENT_TYPE,
   AgentEventSequenceGuard,
+  AgentTurnLifecycleGuard,
   type AgentHttpRunRequest,
   parseAgentStreamPacket,
 } from "./httpProtocol";
@@ -12,22 +13,29 @@ const MAX_AGENT_REQUEST_BYTES = 128 * 1024;
 
 const summarizeEventForDebug = (event: any) => {
   if (!event || typeof event !== "object") return event;
-  if (event.type === "reasoning_delta" || event.type === "message_delta") {
+  if (event.type === "item_delta") {
     return {
       type: event.type,
       runId: event.runId,
+      itemId: event.itemId,
+      itemType: event.itemType,
       deltaChars: typeof event.delta === "string" ? event.delta.length : 0,
       accumulatedChars: typeof event.accumulatedText === "string" ? event.accumulatedText.length : 0,
     };
   }
-  if (event.type === "reasoning_completed" || event.type === "message_completed") {
+  if (event.type === "item_started" || event.type === "item_updated" || event.type === "item_completed") {
     return {
       type: event.type,
       runId: event.runId,
-      textChars: typeof event.text === "string" ? event.text.length : 0,
+      item: {
+        id: event.item?.id,
+        type: event.item?.type,
+        status: event.item?.status,
+        textChars: typeof event.item?.text === "string" ? event.item.text.length : undefined,
+      },
     };
   }
-  if (event.type === "run_completed") {
+  if (event.type === "turn_completed") {
     return {
       type: event.type,
       runId: event.runId,
@@ -35,17 +43,6 @@ const summarizeEventForDebug = (event: any) => {
         sessionId: event.result?.sessionId,
         finalTextChars: typeof event.result?.finalText === "string" ? event.result.finalText.length : 0,
         toolCalls: Array.isArray(event.result?.toolCalls) ? event.result.toolCalls.length : 0,
-      },
-    };
-  }
-  if (event.type === "trace") {
-    return {
-      type: event.type,
-      runId: event.runId,
-      entry: {
-        stage: event.entry?.stage,
-        status: event.entry?.status,
-        title: event.entry?.title,
       },
     };
   }
@@ -59,14 +56,6 @@ const summarizeRawPacketForDebug = (rawPacket: string) => {
       return {
         kind: packet.kind,
         event: summarizeEventForDebug(packet.event),
-      };
-    }
-    if (packet.kind === "result") {
-      return {
-        kind: packet.kind,
-        sessionId: packet.result?.sessionId,
-        finalTextChars: typeof packet.result?.finalText === "string" ? packet.result.finalText.length : 0,
-        toolCalls: Array.isArray(packet.result?.toolCalls) ? packet.result.toolCalls.length : 0,
       };
     }
     return {
@@ -212,11 +201,11 @@ export const createHttpStyloAgentRuntime = ({
       throw new Error(message || `Agent 请求失败：HTTP ${response.status}`);
     }
 
-    let finalResult: StyloRunResult | null = null;
+    const terminalState: { result: StyloRunResult | null } = { result: null };
     let streamedError: string | null = null;
     let lastEventType: string | null = null;
-    let lastFinalMessageCompletedText = "";
     const sequenceGuard = new AgentEventSequenceGuard();
+    const lifecycleGuard = new AgentTurnLifecycleGuard();
     await decodeStreamChunks(response.body, (rawPacket) => {
       browserAgentDebug("httpClient raw packet", summarizeRawPacketForDebug(rawPacket));
       const packet = parseAgentStreamPacket(rawPacket);
@@ -229,23 +218,16 @@ export const createHttpStyloAgentRuntime = ({
           });
           return;
         }
+        lifecycleGuard.accept(packet.event);
         browserAgentDebug("httpClient event", summarizeEventForDebug(packet.event));
         lastEventType = packet.event.type;
-        if (packet.event.type === "run_completed") {
-          finalResult = packet.event.result;
+        if (packet.event.type === "turn_completed") {
+          terminalState.result = packet.event.result;
         }
-        if (packet.event.type === "message_completed" && packet.event.isFinal) {
-          lastFinalMessageCompletedText = packet.event.text || "";
-        }
-        if (packet.event.type === "run_failed") {
+        if (packet.event.type === "turn_failed") {
           streamedError = packet.event.error;
         }
         options?.onEvent?.(packet.event);
-        return;
-      }
-      if (packet.kind === "result") {
-        browserAgentDebug("httpClient result", summarizeResultForDebug(packet.result));
-        finalResult = packet.result;
         return;
       }
       if (packet.kind === "error") {
@@ -253,23 +235,9 @@ export const createHttpStyloAgentRuntime = ({
         throw new Error(packet.error);
       }
     });
+    lifecycleGuard.assertTerminal();
 
-    if (!finalResult) {
-      if (lastFinalMessageCompletedText.trim()) {
-        finalResult = {
-          projectId: input.projectId,
-          finalText: lastFinalMessageCompletedText,
-          sessionId: input.sessionId,
-          outputItems: [{ kind: "text", text: lastFinalMessageCompletedText }],
-          toolCalls: [],
-        };
-        browserAgentDebug("httpClient synthesized result from message_completed", {
-          sessionId: input.sessionId,
-          lastEventType,
-        });
-      }
-    }
-
+    const finalResult = terminalState.result;
     if (!finalResult) {
       if (streamedError) {
         browserAgentDebugError("httpClient streamed error without result", streamedError);
@@ -278,7 +246,6 @@ export const createHttpStyloAgentRuntime = ({
       browserAgentDebugError("httpClient missing final result", {
         sessionId: input.sessionId,
         lastEventType,
-        hadFinalMessageCompletedText: Boolean(lastFinalMessageCompletedText.trim()),
       });
       throw new Error(
         lastEventType

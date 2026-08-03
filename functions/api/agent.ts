@@ -30,8 +30,6 @@ import {
   createSseResponse,
   emitError,
   emitEvent,
-  emitResult,
-  emitTrace,
   withCorsHeaders,
 } from "./_agentStream";
 
@@ -153,10 +151,10 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
       ensureStyloTraceProcessor();
       const tracingEnabled = true;
       const traceId = `edge-trace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const wrapperRunId = `edge-wrapper-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const workflowName = "Stylo Edge Agent";
       const groupId = sessionKey;
       let wrapperFailure: string | null = null;
+      let coreOwnsTerminalEvent = false;
       const skillLoader = new StaticSkillLoader();
       const requestAbortSignal = context.request.signal;
       const emitWrapperTrace = (
@@ -165,7 +163,10 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
         title: string,
         detail?: string,
         payload?: string
-      ) => emitTrace(controller, wrapperRunId, stage, status, title, detail, payload);
+      ) => debugLog(debugEnabled, traceId, `wrapper ${stage}/${status}: ${title}`, {
+        detail,
+        payload,
+      });
       const onAbort = () => {
         debugLog(debugEnabled, traceId, "request aborted", {
           reason: String((requestAbortSignal as any)?.reason || ""),
@@ -265,7 +266,8 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
         );
         emitWrapperTrace("session", "info", "Session snapshot loaded", `items=${sessionMessages.length}`);
         emitWrapperTrace("runtime", "running", "Delegating to agent core");
-        const runResult = await runStyloAgentCore({
+        coreOwnsTerminalEvent = true;
+        await runStyloAgentCore({
           input: body.run,
           config: {
             provider,
@@ -326,17 +328,15 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           },
           recoverFallbackOnAnyError: true,
         });
-        emitWrapperTrace("result", "success", "Agent core returned", `text=${runResult.finalText.length} chars · tools=${runResult.toolCalls.length}`);
-        const emitted = emitResult(controller, runResult);
-        debugLog(debugEnabled, traceId, "emit result packet", { emitted });
-        emitWrapperTrace("result", emitted ? "success" : "error", emitted ? "Final result packet emitted" : "Final result packet dropped");
       } catch (error: any) {
         const message = error?.message || "Cloudflare Agent runtime 执行失败";
         wrapperFailure = message;
         debugLog(debugEnabled, traceId, "run error", message);
-        emitWrapperTrace("result", "error", "Agent 初始化或执行失败", message);
-        const emitted = emitError(controller, message);
-        debugLog(debugEnabled, traceId, "emit error packet", { emitted, message });
+        if (!coreOwnsTerminalEvent) {
+          emitWrapperTrace("result", "error", "Agent 初始化失败", message);
+          const emitted = emitError(controller, message);
+          debugLog(debugEnabled, traceId, "emit error packet", { emitted, message });
+        }
       } finally {
         try {
           controller.close();

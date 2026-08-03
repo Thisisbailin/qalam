@@ -3,7 +3,13 @@ import type { StyloAgentBridge } from "../bridge/styloBridge";
 import type { AgentExecutedToolCall } from "../runtime/types";
 import { createStyloToolInputGuardrails, createStyloToolOutputGuardrails } from "../runtime/guardrails";
 import type { StyloToolBudgetPolicy } from "../runtime/toolBudget";
-import { getStyloToolDescriptor, listStyloToolNames } from "../runtime/toolCatalog";
+import {
+  getStyloToolDescriptor,
+  listStyloToolNames,
+  type StyloToolCapability,
+  type StyloToolDescriptor,
+  type StyloToolName,
+} from "../runtime/toolCatalog";
 import {
   createDocumentToolDef,
   findDocumentsToolDef,
@@ -31,7 +37,7 @@ type ToolLifecycleEvent =
   | { type: "tool_completed"; call: AgentExecutedToolCall }
   | { type: "tool_failed"; call: AgentExecutedToolCall; error: string };
 
-const TOOL_DEFS = [
+export const STYLO_TOOL_DEFINITIONS = [
   pingToolDef,
   findDocumentsToolDef,
   readDocumentToolDef,
@@ -51,6 +57,68 @@ const TOOL_DEFS = [
   cancelGenerationExecutionToolDef,
 ] as const;
 
+export type StyloToolDefinition = (typeof STYLO_TOOL_DEFINITIONS)[number];
+
+const TOOL_DEFINITION_BY_NAME = new Map<string, StyloToolDefinition>(
+  STYLO_TOOL_DEFINITIONS.map((definition) => [definition.name, definition])
+);
+
+export const findStyloToolDefinition = (toolName: string) =>
+  TOOL_DEFINITION_BY_NAME.get(toolName);
+
+export const listStyloToolDefinitions = (
+  capabilities?: readonly StyloToolCapability[]
+): StyloToolDefinition[] => {
+  if (capabilities === undefined) return [...STYLO_TOOL_DEFINITIONS];
+  const allowed = new Set<StyloToolCapability>(capabilities);
+  return STYLO_TOOL_DEFINITIONS.filter((definition) =>
+    allowed.has(getStyloToolDescriptor(definition.name).capability)
+  );
+};
+
+export type StyloCapabilityExecutionResult = {
+  name: StyloToolName;
+  descriptor: StyloToolDescriptor;
+  output: unknown;
+  summary: string;
+};
+
+/**
+ * Protocol-neutral execution boundary shared by the internal Agents SDK adapter
+ * and external hosts such as MCP. It intentionally owns no LLM, message,
+ * memory, token, or streaming behavior.
+ */
+export const executeStyloCapability = async ({
+  toolName,
+  input,
+  bridge,
+  allowedCapabilities,
+}: {
+  toolName: string;
+  input: unknown;
+  bridge: StyloAgentBridge;
+  allowedCapabilities?: readonly StyloToolCapability[];
+}): Promise<StyloCapabilityExecutionResult> => {
+  const definition = findStyloToolDefinition(toolName);
+  if (!definition) throw new Error(`Unknown Stylo tool: ${toolName}`);
+  const descriptor = getStyloToolDescriptor(toolName);
+  if (
+    allowedCapabilities !== undefined &&
+    !allowedCapabilities.includes(descriptor.capability)
+  ) {
+    throw new Error(
+      `Stylo capability ${descriptor.capability} is not available to this Agent host.`
+    );
+  }
+  const output = await definition.execute(input as never, bridge);
+  return {
+    name: definition.name as StyloToolName,
+    descriptor,
+    output,
+    summary: definition.summarize(output as never),
+  };
+};
+
 const LEGACY_DISABLED_TOOL_NAMES = new Set([
   "get_episode_script",
   "get_scene_script",
@@ -62,7 +130,7 @@ const LEGACY_DISABLED_TOOL_NAMES = new Set([
 ]);
 
 const assertNoLegacyTools = () => {
-  const legacyTool = TOOL_DEFS.find((toolDef) => LEGACY_DISABLED_TOOL_NAMES.has(toolDef.name));
+  const legacyTool = STYLO_TOOL_DEFINITIONS.find((toolDef) => LEGACY_DISABLED_TOOL_NAMES.has(toolDef.name));
   if (legacyTool) {
     throw new Error(`Legacy Stylo tool must not be registered in TOOL_DEFS: ${legacyTool.name}`);
   }
@@ -70,7 +138,7 @@ const assertNoLegacyTools = () => {
 
 assertNoLegacyTools();
 
-const registeredNames = new Set(TOOL_DEFS.map((toolDef) => toolDef.name));
+const registeredNames = new Set(STYLO_TOOL_DEFINITIONS.map((toolDef) => toolDef.name));
 const catalogNames = new Set<string>(listStyloToolNames());
 if (registeredNames.size !== catalogNames.size || [...registeredNames].some((name) => !catalogNames.has(name))) {
   throw new Error("Stylo tool definitions and tool catalog are out of sync");
@@ -182,7 +250,7 @@ export const createStyloTools = ({
   const disabled = new Set(disabledTools);
   const lookupCache = new Map<string, { output: unknown; summary: string }>();
 
-  return TOOL_DEFS.filter((toolDef) => !disabled.has(toolDef.name)).map((toolDef) =>
+  return STYLO_TOOL_DEFINITIONS.filter((toolDef) => !disabled.has(toolDef.name)).map((toolDef) =>
     tool({
       name: toolDef.name,
       description: toolDef.description,
@@ -239,8 +307,12 @@ export const createStyloTools = ({
             return output;
           }
 
-          const output = await toolDef.execute(input, bridge);
-          const summary = toolDef.summarize(output);
+          const execution = await executeStyloCapability({
+            toolName: toolDef.name,
+            input,
+            bridge,
+          });
+          const { output, summary } = execution;
           if (shouldCache) {
             lookupCache.set(lookupSignature, { output, summary });
           }

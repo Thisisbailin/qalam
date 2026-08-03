@@ -7,6 +7,39 @@ const GITHUB_RAW_BASE = `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GIT
 const DEFAULT_MAX_CHARS = 16000;
 const DEFAULT_MAX_ITEMS = 200;
 
+type GithubRepositoryResponse = {
+  default_branch?: string;
+  html_url?: string;
+  pushed_at?: string | null;
+  updated_at?: string | null;
+  private?: boolean;
+};
+
+type GithubBranchResponse = {
+  commit?: {
+    sha?: string;
+    html_url?: string;
+  };
+};
+
+type GithubTreeItem = {
+  path?: string;
+  type?: string;
+  size?: number;
+  sha?: string;
+};
+
+type GithubTreeResponse = {
+  sha?: string;
+  truncated?: boolean;
+  tree?: GithubTreeItem[];
+};
+
+type GithubTreeItemWithPath = GithubTreeItem & { path: string };
+
+const hasTreePath = (item: GithubTreeItem): item is GithubTreeItemWithPath =>
+  typeof item.path === "string" && item.path.length > 0;
+
 const githubRepositoryParameters = {
   type: "object",
   properties: {
@@ -76,7 +109,7 @@ const parseArgs = (input: unknown) => {
   };
 };
 
-const fetchJson = async (url: string) => {
+const fetchJson = async <T>(url: string): Promise<T> => {
   const response = await fetch(url, {
     headers: {
       Accept: "application/vnd.github+json",
@@ -86,13 +119,15 @@ const fetchJson = async (url: string) => {
   if (!response.ok) {
     throw new Error(`GitHub request failed: ${response.status} ${response.statusText}`);
   }
-  return response.json();
+  return response.json() as Promise<T>;
 };
 
 const fetchRepoStatus = async () => {
-  const repo = await fetchJson(GITHUB_API_BASE);
+  const repo = await fetchJson<GithubRepositoryResponse>(GITHUB_API_BASE);
   const branch = repo.default_branch || "main";
-  const branchInfo = await fetchJson(`${GITHUB_API_BASE}/branches/${encodeURIComponent(branch)}`);
+  const branchInfo = await fetchJson<GithubBranchResponse>(
+    `${GITHUB_API_BASE}/branches/${encodeURIComponent(branch)}`
+  );
   return {
     repository: repo.html_url || `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`,
     default_branch: branch,
@@ -109,7 +144,9 @@ const resolveRef = async (requestedRef?: string) =>
 
 const fetchTree = async (ref?: string) => {
   const resolvedRef = await resolveRef(ref);
-  const tree = await fetchJson(`${GITHUB_API_BASE}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`);
+  const tree = await fetchJson<GithubTreeResponse>(
+    `${GITHUB_API_BASE}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`
+  );
   return {
     ref: resolvedRef,
     sha: tree.sha || null,
@@ -151,12 +188,10 @@ const listTree = async (pathPrefix: string | undefined, ref: string | undefined,
   const tree = await fetchTree(ref);
   const prefix = (pathPrefix || "").replace(/^\/+|\/+$/g, "");
   const items = tree.items
-    .filter((item: any) => {
-      const path = typeof item?.path === "string" ? item.path : "";
-      return path && (!prefix || path === prefix || path.startsWith(`${prefix}/`));
-    })
+    .filter(hasTreePath)
+    .filter((item) => !prefix || item.path === prefix || item.path.startsWith(`${prefix}/`))
     .slice(0, maxItems)
-    .map((item: any) => ({
+    .map((item) => ({
       path: item.path,
       type: item.type,
       size: item.size ?? null,
@@ -185,16 +220,18 @@ const searchRepository = async (input: {
   const tree = await fetchTree(input.ref);
   const prefix = (input.path || "").replace(/^\/+|\/+$/g, "");
   const pathMatches = tree.items
-    .filter((item: any) => item?.type === "blob" && typeof item.path === "string")
-    .filter((item: any) => !prefix || item.path === prefix || item.path.startsWith(`${prefix}/`))
-    .filter((item: any) => item.path.toLowerCase().includes(normalizedQuery));
+    .filter(hasTreePath)
+    .filter((item) => item.type === "blob")
+    .filter((item) => !prefix || item.path === prefix || item.path.startsWith(`${prefix}/`))
+    .filter((item) => item.path.toLowerCase().includes(normalizedQuery));
 
   const contentMatches: Array<{ path: string; source_url: string; snippet: string }> = [];
   if (input.includeContent) {
     const candidates = tree.items
-      .filter((item: any) => item?.type === "blob" && typeof item.path === "string")
-      .filter((item: any) => !prefix || item.path === prefix || item.path.startsWith(`${prefix}/`))
-      .filter((item: any) => isProbablyTextPath(item.path))
+      .filter(hasTreePath)
+      .filter((item) => item.type === "blob")
+      .filter((item) => !prefix || item.path === prefix || item.path.startsWith(`${prefix}/`))
+      .filter((item) => isProbablyTextPath(item.path))
       .slice(0, Math.max(input.maxItems, 80));
     for (const item of candidates) {
       if (contentMatches.length >= input.maxItems) break;
@@ -219,7 +256,7 @@ const searchRepository = async (input: {
     ref: tree.ref,
     query: input.query,
     path_prefix: prefix || null,
-    path_matches: pathMatches.slice(0, input.maxItems).map((item: any) => ({
+    path_matches: pathMatches.slice(0, input.maxItems).map((item) => ({
       path: item.path,
       type: item.type,
       size: item.size ?? null,

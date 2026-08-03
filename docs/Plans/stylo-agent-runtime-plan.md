@@ -6,7 +6,7 @@
 UI message components
         ↑ normalized timeline
 React event reducer
-        ↑ AgentRuntimeEvent
+        ↑ Turn / AgentThreadItem lifecycle
 run orchestrator
   ├─ provider runtime (OpenAI-compatible / DeepSeek profile)
   ├─ SDK stream projector
@@ -26,6 +26,10 @@ project bridge / D1 session / HTTP SSE
 4. 将 React 事件状态机提取为纯 reducer，将消息时间线投影提取为 O(n) 纯函数。
 5. 拆分/收敛消息渲染边界，修复链接协议与状态呈现。
 6. 增加架构、DeepSeek、上下文、工具预算、事件 reducer 与时间线测试。
+7. 将公开协议收敛为 `turn_started -> item_* -> turn_completed|turn_failed`，
+   移除重复 result 终包与 Edge wrapper 的第二套 run/trace 流。
+
+当前协议和开发约束以 `docs/agent-runtime-architecture.md` 为准。
 
 ## Verification Plan
 
@@ -38,4 +42,3 @@ project bridge / D1 session / HTTP SSE
 - Provider runtime 可回退到现有 `OpenAIProvider` 构造，不影响协议。
 - 新工具目录仅提供元数据，单个工具定义保持原实现，可逐层回退。
 - UI reducer 保持现有 `Message[]` 外部契约，可独立回退。
-

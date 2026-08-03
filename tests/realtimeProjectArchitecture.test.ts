@@ -224,7 +224,8 @@ test("local project changes enter Yjs immediately while network writes are coale
   assert.match(engine, /if \(this\.pendingAcks\.size > 0\)/);
   assert.match(engine, /if \(this\.socket !== socket\) return/);
   assert.match(engine, /event\.data === "pong"/);
-  assert.match(hook, /useLayoutEffect\(\(\) => \{[\s\S]*engineRef\.current\?\.stage\(projectData\)/);
+  assert.match(hook, /useLayoutEffect\(\(\) => \{[\s\S]*scopedEngine\?\.projectId === projectId[\s\S]*scopedEngine\.engine\.stage\(projectData\)/);
+  assert.match(hook, /if \(engineRef\.current\?\.engine !== engine\) return/);
   assert.match(store, /outboxKey/);
   assert.match(store, /readRealtimeDocumentOutbox/);
   assert.match(store, /writeRealtimeDocumentOutbox/);

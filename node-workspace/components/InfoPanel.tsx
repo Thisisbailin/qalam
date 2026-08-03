@@ -33,10 +33,10 @@ export const InfoPanel: React.FC<Props> = ({
         {showSidebar ? (
           <div className="space-y-4">
             <div className="rounded-[28px] border border-[var(--app-border)] bg-[var(--app-panel-muted)] p-4 space-y-3">
-              <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">Account · IO</div>
+              <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">账户 · IO</div>
               {[
-                { key: "about" as const, label: "About", Icon: FileText },
-                { key: "roadmap" as const, label: "Roadmap", Icon: Target },
+                { key: "about" as const, label: "关于", Icon: FileText },
+                { key: "roadmap" as const, label: "路线图", Icon: Target },
               ].map(({ key, label, Icon }) => {
                 const activeItem = active === key;
                 return (
@@ -60,9 +60,9 @@ export const InfoPanel: React.FC<Props> = ({
             </div>
 
             <div className="rounded-[28px] border border-[var(--app-border)] bg-[var(--app-panel-muted)] p-4 text-[11px] text-[var(--app-text-secondary)] space-y-2">
-              <div className="uppercase tracking-[0.28em]">Info</div>
-              <div>Stylo 正在从工具集合，收束成一块连续的创作工作面。</div>
-              <div>新的落地页会从这里进入，并直接回到主页面继续操作。</div>
+              <div className="uppercase tracking-[0.28em]">产品信息</div>
+              <div>Stylo 正在从工具集合收束为一块连续的创作工作面。</div>
+              <div>这里集中呈现产品结构、发展方向和 landing page 入口。</div>
             </div>
           </div>
         ) : null}
@@ -76,22 +76,22 @@ export const InfoPanel: React.FC<Props> = ({
                     <img className="h-full w-full object-cover" src="/icon-128.png" alt="" />
                   </div>
                   <div>
-                    <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">About</div>
+                    <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">关于 Stylo</div>
                     <div className="mt-2 text-[22px] font-semibold tracking-[-0.03em]">Stylo</div>
                     <div className="text-[12px] text-[var(--app-text-secondary)]">v0.3 · Flow Workspace</div>
                     <div className="mt-3 max-w-xl text-[13px] leading-7 text-[var(--app-text-secondary)]">
-                      Script-grounded infinite canvas for archive structuring, asset planning, and creative node composition.
+                      以 Script 为创作基础的无限画布，用于组织档案、规划资产并连接创作节点。
                     </div>
                   </div>
                 </div>
 
                 <div className="rounded-[24px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] p-4">
-                  <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">Surface</div>
+                  <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">工作面</div>
                   <div className="mt-3 space-y-3">
                     {[
-                      { label: "Workspace", value: "Flow Workspace" },
-                      { label: "Pipeline", value: "Script → Archives → Nodes" },
-                      { label: "Access", value: "Open without sign-in" },
+                      { label: "工作区", value: "Flow 工作区" },
+                      { label: "结构链", value: "Script → 档案 → Nodes" },
+                      { label: "访问方式", value: "无需登录即可打开" },
                     ].map((item) => (
                       <div key={item.label} className="border-b border-[var(--app-border)] pb-3 last:border-b-0 last:pb-0">
                         <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--app-text-secondary)]">
@@ -107,12 +107,12 @@ export const InfoPanel: React.FC<Props> = ({
               <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
                 {[
                   {
-                    label: "Core Vector",
+                    label: "核心方向",
                     value: "理解 / 组织 / 生成",
                     detail: "把剧本、角色、场景和节点工作流放在同一条连续操作链上。",
                   },
                   {
-                    label: "Agent Layer",
+                    label: "Agent 层",
                     value: "Stylo System",
                     detail: "代理能力、视觉路径和视频路径现在共用同一块入口结构。",
                   },
@@ -135,11 +135,11 @@ export const InfoPanel: React.FC<Props> = ({
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">
                       <Path size={14} weight="duotone" />
-                      Detail
+                      入口说明
                     </div>
                     <div className="text-[20px] font-semibold tracking-[-0.03em]">为项目新增独立落地页入口</div>
                     <div className="max-w-2xl text-[13px] leading-7 text-[var(--app-text-secondary)]">
-                      从这里进入新的 landing page。页面会展示更完整的产品气质，并提供一个无需登录、直接回到主工作台的“立即体验”入口。
+                      从这里进入 landing page，查看更完整的产品结构，并可通过“立即体验”直接返回主工作台。
                     </div>
                   </div>
 
@@ -155,7 +155,7 @@ export const InfoPanel: React.FC<Props> = ({
                     <div>
                       <div className="text-[16px] font-semibold tracking-[-0.02em]">打开落地页</div>
                       <div className="mt-2 text-[12px] leading-6 text-[var(--app-text-secondary)]">
-                        打开独立 landing page，完整查看 Stylo 的 agent 能力与产品结构，再从“立即体验”回到主页面。
+                        查看 Stylo 的 Agent 能力与产品结构，再从“立即体验”回到主工作面。
                       </div>
                     </div>
                   </button>
@@ -164,24 +164,24 @@ export const InfoPanel: React.FC<Props> = ({
             </>
           ) : (
             <>
-              <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">Roadmap</div>
+              <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--app-text-secondary)]">路线图 · Roadmap</div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {[
                   {
-                    title: "Timeline & Replay",
-                    desc: "Browse generation history, compare versions, and branch edits.",
+                    title: "时间线与回放",
+                    desc: "浏览生成历史、比较不同版本，并从任意节点分支继续编辑。",
                   },
                   {
-                    title: "Asset Management",
-                    desc: "Centralize images, videos, and prompts with tagging.",
+                    title: "资产管理",
+                    desc: "集中整理图片、视频和 prompts，并通过标签建立检索关系。",
                   },
                   {
-                    title: "Collaboration",
-                    desc: "Team reviews, annotations, and release approvals.",
+                    title: "协作",
+                    desc: "支持团队审阅、批注以及发布确认流程。",
                   },
                   {
-                    title: "Publishing",
-                    desc: "Export pipelines, CDN delivery, and versioned releases.",
+                    title: "发布",
+                    desc: "完善导出 pipeline、交付链路和带版本记录的正式发布。",
                   },
                 ].map((item) => (
                   <div

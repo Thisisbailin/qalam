@@ -111,8 +111,26 @@ export const createStyloAgentRuntime = ({
         maxTurns: AGENT_MAX_TURNS,
         signal: options?.signal,
         onEvent: (event) => {
-          if (event.type === "tool_called") tracer?.onToolCalled(event.call);
-          if (event.type === "tool_completed") tracer?.onToolCompleted(event.call);
+          if (event.type === "item_started" && event.item.type === "tool_call") {
+            tracer?.onToolCalled({
+              callId: event.item.id,
+              name: event.item.name,
+              status: "running",
+              summary: event.item.summary,
+              input: event.item.input,
+            });
+          }
+          if (event.type === "item_completed" && event.item.type === "tool_call") {
+            tracer?.onToolCompleted({
+              callId: event.item.id,
+              name: event.item.name,
+              status: event.item.status === "completed" ? "success" : "error",
+              summary: event.item.summary,
+              input: event.item.input,
+              output: event.item.output,
+              error: event.item.error,
+            });
+          }
           options?.onEvent?.(event);
         },
         onDebug: debugLog,

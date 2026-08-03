@@ -69,9 +69,28 @@ export const useStyloAgentController = ({
 
   const handleEvent = useCallback((event: AgentRuntimeEvent) => {
     if (!mountedRef.current) return;
-    if (event.type === "tool_called") recordAgentToolCalled(event.call, activityStorageKey);
-    if (event.type === "tool_completed") recordAgentToolCompleted(event.call, activityStorageKey);
-    if (event.type === "tool_failed") recordAgentToolFailed(event.call, event.error, activityStorageKey);
+    if (event.type === "item_started" && event.item.type === "tool_call") {
+      recordAgentToolCalled({
+        callId: event.item.id,
+        name: event.item.name,
+        status: "running",
+        summary: event.item.summary,
+        input: event.item.input,
+      }, activityStorageKey);
+    }
+    if (event.type === "item_completed" && event.item.type === "tool_call") {
+      const call = {
+        callId: event.item.id,
+        name: event.item.name,
+        status: event.item.status === "completed" ? "success" as const : "error" as const,
+        summary: event.item.summary,
+        input: event.item.input,
+        output: event.item.output,
+        error: event.item.error,
+      };
+      if (event.item.status === "failed") recordAgentToolFailed(call, event.item.error || "工具执行失败", activityStorageKey);
+      else recordAgentToolCompleted(call, activityStorageKey);
+    }
 
     if (!streamEventQueueRef.current.push(event)) {
       flushStreamEvents();

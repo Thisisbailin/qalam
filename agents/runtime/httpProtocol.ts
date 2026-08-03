@@ -1,5 +1,5 @@
 import type { StyloToolSettings } from "../../types";
-import type { AgentRuntimeEvent, StyloRunInput, StyloRunResult } from "./types";
+import type { AgentRuntimeEvent, AgentThreadItem, StyloRunInput, StyloRunResult } from "./types";
 import { parseNodeFlowFile } from "../../node-workspace/nodeflow/schema";
 
 export type AgentHttpRuntimeConfig = {
@@ -19,7 +19,6 @@ export type AgentHttpRunRequest = {
 
 export type AgentHttpStreamPacket =
   | { kind: "event"; event: AgentRuntimeEvent }
-  | { kind: "result"; result: StyloRunResult }
   | { kind: "error"; error: string };
 
 export const AGENT_HTTP_STREAM_CONTENT_TYPE = "text/event-stream; charset=utf-8";
@@ -38,6 +37,7 @@ const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
 
 const TOOL_CALL_STATUSES = new Set(["running", "success", "error"]);
+const THREAD_ITEM_STATUSES = new Set(["in_progress", "completed", "failed"]);
 
 const parseToolCall = (value: unknown) => {
   if (!isRecord(value) || !isNonEmptyString(value.callId) || !isNonEmptyString(value.name)) {
@@ -47,6 +47,34 @@ const parseToolCall = (value: unknown) => {
     return failMalformedPacket();
   }
   return value;
+};
+
+const parseThreadItem = (value: unknown): AgentThreadItem => {
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.id) ||
+    !isNonEmptyString(value.type) ||
+    typeof value.status !== "string" ||
+    !THREAD_ITEM_STATUSES.has(value.status)
+  ) {
+    return failMalformedPacket();
+  }
+  if (value.type === "agent_message") {
+    if (
+      typeof value.text !== "string" ||
+      (value.phase !== "commentary" && value.phase !== "final_answer")
+    ) return failMalformedPacket();
+    return value as unknown as AgentThreadItem;
+  }
+  if (value.type === "reasoning") {
+    if (typeof value.text !== "string") return failMalformedPacket();
+    return value as unknown as AgentThreadItem;
+  }
+  if (value.type === "tool_call") {
+    if (!isNonEmptyString(value.name)) return failMalformedPacket();
+    return value as unknown as AgentThreadItem;
+  }
+  return failMalformedPacket();
 };
 
 const parseRunResult = (value: unknown): StyloRunResult => {
@@ -61,6 +89,7 @@ const parseRunResult = (value: unknown): StyloRunResult => {
     return failMalformedPacket();
   }
   value.toolCalls.forEach(parseToolCall);
+  value.outputItems.forEach(parseThreadItem);
   const result = value as unknown as StyloRunResult;
   return {
     ...result,
@@ -81,44 +110,33 @@ const parseRuntimeEvent = (value: unknown): AgentRuntimeEvent => {
     return failMalformedPacket();
   }
   switch (value.type) {
-    case "run_started":
+    case "turn_started":
       if (!isNonEmptyString(value.sessionId)) return failMalformedPacket();
       break;
-    case "trace": {
-      const entry = value.entry;
-      if (
-        !isRecord(entry) ||
-        !isNonEmptyString(entry.id) ||
-        typeof entry.at !== "number" ||
-        !isNonEmptyString(entry.stage) ||
-        !isNonEmptyString(entry.status) ||
-        !isNonEmptyString(entry.title)
-      ) return failMalformedPacket();
+    case "item_started": {
+      const item = parseThreadItem(value.item);
+      if (item.status !== "in_progress") return failMalformedPacket();
       break;
     }
-    case "message_delta":
-      if (typeof value.delta !== "string" || typeof value.accumulatedText !== "string") return failMalformedPacket();
+    case "item_updated":
+      parseThreadItem(value.item);
       break;
-    case "reasoning_delta":
-      if (typeof value.delta !== "string" || typeof value.accumulatedText !== "string") return failMalformedPacket();
+    case "item_completed": {
+      const item = parseThreadItem(value.item);
+      if (item.status === "in_progress") return failMalformedPacket();
       break;
-    case "reasoning_completed":
-      if (typeof value.text !== "string") return failMalformedPacket();
+    }
+    case "item_delta":
+      if (
+        !isNonEmptyString(value.itemId) ||
+        (value.itemType !== "agent_message" && value.itemType !== "reasoning") ||
+        typeof value.delta !== "string" ||
+        typeof value.accumulatedText !== "string"
+      ) return failMalformedPacket();
       break;
-    case "tool_called":
-    case "tool_completed":
-      parseToolCall(value.call);
-      break;
-    case "tool_failed":
-      parseToolCall(value.call);
-      if (typeof value.error !== "string") return failMalformedPacket();
-      break;
-    case "message_completed":
-      if (typeof value.text !== "string" || typeof value.isFinal !== "boolean") return failMalformedPacket();
-      break;
-    case "run_completed":
+    case "turn_completed":
       return { ...value, result: parseRunResult(value.result) } as unknown as AgentRuntimeEvent;
-    case "run_failed":
+    case "turn_failed":
       if (typeof value.error !== "string") return failMalformedPacket();
       break;
     default:
@@ -139,6 +157,37 @@ export class AgentEventSequenceGuard {
   }
 }
 
+export class AgentTurnLifecycleGuard {
+  private runId: string | null = null;
+  private terminal = false;
+
+  accept(event: AgentRuntimeEvent) {
+    if (!this.runId) {
+      if (event.type !== "turn_started") {
+        throw new Error("远端 Agent 流必须从 turn_started 开始。");
+      }
+      this.runId = event.runId;
+      return;
+    }
+    if (event.runId !== this.runId) {
+      throw new Error("远端 Agent 流在同一请求内切换了 runId。");
+    }
+    if (this.terminal) {
+      throw new Error("远端 Agent 流在终态之后继续发送了事件。");
+    }
+    if (event.type === "turn_started") {
+      throw new Error("远端 Agent 流重复发送了 turn_started。");
+    }
+    if (event.type === "turn_completed" || event.type === "turn_failed") {
+      this.terminal = true;
+    }
+  }
+
+  assertTerminal() {
+    if (!this.terminal) throw new Error("远端 Agent 流结束时缺少终态事件。");
+  }
+}
+
 export const parseAgentStreamPacket = (raw: string): AgentHttpStreamPacket => {
   const packet: unknown = JSON.parse(raw);
   if (!isRecord(packet) || typeof packet.kind !== "string") {
@@ -149,9 +198,6 @@ export const parseAgentStreamPacket = (raw: string): AgentHttpStreamPacket => {
   }
   if (packet.kind === "event" && isRecord(packet.event)) {
     return { kind: "event", event: parseRuntimeEvent(packet.event) };
-  }
-  if (packet.kind === "result" && isRecord(packet.result)) {
-    return { kind: "result", result: parseRunResult(packet.result) };
   }
   return failMalformedPacket();
 };

@@ -67,6 +67,7 @@ type Props = {
   panelStyleOverride?: React.CSSProperties;
   showUsageBadge?: boolean;
   onScriptEditProposals?: (batch: AgentScriptEditProposalBatch) => void;
+  titleStatus?: React.ReactNode;
 };
 
 const WORK_HINT_KEYWORDS = [
@@ -495,6 +496,7 @@ export const StyloAgent: React.FC<Props> = ({
   panelStyleOverride,
   showUsageBadge = true,
   onScriptEditProposals,
+  titleStatus,
 }) => {
   const PANEL_ANIMATION_MS = 460;
   const accountStorageKeys = buildStyloAccountStorageKeys(accountScope, projectId);
@@ -1368,17 +1370,20 @@ export const StyloAgent: React.FC<Props> = ({
           style={{ top: titleOrigin.y, minHeight: titleOrigin.height }}
         >
           <div className="flex min-w-0 items-center gap-3">
-            {(!collapsed || renderCollapsedTrigger) ? (
-            <button
-              type="button"
-              onClick={collapsed ? openPanel : closePanel}
-              className="pointer-events-auto inline-flex items-center transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-px"
-              aria-label={collapsed ? "Open Stylo" : "Close Stylo"}
-              title={collapsed ? "Open Stylo" : "Close Stylo"}
-            >
-              {styloMark}
-            </button>
-            ) : null}
+            <div className="flex min-w-0 flex-col items-start">
+              {(!collapsed || renderCollapsedTrigger) ? (
+              <button
+                type="button"
+                onClick={collapsed ? openPanel : closePanel}
+                className="pointer-events-auto inline-flex items-center transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-px"
+                aria-label={collapsed ? "Open Stylo" : "Close Stylo"}
+                title={collapsed ? "Open Stylo" : "Close Stylo"}
+              >
+                {styloMark}
+              </button>
+              ) : null}
+              {titleStatus}
+            </div>
             {!effectiveCollapsed && showUsageBadge && (
               <button
                 type="button"

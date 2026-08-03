@@ -117,6 +117,27 @@ export const splitScreenplayLineAtSelection = (
   return rawLines.join("\n");
 };
 
+export const mergeScreenplayLineWithPrevious = (
+  body: string,
+  line: ScreenplayLine
+) => {
+  const parsedLines = analyzeFountainLines(body);
+  const previousLine = parsedLines[line.index - 1];
+  if (!previousLine || line.index <= 0) {
+    return { body, cursor: 0 };
+  }
+
+  const cursor = previousLine.content.length;
+  const mergedContent = `${previousLine.content}${line.content}`;
+  const rawLines = splitScreenplayLines(body);
+  rawLines.splice(
+    previousLine.index,
+    2,
+    serializeScreenplayLine(mergedContent, previousLine.kind)
+  );
+  return { body: rawLines.join("\n"), cursor };
+};
+
 const getLineCapacity = (line: ScreenplayLine) => {
   if (!line.content.trim()) return 0.55;
   const wrappedLines = Math.max(1, Math.ceil(Array.from(line.content).length / 44));

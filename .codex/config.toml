@@ -1,0 +1,7 @@
+[mcp_servers.stylo]
+command = "node"
+args = ["scripts/stylo-mcp-server.mjs"]
+required = true
+startup_timeout_sec = 10
+tool_timeout_sec = 30
+

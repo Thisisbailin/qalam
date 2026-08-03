@@ -1,8 +1,7 @@
 import type { AgentRuntimeEvent } from "../runtime/types";
 
 const eventKey = (event: AgentRuntimeEvent) => {
-  if (event.type === "message_delta") return `message:${event.runId}:${event.messageId || "default"}`;
-  if (event.type === "reasoning_delta") return `reasoning:${event.runId}`;
+  if (event.type === "item_delta") return `${event.itemType}:${event.runId}:${event.itemId}`;
   return null;
 };
 

@@ -28,6 +28,22 @@ export type CloudProjectCatalog = {
   deletedProjectIds: string[];
 };
 
+const DEFAULT_PROJECT_TITLES = new Set(["", "主项目", "项目"]);
+
+const reconcileCatalogDescriptor = (
+  local: NonNullable<ProjectData["flowProjects"]>[number],
+  entry: CloudProjectCatalogEntry,
+) => {
+  const localTitle = local.title.trim();
+  const catalogTitle = entry.title.trim();
+  // Catalog hydration is allowed to repair a synthetic local label, but it
+  // must not let an older default catalog row overwrite a meaningful name.
+  if (DEFAULT_PROJECT_TITLES.has(localTitle) && !DEFAULT_PROJECT_TITLES.has(catalogTitle)) {
+    return { ...local, title: catalogTitle };
+  }
+  return local;
+};
+
 export const loadCloudProjectCatalog = async (session: AccountApiSession) => {
   const response = await session.request("/api/projects");
   await requireOkResponse(response, "加载云端项目目录失败");
@@ -108,7 +124,11 @@ export const hydrateCloudProjectCatalog = (
   const localProjects = discardSyntheticLocal ? [] : [...(local.flowProjects || [])];
   const byId = new Map(localProjects.map((project) => [project.id, project]));
   for (const entry of catalog) {
-    if (byId.has(entry.projectId)) continue;
+    const existing = byId.get(entry.projectId);
+    if (existing) {
+      byId.set(entry.projectId, reconcileCatalogDescriptor(existing, entry));
+      continue;
+    }
     byId.set(entry.projectId, {
       id: entry.projectId,
       title: entry.title,

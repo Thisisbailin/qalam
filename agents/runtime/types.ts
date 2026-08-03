@@ -55,21 +55,38 @@ export type AgentExecutedToolCall = {
   error?: string;
 };
 
-export type AgentOutputItem =
-  | { kind: "text"; text: string }
-  | { kind: "tool_result"; toolCall: AgentExecutedToolCall };
+export type AgentThreadItemStatus = "in_progress" | "completed" | "failed";
 
-export type AgentTraceStage = "runtime" | "session" | "model" | "tool" | "result";
-export type AgentTraceStatus = "info" | "running" | "success" | "error";
-export type AgentTraceEntry = {
+export type AgentMessageThreadItem = {
   id: string;
-  at: number;
-  stage: AgentTraceStage;
-  status: AgentTraceStatus;
-  title: string;
-  detail?: string;
-  payload?: string;
+  type: "agent_message";
+  status: AgentThreadItemStatus;
+  text: string;
+  phase: "commentary" | "final_answer";
 };
+
+export type AgentReasoningThreadItem = {
+  id: string;
+  type: "reasoning";
+  status: AgentThreadItemStatus;
+  text: string;
+};
+
+export type AgentToolCallThreadItem = {
+  id: string;
+  type: "tool_call";
+  status: AgentThreadItemStatus;
+  name: string;
+  summary?: string;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+};
+
+export type AgentThreadItem =
+  | AgentMessageThreadItem
+  | AgentReasoningThreadItem
+  | AgentToolCallThreadItem;
 
 export type StyloRunInput = {
   projectId: string;
@@ -84,7 +101,7 @@ export type StyloRunResult = {
   projectId: string;
   finalText: string;
   sessionId: string;
-  outputItems: AgentOutputItem[];
+  outputItems: AgentThreadItem[];
   toolCalls: AgentExecutedToolCall[];
   updatedProjectPatch?: Partial<Pick<ProjectData, "activeFlowProjectId" | "roles" | "designAssets" | "flow" | "flowProjects">>;
   updatedProjectData?: ProjectData;
@@ -106,17 +123,20 @@ export interface StyloAgentRuntime {
 }
 
 export type AgentRuntimeEvent = (
-  | { type: "run_started"; sessionId: string; runId: string; traceId?: string; tracingEnabled?: boolean }
-  | { type: "trace"; runId: string; entry: AgentTraceEntry }
-  | { type: "message_delta"; runId: string; messageId?: string; delta: string; accumulatedText: string }
-  | { type: "reasoning_delta"; runId: string; delta: string; accumulatedText: string }
-  | { type: "reasoning_completed"; runId: string; text: string }
-  | { type: "tool_called"; runId: string; call: AgentExecutedToolCall }
-  | { type: "tool_completed"; runId: string; call: AgentExecutedToolCall }
-  | { type: "tool_failed"; runId: string; call: AgentExecutedToolCall; error: string }
-  | { type: "message_completed"; runId: string; messageId?: string; text: string; isFinal: boolean }
-  | { type: "run_completed"; runId: string; result: StyloRunResult }
-  | { type: "run_failed"; runId: string; error: string }
+  | { type: "turn_started"; sessionId: string; runId: string; traceId?: string; tracingEnabled?: boolean }
+  | { type: "item_started"; runId: string; item: AgentThreadItem }
+  | {
+      type: "item_delta";
+      runId: string;
+      itemId: string;
+      itemType: "agent_message" | "reasoning";
+      delta: string;
+      accumulatedText: string;
+    }
+  | { type: "item_updated"; runId: string; item: AgentThreadItem }
+  | { type: "item_completed"; runId: string; item: AgentThreadItem }
+  | { type: "turn_completed"; runId: string; result: StyloRunResult }
+  | { type: "turn_failed"; runId: string; error: string }
 ) & { sequence?: number };
 
 export type StyloRunOptions = {

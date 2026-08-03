@@ -176,9 +176,14 @@ export const WritingPanel: React.FC<Props> = ({
     [initialScriptNodeId, projectData.flow?.flowNodes]
   );
   const [activeScriptNodeId, setActiveScriptNodeId] = useState<string | null>(initialScriptNode?.id || null);
-  const scriptNode = useMemo(
-    () => findScriptNode(projectData, activeScriptNodeId) || initialScriptNode,
+  const resolvedScriptNode = useMemo(
+    () => activeScriptNodeId ? findScriptNode(projectData, activeScriptNodeId) : initialScriptNode,
     [activeScriptNodeId, initialScriptNode, projectData.flow?.flowNodes]
+  );
+  const scriptNodeCacheRef = useRef<NodeFlowNode | null>(resolvedScriptNode);
+  if (resolvedScriptNode) scriptNodeCacheRef.current = resolvedScriptNode;
+  const scriptNode = resolvedScriptNode || (
+    scriptNodeCacheRef.current?.id === activeScriptNodeId ? scriptNodeCacheRef.current : initialScriptNode
   );
   const pageSequence = useMemo(
     () => getConnectedScriptPageSequence(projectData, scriptNode?.id || activeScriptNodeId || initialScriptNodeId),
@@ -330,6 +335,7 @@ export const WritingPanel: React.FC<Props> = ({
   }, [draft]);
 
   useEffect(() => {
+    if (!scriptNode) return;
     const nextNodeId = scriptNode?.id || null;
     if (nextNodeId === loadedNodeId) return;
     setLoadedNodeId(nextNodeId);
@@ -343,7 +349,7 @@ export const WritingPanel: React.FC<Props> = ({
     setPendingPatch(null);
     setExternalConflict(null);
     setSelectionCommand(null);
-  }, [loadedNodeId, scriptNode?.id, sourceDraft]);
+  }, [loadedNodeId, scriptNode, sourceDraft]);
 
   useEffect(() => {
     if (!scriptNode?.id || scriptNode.id !== loadedNodeId || pendingPatch) return;
@@ -712,10 +718,29 @@ export const WritingPanel: React.FC<Props> = ({
     downloadFountain(filename, content);
   };
 
+  const screenplayHeader = (
+    <ScreenplayHeader
+      saveState={saveState}
+      isFocusMode={isFocusMode}
+      isInspectorOpen={isInspectorOpen}
+      onToggleFocus={() => setIsFocusMode((active) => !active)}
+      onToggleInspector={() => setIsInspectorOpen((open) => !open)}
+      onShare={() => void handleShare()}
+      onClose={handleClose}
+      pageIndex={pageIndex}
+      pageCount={pageSequence.length || (scriptNode ? 1 : 0)}
+      pageArrangement={pageArrangement}
+      autoPagination={autoPagination}
+      onPageArrangementChange={setPageArrangement}
+      onCreatePage={createBlankPage}
+      onToggleAutoPagination={() => setAutoPagination((enabled) => !enabled)}
+    />
+  );
+
   const displayPages = pageSequence.length ? pageSequence : scriptNode ? [scriptNode] : [];
-  const visiblePages = pageArrangement === "filmstrip"
-    ? displayPages.filter((node) => node.id === scriptNode?.id)
-    : displayPages;
+  const visiblePages = isFocusMode || pageArrangement === "vertical"
+    ? displayPages
+    : displayPages.filter((node) => node.id === scriptNode?.id);
 
   const renderPaper = (node: NodeFlowNode, index: number) => {
     const isActive = node.id === scriptNode?.id;
@@ -733,7 +758,7 @@ export const WritingPanel: React.FC<Props> = ({
           if (element) pageElementRefs.current.set(node.id, element);
           else pageElementRefs.current.delete(node.id);
         }}
-        className={`screenplay-document ${isActive ? "is-active" : "is-preview"}`}
+        className={`screenplay-document ${isActive ? "is-active" : "is-preview"} ${isFocusMode ? "is-focus-section" : ""}`}
         data-page-id={node.id}
         tabIndex={isActive ? undefined : 0}
         role={isActive ? undefined : "button"}
@@ -746,37 +771,22 @@ export const WritingPanel: React.FC<Props> = ({
         }}
       >
         <>
-          {isActive ? (
-            <ScreenplayHeader
-              saveState={saveState}
-              isFocusMode={isFocusMode}
-              isInspectorOpen={isInspectorOpen}
-              onToggleFocus={() => setIsFocusMode((active) => !active)}
-              onToggleInspector={() => setIsInspectorOpen((open) => !open)}
-              onShare={() => void handleShare()}
-              onClose={handleClose}
-              pageIndex={pageIndex}
-              pageCount={displayPages.length}
-              pageArrangement={pageArrangement}
-              autoPagination={autoPagination}
-              onPageArrangementChange={setPageArrangement}
-              onCreatePage={createBlankPage}
-              onToggleAutoPagination={() => setAutoPagination((enabled) => !enabled)}
-            />
+          {isActive && !isFocusMode ? screenplayHeader : null}
+          {!isFocusMode ? (
+            <header className="screenplay-document__masthead">
+              <div>
+                {isActive ? (
+                  <input
+                    value={draft.title}
+                    onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                    placeholder="未命名剧本"
+                    aria-label="剧本标题"
+                  />
+                ) : <strong>{draft.title}</strong>}
+              </div>
+              <small>{index + 1}/{Math.max(1, displayPages.length)} · {paperAnalysis.stats.scenes} 场</small>
+            </header>
           ) : null}
-          <header className="screenplay-document__masthead">
-            <div>
-              {isActive ? (
-                <input
-                  value={draft.title}
-                  onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-                  placeholder="未命名剧本"
-                  aria-label="剧本标题"
-                />
-              ) : <strong>{draft.title}</strong>}
-            </div>
-            <small>{index + 1}/{Math.max(1, displayPages.length)} · {paperAnalysis.stats.scenes} 场</small>
-          </header>
           <ScreenplayBlockEditor
             body={paperDraft.body}
             lines={paperLines}
@@ -803,12 +813,24 @@ export const WritingPanel: React.FC<Props> = ({
       className={`screenplay-workspace ${isFocusMode ? "is-focus-mode" : ""} ${isInspectorOpen ? "is-inspector-open" : ""} ${agentDockWidth > 0 ? "is-agent-open" : ""}`}
       style={{ "--screenplay-agent-inset": `${Math.max(0, agentDockWidth)}px` } as React.CSSProperties}
     >
+      {isFocusMode ? screenplayHeader : null}
       <div className="screenplay-layout">
-        <main className={`screenplay-document-viewport is-${pageArrangement}`}>
-          <div className={`screenplay-document-stage is-${pageArrangement}`}>
+        <main className={`screenplay-document-viewport ${isFocusMode ? "is-focus" : `is-${pageArrangement}`}`}>
+          <div className={`screenplay-document-stage ${isFocusMode ? "is-focus" : `is-${pageArrangement}`}`}>
+            {isFocusMode ? (
+              <header className="screenplay-focus-masthead">
+                <input
+                  value={draft.title}
+                  onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="未命名剧本"
+                  aria-label="剧本标题"
+                />
+                <small>{Math.max(1, displayPages.length)} 页 · {analysis.stats.scenes} 场</small>
+              </header>
+            ) : null}
             {visiblePages.map((node) => renderPaper(node, displayPages.findIndex((item) => item.id === node.id)))}
           </div>
-          {pageArrangement === "horizontal" && displayPages.length > 1 ? (
+          {!isFocusMode && pageArrangement === "horizontal" && displayPages.length > 1 ? (
             <>
               <button
                 type="button"
@@ -845,7 +867,7 @@ export const WritingPanel: React.FC<Props> = ({
         ) : null}
       </div>
 
-      {pageArrangement === "filmstrip" && displayPages.length > 1 ? (
+      {!isFocusMode && pageArrangement === "filmstrip" && displayPages.length > 1 ? (
         <nav className="screenplay-page-filmstrip" aria-label="稿纸缩略队列">
           {displayPages.map((node, index) => {
             const paperDraft = node.id === scriptNode?.id ? draft : readScriptNode(node, knownCharacterIdentities);

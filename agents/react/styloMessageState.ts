@@ -200,7 +200,7 @@ export class StyloMessageEventState {
 
   apply(messages: Message[], event: AgentRuntimeEvent): StyloMessageProjectionResult {
     const order = () => this.order(messages, event);
-    if (event.type === "run_started") {
+    if (event.type === "turn_started") {
       this.activeRunId = event.runId;
       this.toolFailures.set(event.runId, new Map());
       const reasoningId = this.statusId(event.runId, "reasoning");
@@ -222,39 +222,22 @@ export class StyloMessageEventState {
       })) };
     }
 
-    if (event.type === "trace") {
-      if (this.activeRunId || !this.preflightStatusId) return { messages };
-      const id = this.preflightStatusId;
-      return { messages: upsertStatus(messages, id, (current) => ({
-        role: "assistant", kind: "status", order: current?.order || order(),
-        statusCard: {
-          id, runId: event.runId, status: event.entry.status === "error" ? "error" : "running",
-          headline: "连接 Agent", detail: event.entry.detail || event.entry.title,
-          summary: event.entry.status === "error" ? event.entry.detail || event.entry.title : event.entry.title,
-          steps: [], startedAt: current?.statusCard.startedAt || Date.now(), updatedAt: Date.now(),
-          isThinking: event.entry.status !== "error",
-        },
-      })) };
-    }
-
-    if (event.type === "reasoning_delta" || event.type === "reasoning_completed") {
+    if (event.type === "item_delta" && event.itemType === "reasoning") {
       const id = this.statusId(event.runId, "reasoning");
-      const completed = event.type === "reasoning_completed";
       const next = upsertStatus(messages, id, (current) => ({
         role: "assistant", kind: "status", order: current?.order || order(),
         statusCard: {
-          id, runId: event.runId, status: completed ? "success" : current?.statusCard.status || "running",
-          headline: "思考", detail: completed ? "模型已完成这一段思考。" : "模型正在分析并规划下一步。",
-          summary: completed ? event.text : event.accumulatedText, steps: [],
+          id, runId: event.runId, status: current?.statusCard.status || "running",
+          headline: "思考", detail: "模型正在分析并规划下一步。",
+          summary: event.accumulatedText, steps: [],
           startedAt: current?.statusCard.startedAt || Date.now(), updatedAt: Date.now(), isThinking: true,
         },
       }));
-      if (completed) this.activeReasoning.delete(event.runId);
       return { messages: next };
     }
 
-    if (event.type === "message_delta") {
-      this.streamed.add(streamKey(event.runId, event.messageId));
+    if (event.type === "item_delta" && event.itemType === "agent_message") {
+      this.streamed.add(streamKey(event.runId, event.itemId));
       const responseId = this.statusId(event.runId, "response");
       let next = upsertStatus(messages, responseId, (current) => ({
         role: "assistant", kind: "status", order: current?.order || order(),
@@ -264,68 +247,102 @@ export class StyloMessageEventState {
           updatedAt: Date.now(), isThinking: false,
         },
       }));
-      next = upsertAssistant(next, event.runId, event.messageId, (current) => ({
+      next = upsertAssistant(next, event.runId, event.itemId, (current) => ({
         role: "assistant", kind: "chat", order: current?.order || this.order(next, event), text: event.accumulatedText,
-        meta: { ...current?.meta, runId: event.runId, messageId: event.messageId, isStreaming: true },
+        meta: { ...current?.meta, runId: event.runId, messageId: event.itemId, isStreaming: true },
       }));
       return { messages: this.finalizeStatus(next, event.runId, "reasoning", "success") };
     }
 
-    if (event.type === "tool_called") {
+    if (event.type === "item_started" && event.item.type === "tool_call") {
       const withReasoning = this.finalizeStatus(messages, event.runId, "reasoning", "success");
-      const duplicate = withReasoning.some((message) => message.kind === "tool" && message.tool.callId === event.call.callId);
+      const duplicate = withReasoning.some((message) => message.kind === "tool" && message.tool.callId === event.item.id);
       if (duplicate) return { messages: withReasoning };
       return { messages: [...withReasoning, {
         role: "assistant", kind: "tool", order: this.order(withReasoning, event),
-        tool: { callId: event.call.callId, runId: event.runId, name: event.call.name, status: "running", summary: event.call.summary || humanizeToolName(event.call.name) },
+        tool: {
+          callId: event.item.id,
+          runId: event.runId,
+          name: event.item.name,
+          status: "running",
+          summary: event.item.summary || humanizeToolName(event.item.name),
+        },
       }] };
     }
 
-    if (event.type === "tool_completed" || event.type === "tool_failed") {
-      const settledKey = `${event.runId}:${event.call.callId}`;
+    if (event.type === "item_started") return { messages };
+
+    if (event.type === "item_completed" && event.item.type === "tool_call") {
+      const settledKey = `${event.runId}:${event.item.id}`;
       if (this.settledToolCalls.has(settledKey)) return { messages };
       this.settledToolCalls.add(settledKey);
-      const failed = event.type === "tool_failed";
-      const summary = failed ? event.error : event.call.summary;
-      const updated = updateToolStatus(messages, event.call.callId, failed ? "error" : "success", summary);
-      const alreadyHasResult = updated.some((message) => message.kind === "tool_result" && message.tool.callId === event.call.callId);
+      const failed = event.item.status === "failed";
+      const summary = failed ? event.item.error : event.item.summary;
+      const updated = updateToolStatus(messages, event.item.id, failed ? "error" : "success", summary);
+      const alreadyHasResult = updated.some((message) => message.kind === "tool_result" && message.tool.callId === event.item.id);
       let next = alreadyHasResult ? updated : [...updated, {
         role: "assistant" as const, kind: "tool_result" as const, order: this.order(updated, event),
         tool: {
-          callId: event.call.callId, runId: event.runId, name: event.call.name, status: failed ? "error" as const : "success" as const,
-          summary, output: failed ? undefined : typeof event.call.output === "string" ? event.call.output : JSON.stringify(event.call.output || {}),
+          callId: event.item.id, runId: event.runId, name: event.item.name, status: failed ? "error" as const : "success" as const,
+          summary, output: failed ? undefined : typeof event.item.output === "string" ? event.item.output : JSON.stringify(event.item.output || {}),
         },
       }];
       if (!failed) return { messages: next };
       const failures = this.toolFailures.get(event.runId) || new Map<string, number>();
-      const count = (failures.get(event.call.name) || 0) + 1;
-      failures.set(event.call.name, count);
+      const count = (failures.get(event.item.name) || 0) + 1;
+      failures.set(event.item.name, count);
       this.toolFailures.set(event.runId, failures);
-      const abortReason = count >= 5 ? `${event.call.name} 在本轮中已连续失败 ${count} 次，任务已停止。请修正工具链逻辑后再继续。` : undefined;
+      const abortReason = count >= 5 ? `${event.item.name} 在本轮中已连续失败 ${count} 次，任务已停止。请修正工具链逻辑后再继续。` : undefined;
       if (abortReason) next = this.finalizeTools(next, event.runId, abortReason);
       return { messages: next, abortReason };
     }
 
-    if (event.type === "message_completed") {
-      const built = buildAssistantChatMessage(event.text);
-      const key = streamKey(event.runId, event.messageId);
-      const next = upsertAssistant(messages, event.runId, event.messageId, (current) => ({
-        ...built,
-        order: current?.order || order(),
-        text: built.text || current?.text || event.text,
-        meta: { ...current?.meta, ...built.meta, runId: event.runId, messageId: event.messageId, isStreaming: false, isFinal: event.isFinal },
-      }));
-      this.streamed.delete(key);
-      return { messages: this.finalizeStatus(next, event.runId, "response", "success", {
-        headline: event.isFinal ? "最终回答已完成" : "本轮内容已生成",
-        detail: event.isFinal ? "Agent 已完成本次任务。" : "Agent 将继续处理后续工具或推理步骤。",
-      }) };
+    if (event.type === "item_completed" || event.type === "item_updated") {
+      const item = event.item;
+      if (item.type === "reasoning") {
+        const id = this.statusId(event.runId, "reasoning");
+        const next = upsertStatus(messages, id, (current) => ({
+          role: "assistant", kind: "status", order: current?.order || order(),
+          statusCard: {
+            id, runId: event.runId, status: item.status === "failed" ? "error" : "success",
+            headline: "思考", detail: "模型已完成这一段思考。", summary: item.text, steps: [],
+            startedAt: current?.statusCard.startedAt || Date.now(), updatedAt: Date.now(), isThinking: true,
+          },
+        }));
+        this.activeReasoning.delete(event.runId);
+        return { messages: next };
+      }
+      if (item.type === "agent_message") {
+        const built = buildAssistantChatMessage(item.text);
+        const key = streamKey(event.runId, item.id);
+        const next = upsertAssistant(messages, event.runId, item.id, (current) => ({
+          ...built,
+          order: current?.order || order(),
+          text: built.text || current?.text || item.text,
+          meta: {
+            ...current?.meta,
+            ...built.meta,
+            runId: event.runId,
+            messageId: item.id,
+            isStreaming: false,
+            isFinal: item.phase === "final_answer",
+          },
+        }));
+        this.streamed.delete(key);
+        return { messages: this.finalizeStatus(next, event.runId, "response", "success", {
+          headline: item.phase === "final_answer" ? "最终回答已完成" : "本轮内容已生成",
+          detail: item.phase === "final_answer" ? "Agent 已完成本次任务。" : "Agent 将继续处理后续工具或推理步骤。",
+        }) };
+      }
+      return { messages };
     }
 
-    if (event.type === "run_completed") {
+    if (event.type === "turn_completed") {
       this.cleanup(event.runId);
       return { messages };
     }
+
+    if (event.type !== "turn_failed") return { messages };
 
     const aborted = isAbortLikeError(event.error);
     let next = this.finalizeTools(messages, event.runId, event.error);

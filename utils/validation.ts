@@ -1,3 +1,5 @@
+import { isNodeFlowHandleType } from "../node-workspace/nodeflow/handleTypes";
+
 type ValidationResult = { ok: true; error?: undefined } | { ok: false; error: string };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -11,8 +13,6 @@ const MAX_CINEWOR_SCENES = 24;
 const MAX_CINEWOR_ACTORS = 24;
 const MAX_CINEWOR_STATES = 64;
 const MAX_CINEWOR_SHOTS = 64;
-const FLOW_HANDLE_TYPES = new Set(["image", "text", "audio", "video", "multi"]);
-
 const validateVector3 = (value: unknown, path: string): ValidationResult => (
   Array.isArray(value) && value.length === 3 && value.every(isNumber)
     ? { ok: true }
@@ -93,10 +93,10 @@ const validateFlow = (value: unknown, path: string): ValidationResult => {
     }
     const sourceHandle = link.sourceHandle;
     const targetHandle = link.targetHandle;
-    if (sourceHandle !== undefined && (!isString(sourceHandle) || !FLOW_HANDLE_TYPES.has(sourceHandle))) {
+    if (sourceHandle !== undefined && !isNodeFlowHandleType(sourceHandle)) {
       return { ok: false, error: `${path}.links[${i}].sourceHandle is invalid` };
     }
-    if (targetHandle !== undefined && (!isString(targetHandle) || !FLOW_HANDLE_TYPES.has(targetHandle))) {
+    if (targetHandle !== undefined && !isNodeFlowHandleType(targetHandle)) {
       return { ok: false, error: `${path}.links[${i}].targetHandle is invalid` };
     }
   }

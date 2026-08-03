@@ -5,6 +5,8 @@ import { mergeStyloScopedProjectData, resetStyloScopedProjectData } from "../age
 import { normalizeProjectId } from "../functions/api/_projectScope";
 import type { ProjectData } from "../types";
 import { hydrateCloudProjectCatalog } from "../sync/projectCatalog";
+import { normalizeProjectData } from "../utils/projectData";
+import { validateProjectData } from "../utils/validation";
 import {
   isNodeGeometryOnlyProjectChange,
   patchProjectSyncSnapshotGeometry,
@@ -93,6 +95,60 @@ test("account catalog makes empty projects visible before a content projection e
     "flow-project-two",
   ]);
   assert.equal(hydrated.activeFlowProjectId, "flow-project-one");
+});
+
+test("catalog hydration repairs only synthetic project titles", () => {
+  const placeholder = projectData("project-a", ["project-a"]);
+  placeholder.fileName = "主项目";
+  placeholder.flowProjects![0].title = "主项目";
+  const namedCatalog = [{
+    projectId: "project-a",
+    title: "山海之间",
+    color: "moss",
+    durationMin: 100,
+    rootNodeId: "root-project-a",
+    createdAt: 1,
+    updatedAt: 10,
+    hasDocument: true,
+  }];
+  const repaired = hydrateCloudProjectCatalog(placeholder, namedCatalog, []);
+  assert.equal(repaired.flowProjects?.[0].title, "山海之间");
+  assert.equal(repaired.fileName, "山海之间");
+
+  const locallyNamed = projectData("project-a", ["project-a"]);
+  locallyNamed.fileName = "本地正式名称";
+  locallyNamed.flowProjects![0].title = "本地正式名称";
+  const staleDefault = hydrateCloudProjectCatalog(locallyNamed, [{
+    ...namedCatalog[0],
+    title: "主项目",
+  }], []);
+  assert.equal(staleDefault.flowProjects?.[0].title, "本地正式名称");
+});
+
+test("legacy active fileName is promoted over a synthetic main-project descriptor", () => {
+  const legacy = projectData("project-a", ["project-a", "project-b"]);
+  legacy.fileName = "雾中来信";
+  legacy.flowProjects![0].title = "主项目";
+  const normalized = normalizeProjectData(legacy);
+  assert.equal(normalized.flowProjects?.[0].title, "雾中来信");
+  assert.equal(normalized.fileName, "雾中来信");
+});
+
+test("wrapper membership handles are valid realtime project data", () => {
+  const data = projectData("project-a", ["project-a"]);
+  data.flowProjects![0].flow.flowNodes = [
+    { id: "wrapper", type: "folder", position: { x: 0, y: 0 }, data: {} } as any,
+    { id: "member", type: "mdText", position: { x: 1, y: 1 }, data: {} } as any,
+  ];
+  data.flowProjects![0].flow.links = [{
+    id: "membership",
+    source: "wrapper",
+    target: "member",
+    sourceHandle: "contains",
+    targetHandle: "contains",
+  }];
+  data.flow = data.flowProjects![0].flow;
+  assert.deepEqual(validateProjectData(data), { ok: true });
 });
 
 test("node movement is recognized and applied as an action-level sync patch", () => {

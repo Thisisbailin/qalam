@@ -13,13 +13,11 @@ import { useConfig } from './hooks/useConfig';
 import { useTheme } from './hooks/useTheme';
 import { useSecretsSync } from './hooks/useSecretsSync';
 import { AppShell } from './components/layout/AppShell';
-import { SyncStatusBanner } from './components/SyncStatusBanner';
 import { CloudAccountGate } from './components/CloudAccountGate';
 import { CreativeWorkspace } from './node-workspace/components/CreativeWorkspace';
 import { resetNodeFlowAccountState, resetNodeFlowProjectState } from './node-workspace/store/nodeFlowStore';
 import type { ProjectSettingsPanelKey } from './node-workspace/components/ProjectSettingsPanel';
 import { GlassEffectLab } from './node-workspace/components/GlassEffectLab';
-import { FilmRollLab } from './node-workspace/components/FilmRollLab';
 import type { ModuleKey } from './node-workspace/components/ModuleBar';
 import {
   resolveStyloProjectId,
@@ -786,12 +784,6 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
       <AppShell
         isDarkMode={isDarkMode}
         header={null}
-        banner={
-          <SyncStatusBanner
-            syncState={syncState}
-            isSignedIn={!!authSignedIn}
-          />
-        }
       >
         <input
           type="file"
@@ -802,7 +794,6 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
         />
         {renderMainContent()}
         <GlassEffectLab isOpen={openLabModal === "glassLab"} onClose={closeLabModal} />
-        <FilmRollLab isOpen={openLabModal === "filmRollLab"} onClose={closeLabModal} />
         {openLabModal === "agentLab" ? (
           <React.Suspense fallback={null}>
             <AgentLab isOpen onClose={closeLabModal} />

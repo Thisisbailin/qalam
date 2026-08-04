@@ -27,7 +27,9 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   );
 
   assert.doesNotMatch(chrome, /screenplay-header__bookmark/);
-  assert.match(chrome, /screenplay-header__hot-zone/);
+  // 右上角悬浮操作菜单始终显示（已取消自动隐藏）。
+  assert.doesNotMatch(chrome, /screenplay-header__hot-zone/);
+  assert.doesNotMatch(chrome, /isExpanded/);
   assert.match(chrome, /screenplay-identity-dock__rail/);
   assert.match(chrome, /screenplay-identity-dock__surface/);
   assert.doesNotMatch(chrome, /layout[\s\S]*className="screenplay-identity-dock__surface"/);
@@ -90,6 +92,7 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   // 右侧悬浮操作菜单统一锚定视口右上角（自动隐藏），不再基于单张稿纸。
   assert.match(styles, /\.screenplay-header \{[\s\S]*position: fixed;[\s\S]*right: 16px;/);
+  assert.doesNotMatch(styles, /\.screenplay-header__actions \{[\s\S]{0,800}opacity: 0;/);
   assert.match(writingPanel, /screenplayHeader\}/);
   assert.doesNotMatch(writingPanel, /isActive && !isFocusMode \? screenplayHeader/);
   // 胶卷视图稿纸列表改为左侧竖向居中。

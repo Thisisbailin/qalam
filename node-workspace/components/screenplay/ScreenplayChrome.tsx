@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowsInSimple,
@@ -83,41 +83,13 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
   onCreatePage,
   onToggleAutoPagination,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
-  const collapseTimerRef = useRef<number | null>(null);
-
-  const cancelCollapse = useCallback(() => {
-    if (collapseTimerRef.current === null) return;
-    window.clearTimeout(collapseTimerRef.current);
-    collapseTimerRef.current = null;
-  }, []);
-
-  const reveal = useCallback(() => {
-    cancelCollapse();
-    setIsExpanded(true);
-  }, [cancelCollapse]);
-
-  const scheduleCollapse = useCallback((delay = 1400) => {
-    cancelCollapse();
-    collapseTimerRef.current = window.setTimeout(() => {
-      collapseTimerRef.current = null;
-      setIsExpanded(false);
-    }, delay);
-  }, [cancelCollapse]);
-
-  useEffect(() => cancelCollapse, [cancelCollapse]);
 
   return (
     <header
-      className={`screenplay-header ${isExpanded ? "is-expanded" : ""}`}
-      onPointerEnter={reveal}
-      onPointerLeave={() => scheduleCollapse()}
-      onFocusCapture={reveal}
-      onBlurCapture={() => scheduleCollapse()}
+      className="screenplay-header"
     >
-      <span className="screenplay-header__hot-zone" aria-hidden="true" />
-      <div className="screenplay-header__actions" aria-hidden={!isExpanded}>
+      <div className="screenplay-header__actions">
         <div
           className={`screenplay-save-state is-${saveState}`}
           role="status"

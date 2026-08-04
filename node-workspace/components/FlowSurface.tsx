@@ -1351,7 +1351,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                 ref={agentComposerRef}
                 value={agentComposerValue}
                 rows={1}
-                placeholder=""
+                placeholder="随心输入"
                 aria-label="向 Stylo Agent 输入消息"
                 onChange={(event) => onAgentComposerChange?.(event.target.value)}
                 onKeyDown={(event) => {
@@ -3035,8 +3035,9 @@ export const useFlowSurface = ({
         setInputNodeContextMenu(null);
         return;
       }
-      const menuWidth = 216;
-      const menuHeight = 242;
+      const isCompactViewport = typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches;
+      const menuWidth = isCompactViewport ? 224 : 216;
+      const menuHeight = isCompactViewport ? 292 : 242;
       const maxX = typeof window === "undefined" ? point.clientX : window.innerWidth - menuWidth - 8;
       const maxY = typeof window === "undefined" ? point.clientY : window.innerHeight - menuHeight - 8;
       setSelectedNodeIds(new Set([node.id]));

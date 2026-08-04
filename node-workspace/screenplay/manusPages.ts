@@ -10,7 +10,11 @@ import {
 } from "./fountainEngine";
 
 export const SCREENPLAY_PAGE_RELATION = "screenplay-page" as const;
+export const SCREENPLAY_TITLE_PAGE_ROLE = "title" as const;
 export const DEFAULT_SCREENPLAY_PAGE_CAPACITY = SCREENPLAY_PAGE_LINE_COUNT;
+
+export const isScreenplayTitlePageNode = (node?: NodeFlowNode | null) =>
+  node?.type === "scriptPage" && node.data?.pageRole === SCREENPLAY_TITLE_PAGE_ROLE;
 
 export const ensureScreenplayPageLineGrid = (
   body: string,
@@ -101,11 +105,102 @@ export const getConnectedScriptPageSequence = (
   return ordered;
 };
 
+export const ensureScreenplayTitlePage = (
+  projectData: ProjectData,
+  anchorNodeId?: string | null
+): { projectData: ProjectData; titlePageId: string | null; created: boolean } => {
+  const sequence = getConnectedScriptPageSequence(projectData, anchorNodeId);
+  if (!sequence.length) return { projectData, titlePageId: null, created: false };
+
+  const existingTitlePage = sequence.find(isScreenplayTitlePageNode);
+  if (existingTitlePage) {
+    const orderedIds = [existingTitlePage.id, ...sequence.filter((node) => node.id !== existingTitlePage.id).map((node) => node.id)];
+    const nextProjectData = sequence[0]?.id === existingTitlePage.id
+      ? projectData
+      : reorderConnectedScriptPages(projectData, orderedIds);
+    return { projectData: nextProjectData, titlePageId: existingTitlePage.id, created: false };
+  }
+
+  const flow = projectData.flow;
+  const firstPage = sequence[0];
+  if (!flow || !firstPage) return { projectData, titlePageId: null, created: false };
+  const firstData = firstPage.data || {};
+  const manuscriptId = typeof firstData.manuscriptId === "string" && firstData.manuscriptId.trim()
+    ? firstData.manuscriptId
+    : firstPage.id;
+  const usedNodeIds = new Set((flow.flowNodes || []).map((node) => node.id));
+  const baseId = `script-title-${manuscriptId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  let titlePageId = baseId;
+  let suffix = 2;
+  while (usedNodeIds.has(titlePageId)) {
+    titlePageId = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+
+  const now = Date.now();
+  const pageNumberById = new Map(sequence.map((node, index) => [node.id, index + 2]));
+  const titlePage: NodeFlowNode = {
+    id: titlePageId,
+    type: "scriptPage",
+    position: { x: firstPage.position.x - 380, y: firstPage.position.y },
+    style: firstPage.style,
+    data: {
+      ...firstData,
+      pageRole: SCREENPLAY_TITLE_PAGE_ROLE,
+      pageNumber: 1,
+      documentId: titlePageId,
+      documentKind: "script",
+      format: "fountain",
+      text: "",
+      content: "",
+      preview: "",
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+    },
+  };
+  const flowNodes = [
+    ...(flow.flowNodes || []).map((node) => {
+      const pageNumber = pageNumberById.get(node.id);
+      return pageNumber ? { ...node, data: { ...node.data, pageRole: node.data?.pageRole || "content", pageNumber } } : node;
+    }),
+    titlePage,
+  ];
+  const links = [...(flow.links || [])];
+  links.push({
+    id: `screenplay-page-${titlePageId}-${firstPage.id}`,
+    source: titlePageId,
+    target: firstPage.id,
+    sourceHandle: "text",
+    targetHandle: "text",
+    data: { relation: SCREENPLAY_PAGE_RELATION },
+  });
+  const membership = links.find(
+    (link) => link.data?.relation === "folder-membership" && link.target === firstPage.id
+  );
+  if (membership) {
+    links.push({
+      ...membership,
+      id: `folder-membership-${membership.source}-${titlePageId}`,
+      target: titlePageId,
+    });
+  }
+
+  return {
+    projectData: {
+      ...projectData,
+      flow: { ...flow, flowNodes, links },
+    },
+    titlePageId,
+    created: true,
+  };
+};
+
 export const reorderConnectedScriptPages = (
   projectData: ProjectData,
   orderedNodeIds: string[]
 ): ProjectData => {
-  const uniqueNodeIds = Array.from(new Set(orderedNodeIds));
+  let uniqueNodeIds = Array.from(new Set(orderedNodeIds));
   if (uniqueNodeIds.length < 2 || uniqueNodeIds.length !== orderedNodeIds.length) return projectData;
 
   const flow = projectData.flow;
@@ -114,6 +209,14 @@ export const reorderConnectedScriptPages = (
     (flow.flowNodes || []).filter((node) => node.type === "scriptPage").map((node) => node.id)
   );
   if (uniqueNodeIds.some((nodeId) => !scriptNodeIds.has(nodeId))) return projectData;
+
+  const titlePageId = uniqueNodeIds.find((nodeId) => {
+    const node = (flow.flowNodes || []).find((item) => item.id === nodeId);
+    return isScreenplayTitlePageNode(node);
+  });
+  if (titlePageId) {
+    uniqueNodeIds = [titlePageId, ...uniqueNodeIds.filter((nodeId) => nodeId !== titlePageId)];
+  }
 
   const currentOrder = getConnectedScriptPageSequence(projectData, uniqueNodeIds[0]).map((node) => node.id);
   if (

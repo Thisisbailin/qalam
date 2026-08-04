@@ -43,7 +43,9 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(writingPanel, /剧本中已无引用/);
   assert.match(writingPanel, /getConnectedScriptPageSequence/);
   assert.match(writingPanel, /onSplitScriptDocument/);
-  assert.match(writingPanel, /screenplay-cover__binding/);
+  assert.match(writingPanel, /screenplay-title-page__fields/);
+  assert.match(writingPanel, /ensureScreenplayTitlePage/);
+  assert.match(writingPanel, /parseFountainTitlePage/);
   assert.match(writingPanel, /createBlankScreenplayPageBody/);
   assert.match(writingPanel, /<Reorder\.Group/);
   assert.match(writingPanel, /onReorderScriptDocuments/);
@@ -59,7 +61,8 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /\.screenplay-header \{[\s\S]*display: block;/);
   assert.match(styles, /\.screenplay-document \{[\s\S]*border-radius: 7px;/);
   assert.match(styles, /--screenplay-paper: #ffffff/);
-  assert.match(styles, /\.screenplay-cover__binding/);
+  assert.doesNotMatch(styles, /\.screenplay-cover__binding/);
+  assert.match(styles, /\.screenplay-title-page__fields/);
   assert.match(styles, /\.screenplay-block\.is-empty/);
   assert.match(styles, /appearance: none;/);
   assert.match(styles, /\.screenplay-page-filmstrip__pages > li\.is-dragging/);
@@ -77,8 +80,9 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /scrollbar-width: none;/);
   assert.match(styles, /\.screenplay-document-stage\.is-focus \{/);
   assert.match(styles, /\.screenplay-workspace\.is-focus-mode \.screenplay-document \{[\s\S]*background: transparent;[\s\S]*box-shadow: none;/);
-  assert.match(writingPanel, /isFocusMode \|\| pageArrangement === "vertical"/);
+  assert.match(writingPanel, /isFocusMode[\s\S]*contentPages[\s\S]*pageArrangement === "vertical"[\s\S]*displayPages/);
   assert.match(writingPanel, /pageArrangement === "vertical"[\s\S]*filter\(\(node\) => node\.id === scriptNode\?\.id\)/);
+  assert.match(writingPanel, /titlePageNode \? \[titlePageNode\.id, \.\.\.nextOrder\] : nextOrder/);
   assert.match(blockEditor, /mergeScreenplayLineWithPrevious/);
   assert.match(blockEditor, /event\.key !== "Tab"/);
   assert.doesNotMatch(blockEditor, /\^\[1-6\]\$/);

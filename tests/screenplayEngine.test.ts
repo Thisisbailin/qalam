@@ -26,6 +26,7 @@ import {
 import { toNodeFlowNodeRecord } from "../node-workspace/nodeflow/model";
 import {
   createBlankScreenplayPageBody,
+  ensureScreenplayTitlePage,
   ensureScreenplayPageLineGrid,
   findAutomaticPageBreakLine,
   getConnectedScriptPageSequence,
@@ -34,6 +35,10 @@ import {
   splitScreenplayDocumentAtLine,
   splitScreenplayLineAtSelection,
 } from "../node-workspace/screenplay/manusPages";
+import {
+  parseFountainTitlePage,
+  serializeFountainTitlePage,
+} from "../node-workspace/screenplay/titlePage";
 import type { ProjectData } from "../types";
 
 test("screenplay engine normalizes Chinese and standard scene headings into canonical Fountain", () => {
@@ -140,6 +145,69 @@ test("a new screenplay sheet starts with a fixed 54-line action grid", () => {
   assert.ok(lines.every((line) => line.kind === "action" && line.content === ""));
   assert.equal(analyzeFountainLines(ensureScreenplayPageLineGrid("!第一行")).length, 54);
   assert.equal(findAutomaticPageBreakLine(blankPage), null);
+});
+
+test("screenplay title pages serialize only user-entered Fountain metadata", () => {
+  assert.equal(serializeFountainTitlePage({ title: "", author: "", date: "", revision: "" }), "");
+  const source = serializeFountainTitlePage({
+    title: "潮汐线",
+    author: "林默",
+    date: "2026-08-04",
+    revision: "第二稿",
+  });
+  assert.equal(source, "Title: 潮汐线\nAuthor: 林默\nDraft date: 2026-08-04\nRevision: 第二稿");
+  assert.deepEqual(parseFountainTitlePage(source), {
+    title: "潮汐线",
+    author: "林默",
+    date: "2026-08-04",
+    revision: "第二稿",
+  });
+});
+
+test("Manus migrates its cover into a fixed first scriptPage node", () => {
+  const page = {
+    id: "page-a",
+    type: "scriptPage" as const,
+    position: { x: 400, y: 100 },
+    data: {
+      title: "潮汐线",
+      content: "!第一场",
+      manuscriptId: "manuscript-a",
+      pageNumber: 1,
+    },
+  };
+  const projectData = {
+    flow: {
+      flowNodes: [page, {
+        id: "manus-a",
+        type: "folder" as const,
+        position: { x: 0, y: 100 },
+        data: { folderKind: "manus", manuscriptId: "manuscript-a" },
+      }],
+      links: [{
+        id: "membership",
+        source: "manus-a",
+        target: "page-a",
+        data: { relation: "folder-membership" as const },
+      }],
+    },
+  } as ProjectData;
+  const migrated = ensureScreenplayTitlePage(projectData, page.id);
+  const sequence = getConnectedScriptPageSequence(migrated.projectData, page.id);
+  assert.equal(migrated.created, true);
+  assert.equal(sequence[0].type, "scriptPage");
+  assert.equal(sequence[0].data?.pageRole, "title");
+  assert.equal(sequence[0].data?.content, "");
+  assert.equal(sequence[1].id, page.id);
+  assert.ok(migrated.projectData.flow?.links?.some((link) => (
+    link.source === "manus-a" && link.target === sequence[0].id
+  )));
+
+  const attemptedReorder = reorderConnectedScriptPages(
+    migrated.projectData,
+    [page.id, sequence[0].id]
+  );
+  assert.equal(getConnectedScriptPageSequence(attemptedReorder, page.id)[0].id, sequence[0].id);
 });
 
 test("screenplay analysis builds navigation, production metrics, and continuity diagnostics", () => {

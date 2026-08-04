@@ -1011,6 +1011,13 @@ export class ProjectRealtimeRoom {
   }
 
   async webSocketMessage(socket: WebSocket, raw: string | ArrayBuffer) {
+    // Hibernating WebSocket auto-response normally consumes this control
+    // frame. Keep a fallback for runtimes or existing sockets that deliver it
+    // here: a heartbeat must never enter project-update validation.
+    if (raw === "ping") {
+      this.sendSocketMessage(socket, "pong");
+      return;
+    }
     const attachedIdentity = this.readSocketIdentity(socket);
     if (!attachedIdentity) {
       socket.close(1008, "Missing project room identity");

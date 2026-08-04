@@ -77,6 +77,8 @@ export interface BaseNodeData extends Record<string, unknown> {
   wrapperRoot?: boolean;
   /** Runtime-only content sample rendered on physical wrapper covers. */
   wrapperPreview?: string;
+  /** A title page is still a regular Fountain scriptPage node. */
+  pageRole?: "title" | "content";
   /** Optional visual marker applied from the input-node context menu. */
   cardColor?: NodeCardColor;
 }

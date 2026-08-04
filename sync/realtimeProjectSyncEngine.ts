@@ -723,6 +723,19 @@ export class RealtimeProjectSyncEngine {
     }
     if (message.type === "error") {
       const error = new Error(message.error || "实时项目同步失败。");
+      // Compatibility with workers/runtime versions that route the literal
+      // heartbeat through JSON validation. This is a transport acknowledgement,
+      // not a rejected project mutation, so it must not trigger an error loop.
+      if (
+        !message.opId
+        && message.error === "Invalid realtime message"
+        && this.heartbeatDeadlineTimer
+      ) {
+        clearTimeout(this.heartbeatDeadlineTimer);
+        this.heartbeatDeadlineTimer = null;
+        this.scheduleHeartbeat();
+        return;
+      }
       if (message.opId) {
         const pending = this.pendingAcks.get(message.opId);
         if (pending) {

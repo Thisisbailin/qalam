@@ -341,7 +341,7 @@ export const WritingPanel: React.FC<Props> = ({
   const [filmstripOrder, setFilmstripOrder] = useState<string[]>(() => contentPages.map((node) => node.id));
   const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
   const filmstripOrderRef = useRef(filmstripOrder);
-  const [autoPagination, setAutoPagination] = useState(false);
+  const [autoPagination, setAutoPagination] = useState(true);
   const [selectionCommand, setSelectionCommand] = useState<SelectionCommand | null>(null);
   const [pendingPatch, setPendingPatch] = useState<PendingScriptPatch | null>(null);
   const [lastReviewedSnapshot, setLastReviewedSnapshot] = useState<ReviewedSnapshot | null>(null);
@@ -356,6 +356,23 @@ export const WritingPanel: React.FC<Props> = ({
   const pageElementRefs = useRef(new Map<string, HTMLElement>());
   const edgeHoverTimerRef = useRef<number | null>(null);
   const fountainImportInputRef = useRef<HTMLInputElement>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [filmstripScale, setFilmstripScale] = useState(1);
+
+  useEffect(() => {
+    const node = workspaceRef.current;
+    if (!node) return;
+    const update = () => {
+      const available = node.clientHeight - 192;
+      const next = Math.min(1, Math.max(0.42, available / 1056));
+      setFilmstripScale((current) => (Math.abs(current - next) < 0.01 ? current : next));
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (draggedPageId) return;
@@ -1123,8 +1140,8 @@ export const WritingPanel: React.FC<Props> = ({
           openScriptPage(index);
         }}
       >
-        <>
-          {isActive && !isFocusMode ? screenplayHeader : null}
+        {isActive && !isFocusMode ? screenplayHeader : null}
+        <div className="screenplay-document__body">
           {!isFocusMode && !isTitlePage ? (
             <header className="screenplay-document__masthead">
               <div>
@@ -1192,18 +1209,20 @@ export const WritingPanel: React.FC<Props> = ({
               onCreatePageFromLine={isActive ? (lineIndex) => createPageFromLine(lineIndex, true) : undefined}
             />
           )}
-        </>
+        </div>
       </article>
     );
   };
 
   return (
     <div
+      ref={workspaceRef}
       className={`screenplay-workspace ${isFocusMode ? "is-focus-mode" : ""} ${isInspectorOpen ? "is-inspector-open" : ""} ${agentDockWidth > 0 ? "is-agent-open" : ""} ${isTranslatorOpen && !isFocusMode ? "is-translator-open" : ""}`}
       style={
         {
           "--screenplay-agent-inset": `${Math.max(0, agentDockWidth)}px`,
           "--screenplay-translator-inset": `${Math.max(0, translatorDockWidth)}px`,
+          "--screenplay-filmstrip-scale": String(filmstripScale),
         } as React.CSSProperties
       }
     >

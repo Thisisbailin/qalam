@@ -194,12 +194,14 @@ test("automatic pagination chooses a real line boundary after physical capacity 
   assert.ok(typeof breakIndex === "number" && breakIndex > 0 && breakIndex < 40);
 });
 
-test("a new screenplay sheet starts with a fixed 54-line action grid", () => {
+test("a new screenplay sheet starts blank without forced filler lines", () => {
   const blankPage = createBlankScreenplayPageBody();
   const lines = analyzeFountainLines(blankPage);
-  assert.equal(lines.length, 54);
+  assert.equal(blankPage, "");
   assert.ok(lines.every((line) => line.kind === "action" && line.content === ""));
-  assert.equal(analyzeFountainLines(ensureScreenplayPageLineGrid("!第一行")).length, 54);
+  // 页正文不再被强制填充到 54 行，末尾空行会被清理，避免删不掉的空白。
+  assert.equal(ensureScreenplayPageLineGrid("!第一行"), "!第一行");
+  assert.equal(ensureScreenplayPageLineGrid("!第一行\n\n\n\n"), "!第一行");
   assert.equal(findAutomaticPageBreakLine(blankPage), null);
 });
 

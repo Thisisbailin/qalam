@@ -20,11 +20,12 @@ export const ensureScreenplayPageLineGrid = (
   body: string,
   lineCount = SCREENPLAY_PAGE_LINE_COUNT
 ) => {
+  // 页正文只保留真实内容：归一化行尾并去掉末尾空行。
+  // 不再强制填充到 SCREENPLAY_PAGE_LINE_COUNT，避免每页后半段出现
+  // 无法删除的大片空白。lineCount 仍作为“一页约一分钟戏”的容量参考，
+  // 由 findAutomaticPageBreakLine 分页算法使用。
   const normalizedBody = body.replace(/\r\n?/g, "\n");
-  const lines = splitScreenplayLines(normalizedBody);
-  const targetLineCount = Math.max(1, Math.floor(lineCount));
-  if (lines.length >= targetLineCount) return normalizedBody;
-  return [...lines, ...Array.from({ length: targetLineCount - lines.length }, () => "")].join("\n");
+  return normalizedBody.replace(/\n+$/, "");
 };
 
 export const createBlankScreenplayPageBody = (

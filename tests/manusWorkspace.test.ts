@@ -72,6 +72,12 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /appearance: none;/);
   assert.match(styles, /\.screenplay-page-filmstrip__pages > li\.is-dragging/);
   assert.match(styles, /\.screenplay-page-filmstrip__drag-handle \{[\s\S]*touch-action: none;/);
+  // 稿纸固定长度（一页约一分钟戏的容量），正文不再被强制填充空白行。
+  assert.match(styles, /\.screenplay-document \{[\s\S]*height: 1056px;/);
+  assert.match(styles, /\.screenplay-document__body \{/);
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*--screenplay-filmstrip-scale/);
+  assert.match(writingPanel, /const \[autoPagination, setAutoPagination\] = useState\(true\)/);
+  assert.match(writingPanel, /--screenplay-filmstrip-scale/);
   assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-header \{[\s\S]*right: -54px;/);

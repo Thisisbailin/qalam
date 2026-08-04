@@ -1,6 +1,7 @@
 import type { StyloToolSettings } from "../../types";
 import type { AgentRuntimeEvent, AgentThreadItem, StyloRunInput, StyloRunResult } from "./types";
 import { parseNodeFlowFile } from "../../node-workspace/nodeflow/schema";
+import type { ProjectData } from "../../types";
 
 export type AgentHttpRuntimeConfig = {
   provider?: "qwen" | "openrouter" | "ark" | "deepseek";
@@ -14,6 +15,12 @@ export type AgentHttpRunRequest = {
   runtime: AgentHttpRuntimeConfig;
   project: {
     expectedRevision: number;
+    /**
+     * 本地项目快照（已按云端形状归一化）。提供时服务端直接基于该快照
+     * 构建 Agent 工作区，不再等待实时项目投影或校验云端修订，从而把
+     * Agent 运行与云同步状态解耦。
+     */
+    localSnapshot?: ProjectData;
   };
 };
 

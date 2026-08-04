@@ -1,4 +1,5 @@
 import type { StyloAgentRuntime, StyloRunInput, StyloRunOptions, StyloRunResult } from "./types";
+import type { ProjectData } from "../../types";
 import {
   AGENT_HTTP_STREAM_CONTENT_TYPE,
   AgentEventSequenceGuard,
@@ -9,7 +10,8 @@ import {
 import { browserAgentDebug, browserAgentDebugError } from "./debug";
 import { drainAgentSseBuffer } from "./sseProtocol";
 
-const MAX_AGENT_REQUEST_BYTES = 128 * 1024;
+// Agent 请求现在携带本地项目快照，容量上限按项目规模放宽。
+const MAX_AGENT_REQUEST_BYTES = 4 * 1024 * 1024;
 
 const summarizeEventForDebug = (event: any) => {
   if (!event || typeof event !== "object") return event;
@@ -97,6 +99,7 @@ type HttpRuntimeDeps = {
   getProjectRevision: () => number;
   beforeRequest?: () => Promise<{
     expectedRevision: number;
+    localSnapshot?: ProjectData;
     release?: () => void;
   }>;
   getAuthToken?: (options?: { skipCache?: boolean }) => Promise<string | null>;
@@ -145,6 +148,9 @@ export const createHttpStyloAgentRuntime = ({
       runtime: getRuntimeConfig(),
       project: {
         expectedRevision,
+        ...(projectLease?.localSnapshot
+          ? { localSnapshot: projectLease.localSnapshot }
+          : {}),
       },
     };
     const serializedRequestBody = JSON.stringify(requestBody);

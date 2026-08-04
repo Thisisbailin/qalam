@@ -5,7 +5,7 @@ import { AppConfig, ProjectData, SyncState } from "../../types";
 import type { NodeFlowFile, NodeFlowNode } from "../types";
 import { createStableId } from "../../utils/id";
 import { buildApiUrl } from "../../utils/api";
-import { restoreLocalNodeMedia } from "../../utils/cloudProjectData";
+import { restoreLocalNodeMedia, toCloudProjectData } from "../../utils/cloudProjectData";
 import { resolveProviderModel, type StyloAgentProvider } from "../../agents/runtime/providerConfig";
 import {
   GLASS_DIFFUSION_PRESETS,
@@ -477,7 +477,6 @@ export const StyloAgent: React.FC<Props> = ({
   config,
   setProjectData,
   getAuthToken,
-  syncState,
   ensureProjectSynced,
   onOpenStats,
   settingsOpen = false,
@@ -623,26 +622,6 @@ export const StyloAgent: React.FC<Props> = ({
   const [glassAnchorFrame, setGlassAnchorFrame] = useState({ left: 0, top: 0 });
   const effectiveCollapsed = collapsed;
   const dockInset = 16;
-  const syncStateRef = useRef(syncState);
-  syncStateRef.current = syncState;
-  const waitForProjectSync = useCallback(async () => {
-    const deadline = Date.now() + 15_000;
-    while (true) {
-      const projectSync = syncStateRef.current?.project;
-      if (!projectSync) return;
-      if (projectSync.status === "disabled") {
-        throw new Error("Agent 工具需要云端项目状态，但当前账户未启用项目同步。");
-      }
-      if (projectSync.status === "error" || projectSync.status === "conflict") {
-        throw new Error(projectSync.lastError || "项目同步尚未完成，Agent 无法读取权威项目状态。");
-      }
-      if (projectSync.status === "synced" && (projectSync.pendingOps || 0) === 0) return;
-      if (Date.now() >= deadline) {
-        throw new Error("等待项目同步超时。Agent 未读取本地快照，请确认同步完成后重试。");
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-    }
-  }, []);
   const prepareProjectToolState = useCallback(async (): Promise<ProjectSyncLease> => {
     const flowState = getNodeFlowSnapshot();
     const expectedRevision = flowState.revision;
@@ -662,12 +641,16 @@ export const StyloAgent: React.FC<Props> = ({
     const snapshot = mergeNodeFlowIntoProjectData(projectDataRef.current, nodeFlowSnapshot);
     projectDataRef.current = snapshot;
     setProjectData(snapshot);
-    if (ensureProjectSynced) {
-      return ensureProjectSynced(snapshot, expectedRevision);
-    }
-    await waitForProjectSync();
-    return { expectedRevision, remoteVersion: 0, release: () => undefined };
-  }, [ensureProjectSynced, setProjectData, waitForProjectSync]);
+    // Agent 已与云同步解耦：直接把本地快照交给服务端构建工作区，
+    // 不再等待云端确认或校验云端修订。快照按云端形状归一化，
+    // 剔除本地 blob/data 媒体，避免把浏览器私有资源带上请求。
+    return {
+      expectedRevision,
+      remoteVersion: 0,
+      localSnapshot: toCloudProjectData(snapshot),
+      release: () => undefined,
+    };
+  }, [setProjectData]);
   const edgeRuntime = useMemo(
     () =>
       createHttpStyloAgentRuntime({

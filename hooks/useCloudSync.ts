@@ -21,7 +21,13 @@ type UseCloudSyncOptions = {
   onRemoteReset?: (mode: "reset" | "delete") => void;
 };
 
-export type ProjectSyncLease = RealtimeSyncLease;
+export type ProjectSyncLease = RealtimeSyncLease & {
+  /**
+   * 本地项目快照（可选）。Agent 预检携带它时即可在本地数据上直接运行，
+   * 不必等待实时项目写入获得云端确认。
+   */
+  localSnapshot?: ProjectData;
+};
 export type EnsureProjectSynced = (
   snapshot: ProjectData,
   expectedRevision: number,

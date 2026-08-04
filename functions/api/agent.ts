@@ -3,6 +3,8 @@ import type { AgentHttpRunRequest } from "../../agents/runtime/httpProtocol";
 import { resolveAgentProvider, resolveBaseUrl, resolveProviderModel } from "../../agents/runtime/providerConfig";
 import { resolveActivatedSkills, StaticSkillLoader } from "../../agents/runtime/skills";
 import { buildDisabledTools } from "../../agents/runtime/toolPolicy";
+import { validateProjectData } from "../../utils/validation";
+import type { ProjectData } from "../../types";
 import { createAgentSessionKey, D1EdgeSession, migrateLegacyD1AgentSession, StyloResponsesCompactionSession, readD1SessionMessages } from "./_agentSessions";
 import { ensureStyloTraceProcessor, forceFlushAgentTracing, persistBufferedTrace } from "./_agentTracing";
 import { parseNodeFlowFile } from "../../node-workspace/nodeflow/schema";
@@ -14,7 +16,7 @@ import { getUserId } from "./_auth";
 import { enforceRateLimit } from "./_rateLimit";
 import { readJsonRequest } from "./_request";
 import type { D1DatabaseLike, PagesContext } from "./_types";
-import { loadAgentProjectState } from "./_agentProjectState";
+import { buildAgentProjectStateFromRealtimeDocument, loadAgentProjectState } from "./_agentProjectState";
 import {
   flushRealtimeProjectProjection,
   type RealtimeProjectionEnv,
@@ -40,8 +42,33 @@ type AgentEnv = Record<string, unknown> & RealtimeProjectionEnv & {
 };
 
 const EDGE_AGENT_MAX_TURNS = 20;
-const MAX_AGENT_REQUEST_BYTES = 128 * 1024;
+// Agent 请求现在携带本地项目快照，容量上限按项目规模放宽。
+const MAX_AGENT_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_AGENT_TEXT_LENGTH = 20_000;
+
+const normalizeLocalProjectSnapshot = (
+  value: unknown,
+): { ok: true; value: ProjectData } | { ok: false; error: string } => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "本地项目快照必须是对象。" };
+  }
+  const record = value as Record<string, unknown>;
+  const snapshot = {
+    ...record,
+    episodes: Array.isArray(record.episodes) ? record.episodes : [],
+    roles: Array.isArray(record.roles) ? record.roles : [],
+    designAssets: Array.isArray(record.designAssets) ? record.designAssets : [],
+    flow: record.flow && typeof record.flow === "object"
+      ? record.flow
+      : { flowNodes: [], links: [] },
+    flowProjects: Array.isArray(record.flowProjects) ? record.flowProjects : [],
+  } as unknown as ProjectData;
+  const validation = validateProjectData(snapshot);
+  if (!validation.ok) {
+    return { ok: false, error: `本地项目快照未通过校验：${validation.error}` };
+  }
+  return { ok: true, value: snapshot };
+};
 
 const resolveApiKey = (env: Record<string, unknown>, provider: "qwen" | "openrouter" | "ark" | "deepseek") => {
   const value =
@@ -111,6 +138,20 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
         "Content-Type": "application/json; charset=utf-8",
       },
     });
+  }
+  let localSnapshot: ProjectData | null = null;
+  if (body?.project?.localSnapshot !== undefined) {
+    const candidate = normalizeLocalProjectSnapshot(body.project.localSnapshot);
+    if (!candidate.ok) {
+      return new Response(JSON.stringify({ error: candidate.error }), {
+        status: 400,
+        headers: {
+          ...CORS_HEADERS,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+      });
+    }
+    localSnapshot = candidate.value;
   }
   if (
     body.run.projectId.length > 256 ||
@@ -182,20 +223,33 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           body.run.sessionId,
           sessionOwner
         ).catch(() => false);
-        await flushRealtimeProjectProjection(
-          context.env,
-          sessionOwner,
-          body.run.projectId,
-        );
-        const projectState = await loadAgentProjectState(
-          context.env.DB,
-          sessionOwner,
-          body.run.projectId
-        );
-        if (projectState.nodeFlow.revision !== body.project.expectedRevision) {
-          throw new Error(
-            `云端 Flow 修订为 ${projectState.nodeFlow.revision}，本地请求修订为 ${body.project.expectedRevision}。请等待项目同步完成后重试。`
+        let projectState: Awaited<ReturnType<typeof loadAgentProjectState>>;
+        if (localSnapshot) {
+          // Agent 已与云同步解耦：直接基于客户端本地快照构建工作区，
+          // 不读取 D1 投影、不做云端修订校验。云端数据随后由同步引擎
+          // 在后台自行追赶，不再阻塞 Agent 运行。
+          projectState = buildAgentProjectStateFromRealtimeDocument(
+            body.run.projectId,
+            localSnapshot,
+            Date.now(),
+            0,
           );
+        } else {
+          await flushRealtimeProjectProjection(
+            context.env,
+            sessionOwner,
+            body.run.projectId,
+          );
+          projectState = await loadAgentProjectState(
+            context.env.DB,
+            sessionOwner,
+            body.run.projectId
+          );
+          if (projectState.nodeFlow.revision !== body.project.expectedRevision) {
+            throw new Error(
+              `云端 Flow 修订为 ${projectState.nodeFlow.revision}，本地请求修订为 ${body.project.expectedRevision}。请等待项目同步完成后重试。`
+            );
+          }
         }
         const agentProjectData = createAgentProjectData(
           projectState.projectData,

@@ -26,6 +26,7 @@ import { STYLO_TOOL_CATALOG, getStyloToolDescriptor } from "../agents/runtime/to
 import { buildDisabledTools } from "../agents/runtime/toolPolicy";
 import { normalizeStyloToolSettings } from "../agents/runtime/toolSettings";
 import type { AgentRuntimeEvent, StyloRunResult } from "../agents/runtime/types";
+import type { ProjectData } from "../types";
 import { buildStyloMessageTimeline } from "../node-workspace/components/stylo/messageTimeline";
 import {
   STYLO_PRIMARY_MESSAGE_VISUALS,
@@ -814,11 +815,92 @@ test("Agent project sync barrier uses an immutable snapshot lease instead of UI 
 
   const agentSource = readFileSync("node-workspace/components/StyloAgent.tsx", "utf8");
   assert.match(agentSource, /const snapshot = mergeNodeFlowIntoProjectData/);
-  assert.match(agentSource, /return ensureProjectSynced\(snapshot, expectedRevision\)/);
+  assert.match(agentSource, /localSnapshot: toCloudProjectData\(snapshot\)/);
   assert.match(
     agentSource,
     /nodes: restoreLocalNodeMedia\(parsedCandidateFlow\.nodes, currentFlow\.nodes\)/
   );
+});
+
+test("Agent run requests carry the local snapshot when the preflight provides one", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ body: AgentHttpRunRequest }> = [];
+  const localSnapshot: ProjectData = {
+    fileName: "Local Project",
+    rawScript: "",
+    episodes: [],
+    roles: [],
+    designAssets: [],
+    canvas: { viewport: { x: 0, y: 0, zoom: 1 } },
+    stats: { context: { total: 0, success: 0, error: 0 } },
+    flow: {
+      revision: 9,
+      flowNodes: [{
+        id: "node-1",
+        type: "text",
+        position: { x: 1, y: 2 },
+        data: { title: "文本", markdown: "hello" },
+      }],
+      links: [],
+      graphLinks: [],
+      globalAssetHistory: [],
+    },
+    flowProjects: [],
+  };
+  globalThis.fetch = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+    calls.push({ body: JSON.parse(String(init?.body || "{}")) as AgentHttpRunRequest });
+    return new Response(
+      serializeAgentStreamPacket({
+        kind: "event",
+        event: {
+          type: "turn_started",
+          runId: "run-1",
+          sequence: 1,
+          sessionId: "session-1",
+        },
+      }) + serializeAgentStreamPacket({
+        kind: "event",
+        event: {
+          type: "turn_completed",
+          runId: "run-1",
+          sequence: 2,
+          result: emptyResult("project-1"),
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8" } }
+    );
+  }) as typeof fetch;
+
+  try {
+    const runtime = createHttpStyloAgentRuntime({
+      endpoint: "https://stylo.test/api/agent",
+      getRuntimeConfig: () => ({ provider: "deepseek", model: DEEPSEEK_DEFAULT_MODEL }),
+      beforeRequest: async () => ({
+        expectedRevision: 9,
+        localSnapshot,
+        release: () => undefined,
+      }),
+      getProjectRevision: () => 9,
+    });
+    await runtime.run({
+      projectId: "project-1",
+      sessionId: "stylo:project-1:conversation-1",
+      userText: "直接基于本地数据工作",
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.project.expectedRevision, 9);
+    assert.deepEqual(calls[0].body.project.localSnapshot, localSnapshot);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Edge Agent API accepts a local snapshot and skips the cloud revision barrier", () => {
+  const apiSource = readFileSync("functions/api/agent.ts", "utf8");
+  assert.match(apiSource, /normalizeLocalProjectSnapshot/);
+  assert.match(apiSource, /buildAgentProjectStateFromRealtimeDocument\(\s*body\.run\.projectId,\s*localSnapshot/);
+  assert.match(apiSource, /云端 Flow 修订为 \$\{projectState\.nodeFlow\.revision\}/);
 });
 
 test("Agent instructions start without environment or operational-memory injection", () => {

@@ -17,6 +17,7 @@
     "audit": "npm audit --audit-level=high",
     "mcp:stylo": "node scripts/stylo-mcp-server.mjs",
     "mcp:stylo:connect": "node scripts/stylo-connect.mjs",
+    "mcp:stylo:connect:full": "node scripts/stylo-connect.mjs --full",
     "mcp:stylo:disconnect": "node scripts/stylo-disconnect.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run audit",
     "preview": "vite preview",

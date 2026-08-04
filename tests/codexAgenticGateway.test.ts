@@ -19,9 +19,16 @@ import {
   listStyloToolDefinitions,
 } from "../agents/tools";
 import {
+  CODEX_FULL_CAPABILITIES,
   CODEX_INITIAL_CAPABILITIES,
   buildStyloToolManifest,
+  getCodexCapabilitiesForScope,
 } from "../agents/tools/manifest";
+import {
+  createAgentProjectData,
+  createNodeFlowBridgeState,
+  mergeAgentNodeFlowIntoProjectData,
+} from "../functions/api/_agentBridgeState";
 
 const createReadOnlyBridge = (): StyloAgentBridge => {
   const projectData = {
@@ -100,6 +107,75 @@ test("Codex manifest is a progressive-disclosure view over the shared Stylo regi
   assert.ok(manifest.every((tool) => tool.inputSchema.type === "object"));
 });
 
+test("full Codex scope exposes shared project operations without client-only generation approvals", () => {
+  assert.deepEqual(getCodexCapabilitiesForScope("project_read"), CODEX_INITIAL_CAPABILITIES);
+  assert.deepEqual(getCodexCapabilitiesForScope("project_full"), CODEX_FULL_CAPABILITIES);
+  const manifest = buildStyloToolManifest(CODEX_FULL_CAPABILITIES);
+  const names = manifest.map((tool) => tool.name);
+  assert.ok(names.includes("create_document"));
+  assert.ok(names.includes("move_flow_node"));
+  assert.ok(names.includes("operate_foundation"));
+  assert.ok(names.includes("read_runtime_manual"));
+  assert.ok(names.includes("search_web"));
+  assert.ok(!names.includes("prepare_generation_execution"));
+  assert.ok(!names.includes("cancel_generation_execution"));
+  assert.equal(manifest.find((tool) => tool.name === "create_document")?.annotations.readOnlyHint, false);
+  assert.equal(manifest.find((tool) => tool.name === "update_document")?.annotations.destructiveHint, true);
+  assert.equal(manifest.find((tool) => tool.name === "operate_foundation")?.annotations.destructiveHint, true);
+});
+
+test("external Bridge mutations merge into only the selected realtime Flow and advance revision", async () => {
+  const source = {
+    fileName: "Gateway fixture",
+    activeFlowProjectId: "project-gateway-test",
+    flowProjects: [{
+      id: "project-gateway-test",
+      title: "Gateway fixture",
+      color: "amber",
+      durationMin: 120,
+      rootNodeId: "project-root-project-gateway-test",
+      createdAt: 1,
+      updatedAt: 1,
+      flow: { revision: 0, flowNodes: [], links: [] },
+    }],
+    roles: [],
+    designAssets: [],
+    rawScript: "",
+    episodes: [],
+    canvas: { viewport: null },
+    flow: { revision: 0, flowNodes: [], links: [] },
+    stats: { context: { total: 0, success: 0, error: 0 } },
+  } as any;
+  const nodeFlow = {
+    version: 2,
+    revision: 0,
+    name: "Gateway fixture",
+    nodes: [],
+    links: [],
+    graphLinks: [],
+    globalAssetHistory: [],
+    activeView: null,
+  } as any;
+  const agentProjectData = createAgentProjectData(source, nodeFlow, "project-gateway-test");
+  const bridgeState = createNodeFlowBridgeState(agentProjectData, nodeFlow);
+  await executeStyloCapability({
+    toolName: "create_document",
+    input: { document_kind: "note", title: "Codex note", content: "temporary" },
+    bridge: bridgeState.bridge,
+    allowedCapabilities: CODEX_FULL_CAPABILITIES,
+  });
+  const merged = mergeAgentNodeFlowIntoProjectData(
+    source,
+    bridgeState.getProjectData(),
+    bridgeState.getNodeFlow(),
+    "project-gateway-test",
+    2,
+  );
+  assert.equal(merged.flow?.revision, 1);
+  assert.equal(merged.flowProjects?.[0]?.flow.revision, 1);
+  assert.equal(merged.flowProjects?.[0]?.flow.flowNodes?.[0]?.data?.title, "Codex note");
+});
+
 test("protocol-neutral capability execution serves reads and blocks mutations before Bridge access", async () => {
   const bridge = createReadOnlyBridge();
   const result = await executeStyloCapability({
@@ -139,6 +215,12 @@ test("external MCP and API adapters do not import the internal Agent runtime pip
   assert.match(endpointSource, /flushRealtimeProjectProjection/);
   assert.match(endpointSource, /loadAgentProjectState/);
   assert.match(endpointSource, /executeStyloCapability/);
+  assert.match(endpointSource, /applyRealtimeAgentProjectSnapshot/);
+  const realtimeSource = readFileSync("realtime-worker/src/index.ts", "utf8");
+  assert.match(realtimeSource, /pathname === "\/agent-apply"/);
+  assert.match(realtimeSource, /currentRevision !== expectedRevision \|\| this\.serverSeq !== expectedServerSeq/);
+  assert.match(realtimeSource, /INSERT INTO room_operations/);
+  assert.match(realtimeSource, /this\.sendSocketMessage\(peer, broadcast\)/);
 });
 
 test("Codex device pairing uses short-lived high-entropy secrets and normalized human codes", async () => {
@@ -165,11 +247,15 @@ test("pairing adapters keep credentials out of browser storage, logs, and the in
   const mcpSource = readFileSync("scripts/stylo-mcp-server.mjs", "utf8");
 
   assert.match(endpointSource, /sha256Base64Url\(accessToken\)/);
+  assert.match(endpointSource, /requested_scope/);
+  assert.match(endpointSource, /expectedScope/);
   assert.doesNotMatch(endpointSource, /\.bind\(\s*accessToken\s*,/);
   assert.doesNotMatch(dialogSource, /localStorage|indexedDB|document\.cookie|getToken/);
   assert.doesNotMatch(connectSource, /console\.log\([^\n]*accessToken/);
   assert.match(mcpSource, /loadStyloCredential/);
   assert.match(mcpSource, /\/api\/agent-projects/);
+  assert.match(mcpSource, /expectedRevision/);
+  assert.match(readFileSync(".codex/config.toml", "utf8"), /default_tools_approval_mode = "writes"/);
 
   for (const source of [endpointSource, authSource, dialogSource, connectSource, mcpSource]) {
     assert.doesNotMatch(source, /runStyloAgentCore|runtime\/memory|streamProjector|styloMessageState|_agentTracing/);

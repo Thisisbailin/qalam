@@ -6,6 +6,7 @@ import { saveStyloCredential } from "./stylo-credential-store.mjs";
 
 const apiBaseUrl = (process.env.STYLO_API_BASE_URL || "https://node-qalam.pages.dev").replace(/\/+$/, "");
 const shouldOpen = !process.argv.includes("--no-open");
+const requestedScope = process.argv.includes("--full") ? "project_full" : "project_read";
 
 const request = async (body) => {
   const response = await fetch(`${apiBaseUrl}/api/codex-pairing`, {
@@ -33,7 +34,7 @@ const openStylo = (url) => {
   }
 };
 
-const started = await request({ action: "start" });
+const started = await request({ action: "start", scope: requestedScope });
 if (!started.response.ok) {
   throw new Error(started.payload?.error || `Could not start Stylo pairing (HTTP ${started.response.status})`);
 }
@@ -71,6 +72,7 @@ const credentialPath = await saveStyloCredential({
   accessToken: connected.accessToken,
   expiresAt: Number(connected.expiresAt),
   apiBaseUrl,
+  scope: connected.scope === "project_full" ? "project_full" : "project_read",
 });
-console.log(`Stylo connected until ${new Date(Number(connected.expiresAt)).toLocaleString()}.`);
+console.log(`Stylo connected with ${connected.scope || requestedScope} until ${new Date(Number(connected.expiresAt)).toLocaleString()}.`);
 console.log(`Credential stored in the system temporary directory: ${credentialPath}`);

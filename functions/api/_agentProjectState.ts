@@ -25,7 +25,8 @@ export const buildAgentProjectStateFromRealtimeDocument = (
   projectId: string,
   value: unknown,
   updatedAt: number,
-): { projectData: ProjectData; nodeFlow: NodeFlowFile; updatedAt: number } => {
+  serverSeq = 0,
+): { projectData: ProjectData; nodeFlow: NodeFlowFile; updatedAt: number; serverSeq: number } => {
   const projectRecord = parseRecord(value);
   if (!Object.keys(projectRecord).length) {
     throw new Error("云端实时项目文档为空，请等待项目同步完成后重试。");
@@ -60,7 +61,7 @@ export const buildAgentProjectStateFromRealtimeDocument = (
     activeView: typeof flow.activeView === "string" ? flow.activeView : null,
   });
 
-  return { projectData, nodeFlow, updatedAt };
+  return { projectData, nodeFlow, updatedAt, serverSeq };
 };
 
 export const loadAgentProjectState = async (
@@ -69,7 +70,7 @@ export const loadAgentProjectState = async (
   projectId: string,
 ) => {
   const row = await db.prepare(
-    `SELECT project_data, updated_at
+    `SELECT project_data, updated_at, server_seq
      FROM user_project_documents
      WHERE user_id = ?1 AND project_id = ?2`,
   ).bind(userId, projectId).first<Record<string, unknown>>();
@@ -80,5 +81,6 @@ export const loadAgentProjectState = async (
     projectId,
     row.project_data,
     asNumber(row.updated_at),
+    asNumber(row.server_seq),
   );
 };

@@ -5,6 +5,7 @@ export const AGENT_ACCESS_TOKEN_PREFIX = "stylo_agent_";
 export const DEVICE_CODE_PREFIX = "stylo_device_";
 export const AGENT_ACCESS_TTL_MS = 8 * 60 * 60 * 1_000;
 export const PAIRING_TTL_MS = 10 * 60 * 1_000;
+export type AgentAccessScope = "project_read" | "project_full";
 
 type AgentAccessEnv = {
   DB: D1DatabaseLike;
@@ -16,7 +17,7 @@ export type AgentAuthentication = {
   userId: string;
   kind: "clerk" | "agent_access";
   tokenHash?: string;
-  scope: "project_read";
+  scope: AgentAccessScope;
 };
 
 const encoder = new TextEncoder();
@@ -66,7 +67,7 @@ export const authenticateAgentRequest = async (
     return {
       userId: await getUserId(request, env),
       kind: "clerk",
-      scope: "project_read",
+      scope: "project_full",
     };
   }
 
@@ -86,7 +87,7 @@ export const authenticateAgentRequest = async (
   if (
     !row ||
     typeof row.user_id !== "string" ||
-    row.scope !== "project_read" ||
+    (row.scope !== "project_read" && row.scope !== "project_full") ||
     Number(row.expires_at) <= now ||
     row.revoked_at !== null
   ) {
@@ -96,7 +97,6 @@ export const authenticateAgentRequest = async (
     userId: row.user_id,
     kind: "agent_access",
     tokenHash,
-    scope: "project_read",
+    scope: row.scope,
   };
 };
-

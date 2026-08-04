@@ -14,7 +14,9 @@ const environmentAuthToken = (process.env.STYLO_AUTH_TOKEN || "").trim();
 let authToken = environmentAuthToken;
 let authSource = environmentAuthToken ? "environment" : "none";
 let authExpiresAt = null;
+let authScope = environmentAuthToken ? "clerk" : null;
 let activeProjectId = (process.env.STYLO_PROJECT_ID || "").trim();
+let activeProjectRevision = null;
 let manifestCache = null;
 let manifestCacheTime = 0;
 let lastManifestError = "";
@@ -82,7 +84,11 @@ const parseResponse = async (response, action) => {
   }
   if (!response.ok) {
     const detail = typeof payload?.error === "string" ? payload.error : `${action} failed`;
-    throw new Error(`${detail} (HTTP ${response.status})`);
+    const code = typeof payload?.code === "string" ? ` · ${payload.code}` : "";
+    const revision = Number.isInteger(payload?.currentRevision)
+      ? ` · current revision ${payload.currentRevision}`
+      : "";
+    throw new Error(`${detail} (HTTP ${response.status}${code}${revision})`);
   }
   return payload;
 };
@@ -111,6 +117,7 @@ const loadManifest = async ({ force = false } = {}) => {
   try {
     const payload = await styloRequest("/api/agent-tools");
     manifestCache = Array.isArray(payload.tools) ? payload.tools : [];
+    authScope = typeof payload.scope === "string" ? payload.scope : authScope;
     manifestCacheTime = now;
     lastManifestError = "";
     return manifestCache;
@@ -166,7 +173,7 @@ const server = new Server(
   {
     capabilities: { tools: { listChanged: true } },
     instructions:
-      "Stylo exposes project-native capabilities without preloading project content. Start with project identity, then inspect identity/detail/slice views as needed. Read only the smallest useful scope and follow stable refs for deeper exploration.",
+      "Stylo exposes project-native capabilities without preloading project content. Select exactly one project, read the smallest useful scope before editing, and use returned stable refs. Writes persist through the realtime project authority and may fail with a revision conflict; re-read the target before retrying. Script body edits remain app-review gated. Generation execution is not exposed through this host.",
   }
 );
 
@@ -178,6 +185,7 @@ const refreshCredential = async () => {
   authToken = nextToken;
   authSource = credential ? "temporary_file" : "none";
   authExpiresAt = credential?.expiresAt || null;
+  authScope = credential?.scope || null;
   if (credential?.apiBaseUrl && !process.env.STYLO_API_BASE_URL) {
     apiBaseUrl = credential.apiBaseUrl.replace(/\/+$/, "");
   }
@@ -185,6 +193,7 @@ const refreshCredential = async () => {
     manifestCache = null;
     manifestCacheTime = 0;
     lastManifestError = "";
+    activeProjectRevision = null;
     await server.sendToolListChanged().catch(() => undefined);
   }
 };
@@ -206,7 +215,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         authenticated: Boolean(authToken),
         authSource,
         authExpiresAt,
+        authScope,
         activeProjectId: activeProjectId || null,
+        activeProjectRevision,
         sharedToolsAvailable: manifestCache?.length || 0,
         manifestError: lastManifestError || null,
       });
@@ -224,6 +235,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const selected = projects.items.find((project) => project.projectId === projectId);
       if (!selected) throw new Error("The requested Stylo project is not accessible.");
       activeProjectId = projectId;
+      activeProjectRevision = null;
       return successResult({
         projectId: selected.projectId,
         title: selected.title,
@@ -245,8 +257,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         projectId: activeProjectId,
         toolName: name,
         arguments: args,
+        ...(Number.isInteger(activeProjectRevision) ? { expectedRevision: activeProjectRevision } : {}),
       }),
     });
+    if (Number.isInteger(payload.revision)) activeProjectRevision = payload.revision;
     return successResult(payload.output, {
       projectId: payload.projectId,
       revision: payload.revision,

@@ -145,12 +145,31 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
     if (typeof window === "undefined") return "";
     return new URL(window.location.href).searchParams.get("codex_pair") || "";
   }, []);
+  const initialCodexPairingScope = useMemo(() => {
+    if (typeof window === "undefined") return "project_read" as const;
+    return new URL(window.location.href).searchParams.get("codex_scope") === "project_full"
+      ? "project_full" as const
+      : "project_read" as const;
+  }, []);
   const [showCodexConnect, setShowCodexConnect] = useState(Boolean(initialCodexPairingCode));
-  const approveCodexPairing = useCallback(async (userCode: string) => {
+  const inspectCodexPairing = useCallback(async (userCode: string) => {
     const response = await accountSession.request('/api/codex-pairing', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'approve', userCode }),
+      body: JSON.stringify({ action: 'inspect', userCode }),
+    });
+    await requireOkResponse(response, '无法核对 Codex 授权范围');
+    const payload = await parseJsonResponse<{ scope?: unknown }>(response, '无法读取 Codex 授权范围');
+    return payload.scope === 'project_full' ? 'project_full' as const : 'project_read' as const;
+  }, [accountSession]);
+  const approveCodexPairing = useCallback(async (
+    userCode: string,
+    scope: "project_read" | "project_full",
+  ) => {
+    const response = await accountSession.request('/api/codex-pairing', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'approve', userCode, expectedScope: scope }),
     });
     await requireOkResponse(response, '无法授权 Codex');
   }, [accountSession]);
@@ -810,7 +829,9 @@ const ScopedApp: React.FC<{ accountScope: AccountScope }> = ({ accountScope }) =
         <CodexConnectDialog
           isOpen={showCodexConnect}
           initialCode={initialCodexPairingCode}
+          initialScope={initialCodexPairingScope}
           onClose={() => setShowCodexConnect(false)}
+          onInspect={inspectCodexPairing}
           onApprove={approveCodexPairing}
         />
         {renderMainContent()}

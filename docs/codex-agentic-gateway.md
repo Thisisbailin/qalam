@@ -22,7 +22,7 @@ npm run mcp:stylo:connect
 
 脚本会显示一个 8 位配对码并唤起 Stylo。打开本地客户端右上角 `Account → 连接 Codex`，核对并输入该码后确认。后端签发的凭证：
 
-- 只允许 `project_read`；
+- 默认只允许 `project_read`；
 - 最长 8 小时；
 - 服务端只保存哈希；
 - 本机只写入权限为 `0600` 的系统临时文件；
@@ -35,6 +35,16 @@ npm run mcp:stylo:disconnect
 ```
 
 MCP Host 会自动发现临时凭证。已启动的 Codex Host 可以通过连接状态检查刷新；若当前任务尚未加载 Stylo 工具，开启一个新任务即可。
+
+需要项目操作能力时，使用显式的完整授权命令：
+
+```bash
+npm run mcp:stylo:connect:full
+```
+
+Stylo 会在批准前显示真实 scope。`project_full` 开放项目读取、文档与普通 Flow 写入、Foundation 操作、运行手册及共享外部读取工具；不开放账户/凭证/项目删除/发布，也不开放依赖客户端内存队列的图像或视频生成执行审批。Fountain 剧本文本仍要求在 App 内复核，不会通过外部网关直接提交。
+
+项目写入采用双重并发保护：Pages Function 先从强读取投影建立隔离 Bridge，Durable Object 再原子核对 Flow revision 与实时 server sequence。成功变更以 Yjs 增量持久化并广播；冲突返回 `REVISION_CONFLICT`，应重新读取目标后重试。
 
 ## 兼容的环境变量启动方式
 
@@ -57,12 +67,13 @@ Codex 配置示例：
 command = "node"
 args = ["/absolute/path/to/Qalam/scripts/stylo-mcp-server.mjs"]
 required = true
+default_tools_approval_mode = "writes"
 ```
 
 环境变量优先于设备配对产生的临时凭证。不要使用 `codex mcp add --env STYLO_AUTH_TOKEN=...`，因为该方式会把值写入配置文件；也不要把真实 token 写进 `.codex/config.toml`、仓库或日志。
 
 ## 当前能力边界
 
-首期只开放 Tool Catalog 中 capability 为 `project_read` 的工具。MCP Host 和服务端都会执行该 allowlist，写入、操作和审批工具不会出现在 manifest 中，即使客户端伪造工具调用也会被拒绝。
+`project_read` 只开放 Tool Catalog 中 capability 为 `project_read` 的工具。`project_full` 额外开放 `project_write`、`runtime_read`、`external_read`。MCP Host 和服务端都会执行 token scope allowlist，即使客户端伪造工具调用也会被拒绝。
 
-后续开放写能力时继续复用同一 Registry 与 Bridge，但必须先补齐 revision 冲突、实时操作持久化、审批回传和审计证据。
+`generation_approval` 暂不进入外部 manifest：内部 Agent 的执行审批目前由客户端内存状态接收，尚未形成跨 Host 的耐久审批交接。等该状态进入项目权威存储后再开放。

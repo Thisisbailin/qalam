@@ -24,6 +24,13 @@ type ClientMessage = {
   projectBytes?: unknown;
   epoch?: unknown;
 };
+type AgentApplyInput = {
+  expectedRevision?: unknown;
+  expectedServerSeq?: unknown;
+  projectData?: unknown;
+  actorId?: unknown;
+  operationId?: unknown;
+};
 type ResetMode = "reset" | "delete";
 type RoomMetaRow = {
   user_id: string;
@@ -71,6 +78,21 @@ const normalizeId = (value: unknown, max = 180) =>
   typeof value === "string" && value.trim().length >= 8 && value.trim().length <= max
     ? value.trim()
     : "";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const readProjectRevision = (project: Record<string, unknown>, projectId: string) => {
+  const projects = Array.isArray(project.flowProjects) ? project.flowProjects : [];
+  const target = projects.find((item) => isRecord(item) && item.id === projectId);
+  const flow = isRecord(target) && isRecord(target.flow)
+    ? target.flow
+    : isRecord(project.flow)
+      ? project.flow
+      : {};
+  const revision = Number(flow.revision);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+};
 
 const toBytes = (value: ArrayBuffer | ArrayLike<number>) =>
   value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value);
@@ -778,6 +800,129 @@ export class ProjectRealtimeRoom {
     }
   }
 
+  private async applyAgentSnapshot(identity: RoomIdentity, input: AgentApplyInput) {
+    await this.ensureLoaded(identity);
+    if (this.resetting) {
+      return Response.json({ error: "Project reset is in progress" }, { status: 409 });
+    }
+    const expectedRevision = Number(input.expectedRevision);
+    const expectedServerSeq = Number(input.expectedServerSeq);
+    const actorId = normalizeId(input.actorId);
+    const operationId = normalizeId(input.operationId);
+    if (
+      !Number.isSafeInteger(expectedRevision)
+      || expectedRevision < 0
+      || !Number.isSafeInteger(expectedServerSeq)
+      || expectedServerSeq < 0
+      || !actorId
+      || !operationId
+      || !isRecord(input.projectData)
+    ) {
+      return Response.json({ error: "Invalid realtime Agent mutation" }, { status: 400 });
+    }
+
+    const current = readProjectSnapshot<Record<string, unknown>>(this.doc);
+    const currentRevision = readProjectRevision(current, identity.projectId);
+    if (currentRevision !== expectedRevision || this.serverSeq !== expectedServerSeq) {
+      return Response.json({
+        error: "The Stylo project changed before this operation could be committed. Re-read the target and retry.",
+        code: "REVISION_CONFLICT",
+        currentRevision,
+        currentServerSeq: this.serverSeq,
+      }, { status: 409 });
+    }
+
+    const nextRevision = readProjectRevision(input.projectData, identity.projectId);
+    if (nextRevision <= currentRevision) {
+      return Response.json({
+        error: "A project mutation must advance the selected Flow revision.",
+        code: "REVISION_NOT_ADVANCED",
+        currentRevision,
+      }, { status: 400 });
+    }
+    const serialized = JSON.stringify(input.projectData);
+    const projectBytes = new TextEncoder().encode(serialized).byteLength;
+    if (projectBytes > MAX_PROJECT_BYTES) {
+      return Response.json({ error: "Realtime project exceeds the maximum projected size" }, { status: 413 });
+    }
+
+    const duplicate = (this.state.storage.sql.exec(
+      "SELECT server_seq FROM room_operations WHERE op_id = ?1",
+      operationId,
+    ).toArray() as Array<{ server_seq: number }>)[0];
+    if (duplicate) {
+      return Response.json({
+        revision: currentRevision,
+        serverSeq: Number(duplicate.server_seq) || this.serverSeq,
+        duplicate: true,
+      });
+    }
+
+    const candidate = new Y.Doc();
+    let update: Uint8Array;
+    try {
+      Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.doc), "agent-base");
+      applyProjectSnapshot(candidate, input.projectData, `agent:${actorId}`);
+      update = Y.encodeStateAsUpdate(candidate, Y.encodeStateVector(this.doc));
+    } finally {
+      candidate.destroy();
+    }
+    if (update.byteLength === 0 || update.byteLength > MAX_UPDATE_BYTES) {
+      return Response.json({ error: "Realtime Agent update is empty or too large" }, { status: 413 });
+    }
+    const meta = this.readRoomMeta();
+    const pendingBytes = Number(meta?.pending_bytes) || 0;
+    if (pendingBytes + update.byteLength > MAX_PENDING_BYTES) {
+      this.projectInBackground(this.serverSeq);
+      return Response.json({ error: "Realtime room is compacting; retry the operation" }, { status: 503 });
+    }
+
+    const serverSeq = this.serverSeq + 1;
+    const now = Date.now();
+    this.state.storage.transactionSync(() => {
+      this.state.storage.sql.exec(
+        `INSERT INTO room_operations (op_id, server_seq, created_at)
+         VALUES (?1, ?2, ?3)`,
+        operationId,
+        serverSeq,
+        now,
+      );
+      this.state.storage.sql.exec(
+        `INSERT INTO room_updates
+           (server_seq, actor_id, op_id, update_blob, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)`,
+        serverSeq,
+        actorId,
+        operationId,
+        this.writeRoomUpdate(serverSeq, update),
+        now,
+      );
+      this.state.storage.sql.exec(
+        `UPDATE room_meta
+         SET server_seq = ?1, pending_bytes = pending_bytes + ?2
+         WHERE singleton = 1`,
+        serverSeq,
+        update.byteLength,
+      );
+    });
+    Y.applyUpdate(this.doc, update, `actor:${actorId}`);
+    this.serverSeq = serverSeq;
+    const roomEpoch = Number(this.readRoomMeta()?.epoch) || 0;
+    const broadcast = JSON.stringify({
+      type: "update",
+      opId: operationId,
+      actorId,
+      serverSeq,
+      epoch: roomEpoch,
+      update: encodeUpdateBase64(update),
+    });
+    for (const peer of this.state.getWebSockets().filter(isOpenSocket)) {
+      this.sendSocketMessage(peer, broadcast);
+    }
+    await this.flushProjection(serverSeq);
+    return Response.json({ revision: nextRevision, serverSeq });
+  }
+
   async fetch(request: Request) {
     const userId = normalizeId(request.headers.get("x-stylo-user-id"));
     const projectId = normalizeId(request.headers.get("x-stylo-project-id"));
@@ -792,6 +937,15 @@ export class ProjectRealtimeRoom {
       await this.ensureLoaded({ userId, projectId });
       const serverSeq = await this.flushProjection(this.serverSeq);
       return Response.json({ serverSeq });
+    }
+    if (request.method === "POST" && pathname === "/agent-apply") {
+      let input: AgentApplyInput;
+      try {
+        input = await request.json() as AgentApplyInput;
+      } catch {
+        return Response.json({ error: "Invalid realtime Agent request body" }, { status: 400 });
+      }
+      return this.applyAgentSnapshot({ userId, projectId }, input);
     }
     if (request.method === "POST" && pathname === "/reset") {
       const mode = request.headers.get("x-stylo-reset-mode") === "delete" ? "delete" : "reset";

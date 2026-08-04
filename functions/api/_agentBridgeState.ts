@@ -63,6 +63,48 @@ export const hasMeaningfulProjectPatch = (patch: StyloRunResult["updatedProjectP
         (Array.isArray(patch.flowProjects) && patch.flowProjects.length > 0))
   );
 
+export const mergeAgentNodeFlowIntoProjectData = (
+  source: ProjectData,
+  agentProjectData: ProjectData,
+  nodeFlow: NodeFlowFile,
+  projectId: string,
+  updatedAt = Date.now(),
+): ProjectData => {
+  const next = structuredClone(source);
+  const nextFlow = {
+    revision: nodeFlow.revision,
+    flowNodes: nodeFlow.nodes,
+    links: nodeFlow.links,
+    graphLinks: nodeFlow.graphLinks || [],
+    linkStyle: nodeFlow.linkStyle,
+    globalAssetHistory: nodeFlow.globalAssetHistory || [],
+    activeView: nodeFlow.activeView ?? null,
+  } as NonNullable<ProjectData["flow"]>;
+  const roles = Array.isArray(agentProjectData.roles) ? agentProjectData.roles : next.roles;
+  const designAssets = Array.isArray(agentProjectData.designAssets)
+    ? agentProjectData.designAssets
+    : next.designAssets;
+  const targetIndex = next.flowProjects?.findIndex((project) => project.id === projectId) ?? -1;
+  if (targetIndex < 0 || !next.flowProjects) {
+    throw new Error("The selected Stylo project is missing from the realtime project document.");
+  }
+  const target = next.flowProjects[targetIndex];
+  next.flowProjects[targetIndex] = {
+    ...target,
+    flow: nextFlow,
+    roles,
+    designAssets,
+    updatedAt,
+  };
+  if (!next.activeFlowProjectId || next.activeFlowProjectId === projectId) {
+    next.activeFlowProjectId = projectId;
+    next.flow = nextFlow;
+    next.roles = roles;
+    next.designAssets = designAssets;
+  }
+  return next;
+};
+
 export const createNodeFlowBridgeState = (
   projectData: ProjectData,
   nodeFlow?: NodeFlowFile

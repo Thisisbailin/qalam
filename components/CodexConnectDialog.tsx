@@ -4,8 +4,10 @@ import { Check, Link2, ShieldCheck, X } from "lucide-react";
 type Props = {
   isOpen: boolean;
   initialCode?: string;
+  initialScope?: "project_read" | "project_full";
   onClose: () => void;
-  onApprove: (userCode: string) => Promise<void>;
+  onInspect: (userCode: string) => Promise<"project_read" | "project_full">;
+  onApprove: (userCode: string, scope: "project_read" | "project_full") => Promise<void>;
 };
 
 const normalizeCode = (value: string) => {
@@ -16,28 +18,55 @@ const normalizeCode = (value: string) => {
 export const CodexConnectDialog: React.FC<Props> = ({
   isOpen,
   initialCode = "",
+  initialScope = "project_read",
   onClose,
+  onInspect,
   onApprove,
 }) => {
   const [code, setCode] = useState(() => normalizeCode(initialCode));
   const [status, setStatus] = useState<"idle" | "approving" | "approved">("idle");
   const [error, setError] = useState("");
+  const [scope, setScope] = useState<"project_read" | "project_full">(initialScope);
+  const [scopeVerified, setScopeVerified] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setCode(normalizeCode(initialCode));
     setStatus("idle");
     setError("");
-  }, [initialCode, isOpen]);
+    setScope(initialScope);
+    setScopeVerified(false);
+  }, [initialCode, initialScope, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || code.length !== 9 || status !== "idle") return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void onInspect(code).then((verifiedScope) => {
+        if (!active) return;
+        setScope(verifiedScope);
+        setScopeVerified(true);
+        setError("");
+      }).catch((cause) => {
+        if (!active) return;
+        setScopeVerified(false);
+        setError(cause instanceof Error ? cause.message : "无法核对 Codex 授权范围。");
+      });
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [code, isOpen, onInspect, status]);
 
   if (!isOpen) return null;
 
   const approve = async () => {
-    if (code.length !== 9 || status === "approving") return;
+    if (code.length !== 9 || !scopeVerified || status === "approving") return;
     setStatus("approving");
     setError("");
     try {
-      await onApprove(code);
+      await onApprove(code, scope);
       setStatus("approved");
     } catch (cause) {
       setStatus("idle");
@@ -87,9 +116,16 @@ export const CodexConnectDialog: React.FC<Props> = ({
               <div className="rounded-[20px] border border-[var(--app-border)] bg-[var(--app-panel-muted)] p-4">
                 <div className="flex items-start gap-3">
                   <ShieldCheck size={17} className="mt-0.5 shrink-0 text-emerald-600" />
-                  <p className="text-[11px] leading-5 text-[var(--app-text-secondary)]">
-                    此阶段只允许查阅你的 Stylo 项目。不会共享内部 Agent 的消息、记忆、token 或运行记录，也不能修改项目。授权最长 8 小时，可随时撤销。
-                  </p>
+                  <div className="text-[11px] leading-5 text-[var(--app-text-secondary)]">
+                    {scope === "project_full" ? (
+                      <>
+                        <p>此 Codex 将获得项目完整操作能力：读取与创建文档、更新普通内容、移动/连接 Flow 节点，以及操作 Foundation。</p>
+                        <p className="mt-2">不包含账户、凭证、项目删除、发布或直接启动图像/视频生成。每次非只读工具仍由 Codex 审批。授权最长 8 小时，可随时撤销。</p>
+                      </>
+                    ) : (
+                      <p>此授权只允许查阅你的 Stylo 项目，不能修改项目。授权最长 8 小时，可随时撤销。</p>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -98,7 +134,10 @@ export const CodexConnectDialog: React.FC<Props> = ({
                 <input
                   autoFocus
                   value={code}
-                  onChange={(event) => setCode(normalizeCode(event.target.value))}
+                  onChange={(event) => {
+                    setCode(normalizeCode(event.target.value));
+                    setScopeVerified(false);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") void approve();
                   }}
@@ -114,11 +153,15 @@ export const CodexConnectDialog: React.FC<Props> = ({
 
               <button
                 type="button"
-                disabled={code.length !== 9 || status === "approving"}
+                disabled={code.length !== 9 || !scopeVerified || status === "approving"}
                 onClick={() => void approve()}
                 className="flex h-12 w-full items-center justify-center rounded-[16px] bg-[var(--app-text-primary)] px-4 text-[12px] font-semibold text-[var(--app-bg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                {status === "approving" ? "正在授权…" : "授权此 Codex"}
+                {status === "approving"
+                  ? "正在授权…"
+                  : scope === "project_full"
+                    ? "授权项目完整能力"
+                    : "授权只读能力"}
               </button>
             </>
           )}
@@ -127,4 +170,3 @@ export const CodexConnectDialog: React.FC<Props> = ({
     </div>
   );
 };
-

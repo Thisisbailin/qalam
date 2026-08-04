@@ -5,6 +5,15 @@ import {
 import { listStyloToolDefinitions } from "./index";
 
 export const CODEX_INITIAL_CAPABILITIES = ["project_read"] as const satisfies readonly StyloToolCapability[];
+export const CODEX_FULL_CAPABILITIES = [
+  "project_read",
+  "project_write",
+  "runtime_read",
+  "external_read",
+] as const satisfies readonly StyloToolCapability[];
+
+export const getCodexCapabilitiesForScope = (scope: "project_read" | "project_full") =>
+  scope === "project_full" ? CODEX_FULL_CAPABILITIES : CODEX_INITIAL_CAPABILITIES;
 
 export type StyloToolManifestEntry = {
   name: string;
@@ -28,6 +37,11 @@ export const buildStyloToolManifest = (
 ): StyloToolManifestEntry[] => listStyloToolDefinitions(capabilities).map((definition) => {
   const descriptor = getStyloToolDescriptor(definition.name);
   const readOnly = descriptor.interaction === "read";
+  const destructive = [
+    "update_document",
+    "operate_foundation",
+    "operate_project_resource",
+  ].includes(definition.name);
   return {
     name: definition.name,
     title: descriptor.label,
@@ -35,7 +49,7 @@ export const buildStyloToolManifest = (
     inputSchema: definition.parameters as Record<string, unknown>,
     annotations: {
       readOnlyHint: readOnly,
-      destructiveHint: false,
+      destructiveHint: destructive,
       idempotentHint: readOnly,
       openWorldHint: descriptor.capability === "external_read",
     },
@@ -45,4 +59,3 @@ export const buildStyloToolManifest = (
     },
   };
 });
-

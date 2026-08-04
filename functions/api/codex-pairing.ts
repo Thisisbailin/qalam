@@ -24,6 +24,8 @@ type PairingBody = {
   userCode?: unknown;
   deviceCode?: unknown;
   label?: unknown;
+  scope?: unknown;
+  expectedScope?: unknown;
 };
 
 const MAX_REQUEST_BYTES = 8 * 1_024;
@@ -34,7 +36,10 @@ const requestSubject = (request: Request) =>
     .trim()
     .slice(0, 128);
 
-const startPairing = async (context: PagesContext<Env>) => {
+const normalizeScope = (value: unknown) =>
+  value === "project_full" ? "project_full" as const : "project_read" as const;
+
+const startPairing = async (context: PagesContext<Env>, body: PairingBody) => {
   await enforceRateLimit({
     db: context.env.DB,
     namespace: "codex-pairing-start",
@@ -46,6 +51,7 @@ const startPairing = async (context: PagesContext<Env>) => {
   const expiresAt = now + PAIRING_TTL_MS;
   const deviceCode = randomSecret(DEVICE_CODE_PREFIX);
   const deviceCodeHash = await sha256Base64Url(deviceCode);
+  const requestedScope = normalizeScope(body.scope);
   let userCode = "";
   let inserted = false;
   for (let attempt = 0; attempt < 4 && !inserted; attempt += 1) {
@@ -53,9 +59,9 @@ const startPairing = async (context: PagesContext<Env>) => {
     try {
       await context.env.DB.prepare(
         `INSERT INTO codex_pairing_requests
-           (device_code_hash, user_code, status, requested_at, expires_at)
-         VALUES (?1, ?2, 'pending', ?3, ?4)`,
-      ).bind(deviceCodeHash, userCode, now, expiresAt).run();
+           (device_code_hash, user_code, status, requested_at, expires_at, requested_scope)
+         VALUES (?1, ?2, 'pending', ?3, ?4, ?5)`,
+      ).bind(deviceCodeHash, userCode, now, expiresAt, requestedScope).run();
       inserted = true;
     } catch {
       // Human code collisions are improbable; retry with a fresh code.
@@ -69,6 +75,7 @@ const startPairing = async (context: PagesContext<Env>) => {
   verificationUrl.search = "";
   verificationUrl.searchParams.set("app", "1");
   verificationUrl.searchParams.set("codex_pair", userCode);
+  verificationUrl.searchParams.set("codex_scope", requestedScope);
   return jsonResponse({
     status: "pending",
     deviceCode,
@@ -76,6 +83,38 @@ const startPairing = async (context: PagesContext<Env>) => {
     verificationUrl: verificationUrl.toString(),
     expiresAt,
     intervalSeconds: 2,
+    scope: requestedScope,
+  });
+};
+
+const inspectPairing = async (context: PagesContext<Env>, body: PairingBody) => {
+  const userId = await getUserId(context.request, context.env);
+  await enforceRateLimit({
+    db: context.env.DB,
+    namespace: "codex-pairing-inspect",
+    subject: userId,
+    limit: 30,
+    windowSeconds: 60,
+  });
+  const userCode = normalizeUserCode(body.userCode);
+  if (!userCode) return jsonResponse({ error: "A valid pairing code is required" }, { status: 400 });
+  const now = Date.now();
+  const row = await context.env.DB.prepare(
+    `SELECT status, expires_at, requested_scope
+     FROM codex_pairing_requests
+     WHERE user_code = ?1 AND expires_at > ?2 AND status IN ('pending', 'approved')
+     LIMIT 1`,
+  ).bind(userCode, now).first<{
+    status?: unknown;
+    expires_at?: unknown;
+    requested_scope?: unknown;
+  }>();
+  if (!row) return jsonResponse({ error: "Pairing code is invalid or expired" }, { status: 404 });
+  return jsonResponse({
+    status: row.status,
+    userCode,
+    scope: normalizeScope(row.requested_scope),
+    expiresAt: Number(row.expires_at) || 0,
   });
 };
 
@@ -90,6 +129,9 @@ const approvePairing = async (context: PagesContext<Env>, body: PairingBody) => 
   });
   const userCode = normalizeUserCode(body.userCode);
   if (!userCode) return jsonResponse({ error: "A valid pairing code is required" }, { status: 400 });
+  const expectedScope = body.expectedScope === "project_full" || body.expectedScope === "project_read"
+    ? body.expectedScope
+    : "";
   const now = Date.now();
   const row = await context.env.DB.prepare(
     `UPDATE codex_pairing_requests
@@ -98,12 +140,21 @@ const approvePairing = async (context: PagesContext<Env>, body: PairingBody) => 
        AND expires_at > ?2
        AND status IN ('pending', 'approved')
        AND (user_id IS NULL OR user_id = ?1)
-     RETURNING expires_at`,
-  ).bind(userId, now, userCode).first<{ expires_at?: unknown }>();
+       AND (requested_scope = 'project_read' OR requested_scope = ?4)
+     RETURNING expires_at, requested_scope`,
+  ).bind(userId, now, userCode, expectedScope).first<{
+    expires_at?: unknown;
+    requested_scope?: unknown;
+  }>();
   if (!row) {
     return jsonResponse({ error: "Pairing code is invalid, expired, or already used" }, { status: 409 });
   }
-  return jsonResponse({ status: "approved", userCode, expiresAt: Number(row.expires_at) || 0 });
+  return jsonResponse({
+    status: "approved",
+    userCode,
+    scope: normalizeScope(row.requested_scope),
+    expiresAt: Number(row.expires_at) || 0,
+  });
 };
 
 const pollPairing = async (context: PagesContext<Env>, body: PairingBody) => {
@@ -121,11 +172,15 @@ const pollPairing = async (context: PagesContext<Env>, body: PairingBody) => {
   });
   const now = Date.now();
   const pairing = await context.env.DB.prepare(
-    `SELECT status, expires_at
+    `SELECT status, expires_at, requested_scope
      FROM codex_pairing_requests
      WHERE device_code_hash = ?1
      LIMIT 1`,
-  ).bind(deviceCodeHash).first<{ status?: unknown; expires_at?: unknown }>();
+  ).bind(deviceCodeHash).first<{
+    status?: unknown;
+    expires_at?: unknown;
+    requested_scope?: unknown;
+  }>();
   if (!pairing || Number(pairing.expires_at) <= now) {
     return jsonResponse({ error: "Pairing request expired" }, { status: 410 });
   }
@@ -142,8 +197,8 @@ const pollPairing = async (context: PagesContext<Env>, body: PairingBody) => {
        AND status = 'approved'
        AND consumed_at IS NULL
        AND expires_at > ?2
-     RETURNING user_id`,
-  ).bind(deviceCodeHash, now).first<{ user_id?: unknown }>();
+     RETURNING user_id, requested_scope`,
+  ).bind(deviceCodeHash, now).first<{ user_id?: unknown; requested_scope?: unknown }>();
   if (!claimed || typeof claimed.user_id !== "string") {
     return jsonResponse({ error: "Pairing request was already consumed" }, { status: 410 });
   }
@@ -153,16 +208,17 @@ const pollPairing = async (context: PagesContext<Env>, body: PairingBody) => {
   const label = typeof body.label === "string" && body.label.trim()
     ? body.label.trim().slice(0, 120)
     : "Codex local MCP";
+  const scope = normalizeScope(claimed.requested_scope);
   await context.env.DB.prepare(
     `INSERT INTO agent_access_tokens
        (token_hash, user_id, scope, label, issued_at, expires_at)
-     VALUES (?1, ?2, 'project_read', ?3, ?4, ?5)`,
-  ).bind(accessTokenHash, claimed.user_id, label, now, expiresAt).run();
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+  ).bind(accessTokenHash, claimed.user_id, scope, label, now, expiresAt).run();
   return jsonResponse({
     status: "connected",
     accessToken,
     tokenType: "Bearer",
-    scope: "project_read",
+    scope,
     expiresAt,
   });
 };
@@ -171,7 +227,8 @@ export const onRequestPost = async (context: PagesContext<Env>) => {
   let body: PairingBody;
   try {
     body = await readJsonRequest<PairingBody>(context.request, MAX_REQUEST_BYTES);
-    if (body.action === "start") return await startPairing(context);
+    if (body.action === "start") return await startPairing(context, body);
+    if (body.action === "inspect") return await inspectPairing(context, body);
     if (body.action === "approve") return await approvePairing(context, body);
     if (body.action === "poll") return await pollPairing(context, body);
     return jsonResponse({ error: "Unknown pairing action" }, { status: 400 });
@@ -181,4 +238,3 @@ export const onRequestPost = async (context: PagesContext<Env>) => {
       : jsonResponse({ error: "Codex pairing failed" }, { status: 500 });
   }
 };
-

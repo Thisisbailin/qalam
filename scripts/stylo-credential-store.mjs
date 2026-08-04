@@ -12,18 +12,19 @@ export const loadStyloCredential = async () => {
     const accessToken = typeof payload?.accessToken === "string" ? payload.accessToken.trim() : "";
     const expiresAt = Number(payload?.expiresAt) || 0;
     const apiBaseUrl = typeof payload?.apiBaseUrl === "string" ? payload.apiBaseUrl : "";
+    const scope = payload?.scope === "project_full" ? "project_full" : "project_read";
     if (!accessToken || expiresAt <= Date.now()) return null;
-    return { accessToken, expiresAt, apiBaseUrl, filePath };
+    return { accessToken, expiresAt, apiBaseUrl, scope, filePath };
   } catch {
     return null;
   }
 };
 
-export const saveStyloCredential = async ({ accessToken, expiresAt, apiBaseUrl }) => {
+export const saveStyloCredential = async ({ accessToken, expiresAt, apiBaseUrl, scope = "project_read" }) => {
   const filePath = resolveStyloCredentialPath();
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify({ accessToken, expiresAt, apiBaseUrl })}\n`, {
+  await writeFile(temporaryPath, `${JSON.stringify({ accessToken, expiresAt, apiBaseUrl, scope })}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
@@ -36,4 +37,3 @@ export const saveStyloCredential = async ({ accessToken, expiresAt, apiBaseUrl }
 export const removeStyloCredential = async () => {
   await rm(resolveStyloCredentialPath(), { force: true });
 };
-

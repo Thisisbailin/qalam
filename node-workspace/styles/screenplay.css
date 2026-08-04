@@ -50,11 +50,13 @@
 }
 
 .screenplay-header {
-  /* 右侧悬浮操作菜单统一锚定视口右上角，不再基于单张稿纸；悬停自动展开。 */
+  /* 右侧悬浮操作菜单统一锚定视口右上角，不再基于单张稿纸；悬停自动展开。
+     z-index 需高于横向模式的右缘翻页热区（.screenplay-page-edge, z-index 5），
+     避免被覆盖导致 hover 失效。 */
   position: fixed;
-  top: 42px;
+  top: 12px;
   right: 16px;
-  z-index: 4;
+  z-index: 6;
   width: 50px;
   height: 370px;
   display: block;

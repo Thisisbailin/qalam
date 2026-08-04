@@ -1,4 +1,5 @@
 import React, { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   applyNodeChanges,
   BaseEdge,
@@ -35,6 +36,7 @@ import {
   Plus,
   ScanSearch,
   Scissors,
+  Square,
   Sparkles,
   Trash2,
   Video,
@@ -44,7 +46,6 @@ import {
   ArrowUp,
   BookOpen,
   Check,
-  CircleNotch,
   ClipboardText,
   Copy,
   FilePdf,
@@ -739,8 +740,6 @@ type ScriptFoundationMenuState =
   | { type: "head"; x: number; y: number }
   | { type: "block"; blockId: string; x: number; y: number };
 
-type ScriptFoundationCreateMenuState = { x: number; y: number } | null;
-
 type ScriptFoundationEditTarget =
   | { type: "head" }
   | { type: FoundationAxis; id: string };
@@ -895,11 +894,11 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
   const [isAxisSwitching, setIsAxisSwitching] = useState(false);
   const [menuState, setMenuState] = useState<ScriptFoundationMenuState | null>(null);
   const [editingTarget, setEditingTarget] = useState<ScriptFoundationEditTarget | null>(null);
-  const [nodeCreateAnchor, setNodeCreateAnchor] = useState<ScriptFoundationCreateMenuState>(null);
+  const [dockTrayHost, setDockTrayHost] = useState<HTMLDivElement | null>(null);
   const isFoundationGatewayOpen = activeDockTray === "foundationCards";
   const isFoundationExpanded = activeDockTray === "foundation";
   const isAgentTailOpen = activeDockTray === "agent";
-  const nodeCreateMenu = activeDockTray === "nodes" ? nodeCreateAnchor : null;
+  const nodeCreateMenu = activeDockTray === "nodes";
   const availableScriptCreateOptions = useMemo(
     () => scriptCreateOptions.filter((option) =>
       (option.type !== "pinoard" || !hasPinoard) &&
@@ -989,7 +988,6 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
         return;
       }
       setMenuState(null);
-      setNodeCreateAnchor(null);
       if (activeDockTray === "nodes") onDockTrayChange(null);
     };
 
@@ -1085,7 +1083,6 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
     }
     onOpenMarkdownCard?.();
     setMenuState(null);
-    setNodeCreateAnchor(null);
     setEditingTarget(null);
     onDockTrayChange("foundationCards");
   };
@@ -1153,17 +1150,14 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
     setEditingTarget({ type: activeAxis, id: blockId });
   };
 
-  const handleTailNodeClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-    const nextAnchor = nodeCreateMenu ? null : { x: event.clientX, y: event.clientY };
-    setNodeCreateAnchor(nextAnchor);
-    onDockTrayChange(nextAnchor ? "nodes" : null);
+  const handleTailNodeClick = () => {
+    onDockTrayChange(nodeCreateMenu ? null : "nodes");
     setMenuState(null);
     setEditingTarget(null);
   };
 
   const runNodeCreateAction = (action: () => void) => {
     action();
-    setNodeCreateAnchor(null);
     onDockTrayChange(null);
   };
 
@@ -1187,12 +1181,20 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
 
   return (
     <>
-      {!isFoundationGatewayOpen ? (
       <div
         className={`script-foundation-dock script-foundation-filmstrip ${isAgentTailOpen ? "is-agent-open" : ""} ${isAxisSwitching ? "is-axis-switching" : ""}`}
-        data-foundation-expanded={isFoundationExpanded && !isAgentTailOpen}
+        data-foundation-expanded={isFoundationExpanded}
+        data-dock-expanded={activeDockTray !== null}
+        data-dock-tray={activeDockTray || "none"}
         aria-label="剧本基地"
       >
+        <div
+          ref={setDockTrayHost}
+          id="script-foundation-dock-tray-host"
+          className="script-foundation-dock__tray"
+          aria-live="polite"
+        />
+        <div className="script-foundation-dock__bar">
         <div
           id="script-foundation-account-host"
           className="script-foundation-account-host"
@@ -1204,7 +1206,6 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
           className={`script-foundation-bar-label script-foundation-bar-label--foundation ${isFoundationExpanded && !isAgentTailOpen ? "is-active" : ""}`}
           onClick={() => {
             onDockTrayChange(isFoundationExpanded ? null : "foundation");
-            setNodeCreateAnchor(null);
             setMenuState(null);
             setEditingTarget(null);
           }}
@@ -1219,13 +1220,9 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
               <MapIcon size={15} strokeWidth={1.9} />
             )}
           </span>
-          <span className="script-foundation-bar-label__text">
-            <strong>Foundation</strong>
-            <small>{activeAxisDefinition.label}</small>
-          </span>
         </button>
 
-        {isFoundationExpanded && !isAgentTailOpen ? (
+        {isFoundationExpanded && dockTrayHost ? createPortal(
         <div className="script-foundation-axis-body">
           <div className="script-foundation-ribbon-background" aria-hidden="true" />
           <button
@@ -1338,7 +1335,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                 );
               })}
             </div>
-          </div>
+          </div>,
+          dockTrayHost
         ) : null}
 
         <div
@@ -1347,21 +1345,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
           aria-label="Viewport controls"
         />
 
-        <div className={`script-foundation-tail ${isAgentTailOpen ? "is-agent-open" : ""}`}>
-          {isAgentTailOpen ? (
+        {isAgentTailOpen && dockTrayHost ? createPortal(
             <div className="script-foundation-tail-composer stylo-surface">
-              <button
-                type="button"
-                className="script-foundation-bar-label script-foundation-bar-label--agent is-active"
-                onClick={() => onDockTrayChange(null)}
-                title="收起 Agent"
-                aria-label="收起 Agent"
-                aria-expanded="true"
-              >
-                <span className="script-foundation-bar-label__icon" aria-hidden="true">
-                  <Bot size={15} strokeWidth={1.85} />
-                </span>
-              </button>
               <textarea
                 ref={agentComposerRef}
                 value={agentComposerValue}
@@ -1379,37 +1364,11 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                   }
                 }}
               />
-              <button
-                type="button"
-                className={`script-foundation-tail-send ${agentComposerValue.trim() ? "has-input" : ""} ${isAgentSending ? "is-sending" : ""}`}
-                onClick={handleAgentTailSend}
-                title={
-                  isAgentSending
-                    ? "Stop Stylo"
-                    : agentComposerValue.trim()
-                      ? "Send to Stylo"
-                      : isAgentFirstMode
-                        ? "Close Stylo First"
-                        : "Open Stylo First"
-                }
-                aria-label={
-                  isAgentSending
-                    ? "Stop Stylo"
-                    : agentComposerValue.trim()
-                      ? "Send to Stylo"
-                      : isAgentFirstMode
-                        ? "Close Stylo First"
-                        : "Open Stylo First"
-                }
-              >
-                {isAgentSending ? (
-                  <CircleNotch size={16} weight="bold" className="animate-spin" />
-                ) : (
-                  <ArrowUp size={16} weight="bold" />
-                )}
-              </button>
-            </div>
-          ) : (
+            </div>,
+            dockTrayHost
+          ) : null}
+
+        <div className="script-foundation-tail">
             <div className="script-foundation-tail-labels">
               <button
                 type="button"
@@ -1425,35 +1384,36 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
               </button>
               <button
                 type="button"
-                className="script-foundation-bar-label script-foundation-bar-label--agent"
+                className={`script-foundation-bar-label script-foundation-bar-label--agent ${isAgentTailOpen ? "script-foundation-tail-send is-active" : ""} ${isAgentSending ? "is-sending" : ""}`}
                 onClick={() => {
+                  if (isAgentTailOpen) {
+                    handleAgentTailSend();
+                    return;
+                  }
                   onDockTrayChange("agent");
                   setMenuState(null);
-                  setNodeCreateAnchor(null);
                   setEditingTarget(null);
                 }}
-                title="打开轴尾 Agent"
-                aria-label="打开轴尾 Agent"
-                aria-expanded="false"
+                title={isAgentTailOpen ? (isAgentSending ? "停止 Agent" : "发送给 Agent") : "打开 Agent"}
+                aria-label={isAgentTailOpen ? (isAgentSending ? "停止 Agent" : "发送给 Agent") : "打开 Agent"}
+                aria-expanded={isAgentTailOpen}
               >
                 <span className="script-foundation-bar-label__icon" aria-hidden="true">
-                  <Bot size={15} strokeWidth={1.85} />
+                  {isAgentTailOpen ? (
+                    isAgentSending ? <Square size={13} strokeWidth={2} /> : <ArrowUp size={16} weight="bold" />
+                  ) : (
+                    <Bot size={15} strokeWidth={1.85} />
+                  )}
                 </span>
               </button>
             </div>
-          )}
         </div>
 
+        </div>
       </div>
-      ) : null}
 
-      {nodeCreateMenu ? (
-        <div
-          className="script-foundation-node-menu-wrap"
-          style={getFoundationMenuStyle(nodeCreateMenu.x, nodeCreateMenu.y, 320)}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <section className="script-foundation-floating-menu script-foundation-node-popover script-foundation-node-palette">
+      {nodeCreateMenu && dockTrayHost ? createPortal(
+          <section className="script-foundation-node-popover script-foundation-node-palette">
             <header className="script-foundation-node-palette__head">
               <span>新增节点</span>
               <strong>文档、素材与生成流</strong>
@@ -1504,8 +1464,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                 );
               })}
             </div>
-          </section>
-        </div>
+          </section>,
+          dockTrayHost
       ) : null}
 
       {actionBlock && menuState?.type === "block" ? (
@@ -1561,7 +1521,7 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
         </div>
       ) : null}
 
-      {isFoundationGatewayOpen ? (
+      {isFoundationGatewayOpen && dockTrayHost ? createPortal(
         <section className="script-foundation-gateway" role="dialog" aria-label="Foundation 卡牌组">
           <div className="script-foundation-gateway__grid">
               <article className="script-foundation-gateway-card script-foundation-gateway-card--index">
@@ -1636,7 +1596,8 @@ const ScriptFoundation: React.FC<ScriptFoundationProps> = ({
                 </div>
               </article>
           </div>
-        </section>
+        </section>,
+        dockTrayHost
       ) : null}
 
       {editingBlock ? (

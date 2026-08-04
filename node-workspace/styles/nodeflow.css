@@ -10953,6 +10953,367 @@ button.script-foundation-gateway-card:hover,
   }
 }
 
+/* Unified two-tier bottom dock. Every expanded tool occupies the upper tray;
+   the persistent control rail stays in the lower tier. */
+.script-foundation-dock.script-foundation-filmstrip,
+.script-foundation-dock,
+.script-foundation-dock[data-foundation-expanded="true"] {
+  --dock-width: 292px;
+  position: fixed !important;
+  right: auto !important;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px)) !important;
+  left: 50% !important;
+  z-index: 90 !important;
+  display: grid !important;
+  width: min(var(--dock-width), calc(100vw - 32px)) !important;
+  max-width: calc(100vw - 32px) !important;
+  min-height: 46px !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+  border: 1px solid color-mix(in srgb, var(--app-border-strong) 76%, transparent) !important;
+  border-radius: 17px !important;
+  background: color-mix(in srgb, var(--app-panel-strong) 94%, transparent) !important;
+  box-shadow:
+    0 22px 48px -34px color-mix(in srgb, var(--app-text-primary) 32%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 32%, transparent) !important;
+  padding: 0 !important;
+  transform: translate3d(-50%, 0, 0) !important;
+  backdrop-filter: blur(22px) saturate(1.04) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.04) !important;
+  transition:
+    width 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    min-height 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms ease,
+    box-shadow 220ms ease !important;
+  interpolate-size: allow-keywords;
+  contain: layout paint;
+}
+
+.script-foundation-dock.script-foundation-filmstrip:has(.script-foundation-axis-body) { --dock-width: 1120px; }
+.script-foundation-dock.script-foundation-filmstrip:has(.script-foundation-gateway) { --dock-width: 1040px; }
+.script-foundation-dock.script-foundation-filmstrip:has(.script-foundation-node-palette) { --dock-width: 820px; }
+.script-foundation-dock.script-foundation-filmstrip:has(.script-foundation-tail-composer) { --dock-width: 760px; }
+.script-foundation-dock.script-foundation-filmstrip:has(.script-foundation-account-panel) { --dock-width: 460px; }
+.script-foundation-dock.script-foundation-filmstrip:has(.script-foundation-viewport-tray-panel) { --dock-width: 330px; }
+
+.script-foundation-dock__tray {
+  display: flex;
+  min-width: 0;
+  max-height: 0;
+  align-items: stretch;
+  overflow: hidden;
+  border: 0;
+  padding: 0 8px;
+  opacity: 0;
+  transition:
+    max-height 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    padding 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 150ms ease;
+}
+
+.script-foundation-dock[data-dock-expanded="true"] .script-foundation-dock__tray {
+  max-height: min(52dvh, 520px);
+  padding: 8px 8px 2px;
+  opacity: 1;
+}
+
+.script-foundation-dock__tray > * {
+  width: 100%;
+  min-width: 0;
+}
+
+.script-foundation-dock__bar {
+  display: flex;
+  min-width: 0;
+  min-height: 45px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.script-foundation-dock .script-foundation-account-host,
+.script-foundation-dock .script-foundation-viewport-host,
+.script-foundation-dock .script-foundation-tail,
+.script-foundation-dock .script-foundation-viewport-control,
+.script-foundation-dock .script-foundation-tail-labels {
+  display: flex !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  align-items: center;
+  gap: 3px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.script-foundation-dock .script-foundation-bar-label {
+  height: 36px !important;
+  min-height: 36px !important;
+  border-radius: 11px !important;
+}
+
+.script-foundation-dock .script-foundation-bar-label--foundation {
+  width: 36px !important;
+  min-width: 36px !important;
+  flex-basis: 36px !important;
+  padding: 0 !important;
+}
+
+.script-foundation-dock .script-foundation-bar-label--foundation .script-foundation-bar-label__text {
+  display: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-axis-body {
+  position: relative !important;
+  inset: auto !important;
+  display: flex !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 104px !important;
+  min-height: 104px !important;
+  gap: 5px !important;
+  overflow-x: auto !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  transform: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-ribbon-background {
+  display: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-head-block,
+.script-foundation-dock__tray .script-foundation-block {
+  min-height: 96px !important;
+  border-radius: 12px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-popover,
+.script-foundation-dock__tray .script-foundation-node-palette {
+  position: relative !important;
+  inset: auto !important;
+  display: grid !important;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: min(44dvh, 420px) !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 4px !important;
+  transform: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-palette__groups {
+  max-height: min(36dvh, 340px) !important;
+  overflow-y: auto !important;
+  padding-right: 3px;
+}
+
+.script-foundation-dock__tray .script-foundation-node-palette__head {
+  padding: 2px 4px 7px;
+}
+
+.script-foundation-dock__tray .script-foundation-node-palette__groups {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 8px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-group {
+  align-content: start;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--app-border) 72%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-panel-muted) 48%, transparent);
+  padding: 8px;
+}
+
+.script-foundation-dock__tray .script-foundation-node-group > p {
+  padding: 0 2px !important;
+  font-size: 9px !important;
+  letter-spacing: 0.08em !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 6px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-card {
+  min-height: 72px !important;
+  grid-template-columns: 30px minmax(0, 1fr) !important;
+  align-content: center;
+  gap: 8px !important;
+  border: 1px solid color-mix(in srgb, var(--node-card-color) 18%, var(--app-border)) !important;
+  border-radius: 11px !important;
+  background: color-mix(in srgb, var(--node-card-color) 7%, var(--app-panel-soft)) !important;
+  padding: 8px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-card::after {
+  display: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-node-card small {
+  display: block !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.script-foundation-dock__tray .script-foundation-tail-composer {
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 86px !important;
+  gap: 0 !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.script-foundation-dock__tray .script-foundation-tail-composer textarea {
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 78px !important;
+  max-height: 148px !important;
+  border: 0 !important;
+  border-radius: 11px !important;
+  background: color-mix(in srgb, var(--app-panel-soft) 72%, transparent) !important;
+  padding: 12px 13px !important;
+  resize: none;
+}
+
+.script-foundation-dock__bar .script-foundation-bar-label--agent.script-foundation-tail-send {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 11px !important;
+  background: color-mix(in srgb, var(--app-accent) 74%, var(--app-text-primary)) !important;
+  color: var(--app-bg) !important;
+}
+
+.script-foundation-dock__tray .script-foundation-viewport-tray-panel {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+}
+
+.script-foundation-dock__tray .script-foundation-viewport-actions {
+  position: static !important;
+  display: flex !important;
+  width: auto !important;
+  min-height: 38px;
+  align-items: center;
+  gap: 4px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.script-foundation-dock__tray .script-foundation-dock-tray-panel {
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: min(46dvh, 440px);
+  overflow-y: auto !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-account-panel > div {
+  max-height: none !important;
+  padding: 8px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-gateway {
+  pointer-events: none;
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: min(46dvh, 430px) !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  transform: none !important;
+  animation: none !important;
+}
+
+.script-foundation-dock__tray .script-foundation-gateway__grid {
+  align-items: stretch;
+  gap: 8px !important;
+  padding: 6px 5px 12px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-gateway-card {
+  flex-basis: clamp(180px, 19vw, 220px) !important;
+  min-height: 218px !important;
+  border-radius: 13px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-gateway-card--index {
+  flex-basis: clamp(250px, 27vw, 320px) !important;
+  min-height: 250px !important;
+}
+
+.script-foundation-dock__tray .script-foundation-gateway-card textarea {
+  min-height: 158px !important;
+}
+
+@media (max-width: 760px) {
+  .script-foundation-dock,
+  .script-foundation-dock.script-foundation-filmstrip,
+  .script-foundation-dock[data-foundation-expanded="true"] {
+    --dock-width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+  }
+
+  .script-foundation-dock__bar {
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .script-foundation-dock__bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .script-foundation-dock__tray {
+    max-height: min(58dvh, 520px);
+    padding: 6px;
+  }
+
+  .script-foundation-dock__tray .script-foundation-axis-body {
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .script-foundation-dock,
+  .script-foundation-dock.script-foundation-filmstrip,
+  .script-foundation-dock__tray {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* Reading mode is a title-only graph projection, including specialized wrappers. */
 .node-card-base[data-reading-mode="identity"] {
   width: max-content !important;

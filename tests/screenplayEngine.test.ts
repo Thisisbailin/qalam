@@ -25,9 +25,12 @@ import {
 } from "../node-workspace/screenplay/scriptPatch";
 import { toNodeFlowNodeRecord } from "../node-workspace/nodeflow/model";
 import {
+  createBlankScreenplayPageBody,
+  ensureScreenplayPageLineGrid,
   findAutomaticPageBreakLine,
   getConnectedScriptPageSequence,
   mergeScreenplayLineWithPrevious,
+  reorderConnectedScriptPages,
   splitScreenplayDocumentAtLine,
   splitScreenplayLineAtSelection,
 } from "../node-workspace/screenplay/manusPages";
@@ -112,12 +115,31 @@ test("Manus resolves a connected page sequence from any page and splits at line 
     currentBody: "!第一行",
     nextBody: "!第二行\n!第三行",
   });
+
+  const reordered = reorderConnectedScriptPages(projectData, ["page-c", "page-a", "page-b"]);
+  assert.deepEqual(
+    getConnectedScriptPageSequence(reordered, "page-a").map((node) => node.id),
+    ["page-c", "page-a", "page-b"]
+  );
+  assert.deepEqual(
+    reordered.flow?.flowNodes?.map((node) => node.data?.pageNumber),
+    [2, 3, 1]
+  );
 });
 
 test("automatic pagination chooses a real line boundary after physical capacity is exceeded", () => {
   const body = Array.from({ length: 40 }, (_, index) => `!第 ${index + 1} 行动作描述。`).join("\n");
   const breakIndex = findAutomaticPageBreakLine(body, 18);
   assert.ok(typeof breakIndex === "number" && breakIndex > 0 && breakIndex < 40);
+});
+
+test("a new screenplay sheet starts with a fixed 54-line action grid", () => {
+  const blankPage = createBlankScreenplayPageBody();
+  const lines = analyzeFountainLines(blankPage);
+  assert.equal(lines.length, 54);
+  assert.ok(lines.every((line) => line.kind === "action" && line.content === ""));
+  assert.equal(analyzeFountainLines(ensureScreenplayPageLineGrid("!第一行")).length, 54);
+  assert.equal(findAutomaticPageBreakLine(blankPage), null);
 });
 
 test("screenplay analysis builds navigation, production metrics, and continuity diagnostics", () => {

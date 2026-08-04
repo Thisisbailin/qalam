@@ -43,6 +43,10 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(writingPanel, /剧本中已无引用/);
   assert.match(writingPanel, /getConnectedScriptPageSequence/);
   assert.match(writingPanel, /onSplitScriptDocument/);
+  assert.match(writingPanel, /screenplay-cover__binding/);
+  assert.match(writingPanel, /createBlankScreenplayPageBody/);
+  assert.match(writingPanel, /<Reorder\.Group/);
+  assert.match(writingPanel, /onReorderScriptDocuments/);
   assert.match(writingPanel, /paperLines[\s\S]*analyzeFountainLines/);
   assert.match(writingPanel, /readOnly=\{!isActive \|\| !!pendingPatch\}/);
   assert.doesNotMatch(writingPanel, /screenplay-document__preview/);
@@ -55,6 +59,10 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /\.screenplay-header \{[\s\S]*display: block;/);
   assert.match(styles, /\.screenplay-document \{[\s\S]*border-radius: 7px;/);
   assert.match(styles, /--screenplay-paper: #ffffff/);
+  assert.match(styles, /\.screenplay-cover__binding/);
+  assert.match(styles, /\.screenplay-block\.is-empty/);
+  assert.match(styles, /appearance: none;/);
+  assert.match(styles, /\.screenplay-page-filmstrip__pages > li\.is-dragging/);
   assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-header \{[\s\S]*right: -54px;/);

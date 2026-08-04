@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { LibraryBig, LockKeyhole, Map, Minus, Plus, Rows3, UnlockKeyhole } from "lucide-react";
 import type { NodeFlowReadingMode } from "../nodeflow/sessionState";
 
@@ -14,6 +15,9 @@ type Props = {
   readingMode?: NodeFlowReadingMode;
   onToggleReadingMode?: () => void;
   variant?: "floating" | "dock";
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+  trayHost?: HTMLElement | null;
 };
 
 export const ViewportControls: React.FC<Props> = ({
@@ -28,8 +32,16 @@ export const ViewportControls: React.FC<Props> = ({
   readingMode,
   onToggleReadingMode,
   variant = "floating",
+  expanded,
+  onExpandedChange,
+  trayHost,
 }) => {
-  const [isDockExpanded, setIsDockExpanded] = React.useState(false);
+  const [localDockExpanded, setLocalDockExpanded] = React.useState(false);
+  const isDockExpanded = expanded ?? localDockExpanded;
+  const setIsDockExpanded = (next: boolean) => {
+    setLocalDockExpanded(next);
+    onExpandedChange?.(next);
+  };
   const step = 0.25;
   const lockDisabled = isLocked === true;
 
@@ -43,7 +55,7 @@ export const ViewportControls: React.FC<Props> = ({
       <div className="script-foundation-viewport-control" data-expanded={isDockExpanded}>
         <button
           type="button"
-          onClick={() => setIsDockExpanded((value) => !value)}
+          onClick={() => setIsDockExpanded(!isDockExpanded)}
           className={`script-foundation-bar-label script-foundation-bar-label--viewport ${isDockExpanded ? "is-active" : ""}`}
           aria-label={isDockExpanded ? "收起视口控件" : "展开视口控件"}
           aria-expanded={isDockExpanded}
@@ -55,6 +67,8 @@ export const ViewportControls: React.FC<Props> = ({
         </button>
 
         {isDockExpanded ? (
+          trayHost ? createPortal(
+          <div className="script-foundation-viewport-tray-panel">
           <div className="script-foundation-viewport-actions">
             <button
               type="button"
@@ -111,6 +125,14 @@ export const ViewportControls: React.FC<Props> = ({
               </button>
             ) : null}
           </div>
+          </div>,
+          trayHost
+          ) : (
+          <div className="script-foundation-viewport-actions">
+            <button type="button" onClick={handleMinus} className="script-foundation-viewport-button" aria-label="缩小" title="缩小" disabled={lockDisabled}><Minus size={14} /></button>
+            <button type="button" onClick={handlePlus} className="script-foundation-viewport-button" aria-label="放大" title="放大" disabled={lockDisabled}><Plus size={14} /></button>
+          </div>
+          )
         ) : null}
       </div>
     );

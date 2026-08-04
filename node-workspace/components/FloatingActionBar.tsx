@@ -17,6 +17,7 @@ import {
   Upload,
   Share,
 } from "lucide-react";
+import type { BottomDockTray } from "./canvas/types";
 
 type AccountInfo = {
   isLoaded: boolean;
@@ -58,6 +59,9 @@ type Props = {
   onAssetLoad?: (type: "script", content: string, fileName?: string) => void;
   showGlobalAccountTrigger?: boolean;
   globalAccountHostId?: string;
+  globalDockTrayHostId?: string;
+  activeDockTray?: BottomDockTray | null;
+  onDockTrayChange?: (tray: BottomDockTray | null) => void;
   showToolbar?: boolean;
   accountThemeControls?: React.ReactNode;
 };
@@ -88,12 +92,15 @@ export const FloatingActionBar: React.FC<Props> = ({
   onAssetLoad,
   showGlobalAccountTrigger = false,
   globalAccountHostId,
+  globalDockTrayHostId,
+  activeDockTray,
+  onDockTrayChange,
   showToolbar = true,
   accountThemeControls,
 }) => {
   const isEmbedded = variant === "embedded";
   const [showPalette, setShowPalette] = useState(false);
-  const [showFileMenu, setShowFileMenu] = useState(false);
+  const [localShowFileMenu, setLocalShowFileMenu] = useState(false);
   const [ioPane, setIoPane] = useState<"project" | "export">("project");
   const [nodePaletteMode, setNodePaletteMode] = useState<"panels" | "workflow">("workflow");
   const scriptInputRef = useRef<HTMLInputElement>(null);
@@ -103,8 +110,16 @@ export const FloatingActionBar: React.FC<Props> = ({
   const palettePanelRef = useRef<HTMLDivElement>(null);
   const [accountAnchorRect, setAccountAnchorRect] = useState<DOMRect | null>(null);
   const [globalAccountHost, setGlobalAccountHost] = useState<HTMLElement | null>(null);
+  const [globalDockTrayHost, setGlobalDockTrayHost] = useState<HTMLElement | null>(null);
   const [nodesAnchorRect, setNodesAnchorRect] = useState<DOMRect | null>(null);
   const legacyScriptImportDisabled = true;
+  const accountTrayControlled = activeDockTray !== undefined && !!onDockTrayChange;
+  const showFileMenu = accountTrayControlled ? activeDockTray === "account" : localShowFileMenu;
+  const setShowFileMenu = (value: React.SetStateAction<boolean>) => {
+    const next = typeof value === "function" ? value(showFileMenu) : value;
+    setLocalShowFileMenu(next);
+    if (accountTrayControlled) onDockTrayChange?.(next ? "account" : null);
+  };
   const rootClass = !showToolbar
     ? "contents"
     : isEmbedded
@@ -200,14 +215,26 @@ export const FloatingActionBar: React.FC<Props> = ({
   }, [accountAnchorRect]);
 
   useEffect(() => {
-    if (!showGlobalAccountTrigger || !globalAccountHostId || typeof document === "undefined") {
-      setGlobalAccountHost(null);
-      return;
-    }
-
-    const nextHost = document.getElementById(globalAccountHostId);
-    setGlobalAccountHost((current) => (current === nextHost ? current : nextHost));
-  });
+    if (typeof document === "undefined") return;
+    const syncHosts = () => {
+      const nextAccountHost = showGlobalAccountTrigger && globalAccountHostId
+        ? document.getElementById(globalAccountHostId)
+        : null;
+      const nextTrayHost = globalDockTrayHostId
+        ? document.getElementById(globalDockTrayHostId)
+        : null;
+      setGlobalAccountHost((current) => (current === nextAccountHost ? current : nextAccountHost));
+      setGlobalDockTrayHost((current) => (current === nextTrayHost ? current : nextTrayHost));
+    };
+    syncHosts();
+    const frame = window.requestAnimationFrame(syncHosts);
+    const observer = new MutationObserver(syncHosts);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [globalAccountHostId, globalDockTrayHostId, showGlobalAccountTrigger]);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -479,7 +506,7 @@ export const FloatingActionBar: React.FC<Props> = ({
 
   return (
     <div className={rootClass}>
-      {typeof document !== "undefined" && (showPalette || showFileMenu)
+      {typeof document !== "undefined" && (showPalette || (showFileMenu && !globalDockTrayHost))
         ? createPortal(<div className="fixed inset-0 z-[58]" onClick={closeMenus} />, document.body)
         : null}
 
@@ -618,8 +645,8 @@ export const FloatingActionBar: React.FC<Props> = ({
           createPortal(
             <div
             ref={fileMenuPanelRef}
-            className={`fixed z-[59] animate-in fade-in duration-200 overflow-hidden ${panelClass}`}
-            style={{ ...panelStyle, ...fileMenuPopoverStyle }}
+            className={`${globalDockTrayHost ? "script-foundation-dock-tray-panel script-foundation-account-panel" : "fixed z-[59] animate-in fade-in duration-200"} overflow-hidden ${panelClass}`}
+            style={globalDockTrayHost ? panelStyle : { ...panelStyle, ...fileMenuPopoverStyle }}
           >
             <div className="max-h-[min(74vh,640px)] space-y-4 overflow-y-auto p-4">
               <div className="space-y-3">
@@ -791,7 +818,7 @@ export const FloatingActionBar: React.FC<Props> = ({
               </div>
               </div>
             </div>,
-            document.body
+            globalDockTrayHost || document.body
           )
         ) : null}
 

@@ -166,8 +166,8 @@ const ScreenplayBlockRow = memo(({
     if (!textarea) return;
     textarea.style.height = "0px";
     textarea.style.height = line.content
-      ? `${Math.max(34, textarea.scrollHeight)}px`
-      : `${isActive ? 34 : 18}px`;
+      ? `${Math.max(20, textarea.scrollHeight)}px`
+      : `${isActive ? 20 : 16}px`;
   }, [isActive, line.content]);
 
   const assignEditor = (element: HTMLTextAreaElement | null) => {
@@ -268,7 +268,7 @@ const ScreenplayBlockRow = memo(({
   return (
     <div
       id={`screenplay-line-${line.index}`}
-      className={`screenplay-block screenplay-block--${line.kind} ${isActive ? "is-active" : ""}`}
+      className={`screenplay-block screenplay-block--${line.kind} ${isActive ? "is-active" : ""} ${line.content ? "" : "is-empty"}`}
       data-line={line.index + 1}
       onMouseDown={() => onActive(line.index)}
     >
@@ -373,7 +373,7 @@ const ScreenplayBlockRow = memo(({
             rows={1}
             readOnly={readOnly}
             spellCheck={line.kind !== "character" && line.kind !== "transition"}
-            placeholder={line.kind === "action" ? "描述镜头中能够看到或听到的内容…" : `${SCREENPLAY_FORMAT_LABELS[line.kind]}内容`}
+            placeholder={isActive ? (line.kind === "action" ? "描述镜头中能够看到或听到的内容…" : `${SCREENPLAY_FORMAT_LABELS[line.kind]}内容`) : ""}
             aria-label={`第 ${line.index + 1} 行，${SCREENPLAY_FORMAT_LABELS[line.kind]}`}
             onFocus={() => onActive(line.index)}
             onChange={(event) => onReplaceLine(line.index, serializeScreenplayLine(event.target.value, line.kind))}

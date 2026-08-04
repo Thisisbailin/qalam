@@ -1,4 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Reorder } from "framer-motion";
 import {
   ArrowCounterClockwise,
   CaretLeft,
@@ -7,6 +8,7 @@ import {
   Check,
   Clipboard,
   Copy,
+  DotsSixVertical,
   PaperPlaneTilt,
   Scissors,
   TextStrikethrough,
@@ -41,8 +43,11 @@ import {
   type ScriptPatchLineStatus,
 } from "../screenplay/scriptPatch";
 import {
+  createBlankScreenplayPageBody,
+  ensureScreenplayPageLineGrid,
   findAutomaticPageBreakLine,
   getConnectedScriptPageSequence,
+  reorderConnectedScriptPages,
   splitScreenplayDocumentAtLine,
 } from "../screenplay/manusPages";
 import { ScreenplayBlockEditor, type ScreenplayCharacterSuggestion } from "./screenplay/ScreenplayBlockEditor";
@@ -57,6 +62,7 @@ import {
 import type {
   AgentScriptEditProposalBatch,
   ScriptDocumentCommit,
+  ScriptPageReorderCommit,
   ScriptPageSplitCommit,
 } from "./stylo/interactionTypes";
 import "../styles/screenplay.css";
@@ -73,6 +79,7 @@ type Props = {
   onCommitScriptDocument?: (commit: ScriptDocumentCommit) => void;
   onDeleteLookbookIdentity?: (roleId: string) => void;
   onSplitScriptDocument?: (commit: ScriptPageSplitCommit) => string | null;
+  onReorderScriptDocuments?: (commit: ScriptPageReorderCommit) => void;
   onOpenLookbook?: (identityNodeId: string) => void;
   onOpenStylo?: () => void;
   onSubmitToStylo?: (text: string, uiContext?: AgentUiContext) => void;
@@ -120,9 +127,10 @@ const readScriptNode = (
 ): WritingDraft => {
   const data = (node?.data || {}) as { title?: string; text?: string; content?: string };
   const content = typeof data.content === "string" ? data.content : data.text || "";
+  const normalizedBody = normalizeFountainDocument(content, knownCharacters);
   return {
     title: data.title?.trim() || "剧本文档",
-    body: normalizeFountainDocument(content, knownCharacters),
+    body: ensureScreenplayPageLineGrid(normalizedBody),
   };
 };
 
@@ -157,6 +165,7 @@ export const WritingPanel: React.FC<Props> = ({
   onCommitScriptDocument,
   onDeleteLookbookIdentity,
   onSplitScriptDocument,
+  onReorderScriptDocuments,
   onOpenLookbook,
   onOpenStylo,
   onSubmitToStylo,
@@ -189,6 +198,10 @@ export const WritingPanel: React.FC<Props> = ({
     () => getConnectedScriptPageSequence(projectData, scriptNode?.id || activeScriptNodeId || initialScriptNodeId),
     [activeScriptNodeId, initialScriptNodeId, projectData.flow?.flowNodes, projectData.flow?.links, scriptNode?.id]
   );
+  const displayPages = useMemo(
+    () => pageSequence.length ? pageSequence : scriptNode ? [scriptNode] : [],
+    [pageSequence, scriptNode]
+  );
   const pageIndex = Math.max(0, pageSequence.findIndex((node) => node.id === scriptNode?.id));
   const sourceDraft = useMemo(
     () => readScriptNode(scriptNode, knownCharacterIdentities),
@@ -206,6 +219,10 @@ export const WritingPanel: React.FC<Props> = ({
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [pageArrangement, setPageArrangement] = useState<ScreenplayPageArrangement>("vertical");
+  const [isCoverPageActive, setIsCoverPageActive] = useState(true);
+  const [filmstripOrder, setFilmstripOrder] = useState<string[]>(() => displayPages.map((node) => node.id));
+  const [draggedPageId, setDraggedPageId] = useState<string | null>(null);
+  const filmstripOrderRef = useRef(filmstripOrder);
   const [autoPagination, setAutoPagination] = useState(false);
   const [selectionCommand, setSelectionCommand] = useState<SelectionCommand | null>(null);
   const [pendingPatch, setPendingPatch] = useState<PendingScriptPatch | null>(null);
@@ -218,7 +235,15 @@ export const WritingPanel: React.FC<Props> = ({
   const dismissedIdentityRemovalIdsRef = useRef(new Set<string>());
   const handledProposalIdsRef = useRef(new Set<string>());
   const pageElementRefs = useRef(new Map<string, HTMLElement>());
+  const coverElementRef = useRef<HTMLElement | null>(null);
   const edgeHoverTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (draggedPageId) return;
+    const nextOrder = displayPages.map((node) => node.id);
+    filmstripOrderRef.current = nextOrder;
+    setFilmstripOrder(nextOrder);
+  }, [displayPages, draggedPageId]);
 
   useEffect(() => {
     if (!initialScriptNodeId) return;
@@ -508,9 +533,21 @@ export const WritingPanel: React.FC<Props> = ({
     onOpenLookbook?.(identityNodeId);
   }, [commitDraft, onOpenLookbook]);
 
+  const openCoverPage = useCallback((behavior: ScrollBehavior = "smooth") => {
+    if (externalConflict) return;
+    commitDraft(draftRef.current, true);
+    setIsCoverPageActive(true);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        coverElementRef.current?.scrollIntoView({ behavior, block: "start", inline: "center" });
+      });
+    });
+  }, [commitDraft, externalConflict]);
+
   const openScriptPage = useCallback((nextIndex: number, behavior: ScrollBehavior = "smooth") => {
     const nextNode = pageSequence[nextIndex];
     if (!nextNode || externalConflict) return;
+    setIsCoverPageActive(false);
     if (nextNode.id !== scriptNode?.id) {
       commitDraft(draftRef.current, true);
       setActiveScriptNodeId(nextNode.id);
@@ -534,22 +571,27 @@ export const WritingPanel: React.FC<Props> = ({
 
   const queueEdgeNavigation = useCallback((direction: -1 | 1) => {
     cancelEdgeNavigation();
-    const nextIndex = pageIndex + direction;
-    if (!pageSequence[nextIndex]) return;
+    const nextIndex = isCoverPageActive ? (direction === 1 ? 0 : -1) : pageIndex + direction;
+    const opensCover = !isCoverPageActive && direction === -1 && pageIndex === 0;
+    if (!opensCover && !pageSequence[nextIndex]) return;
     edgeHoverTimerRef.current = window.setTimeout(() => {
       edgeHoverTimerRef.current = null;
-      openScriptPage(nextIndex);
+      if (opensCover) openCoverPage();
+      else openScriptPage(nextIndex);
     }, 360);
-  }, [cancelEdgeNavigation, openScriptPage, pageIndex, pageSequence]);
+  }, [cancelEdgeNavigation, isCoverPageActive, openCoverPage, openScriptPage, pageIndex, pageSequence]);
 
   useEffect(() => cancelEdgeNavigation, [cancelEdgeNavigation]);
 
   useEffect(() => {
     const activeNodeId = scriptNode?.id;
-    if (!activeNodeId) return;
+    if (!activeNodeId && !isCoverPageActive) return;
     const firstFrame = window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
-        pageElementRefs.current.get(activeNodeId)?.scrollIntoView({
+        const target = isCoverPageActive
+          ? coverElementRef.current
+          : activeNodeId ? pageElementRefs.current.get(activeNodeId) : null;
+        target?.scrollIntoView({
           behavior: "smooth",
           block: pageArrangement === "vertical" ? "start" : "center",
           inline: "center",
@@ -557,20 +599,39 @@ export const WritingPanel: React.FC<Props> = ({
       });
     });
     return () => window.cancelAnimationFrame(firstFrame);
-  }, [pageArrangement, scriptNode?.id]);
+  }, [isCoverPageActive, pageArrangement, scriptNode?.id]);
+
+  const handleFilmstripReorder = useCallback((nextOrder: string[]) => {
+    filmstripOrderRef.current = nextOrder;
+    setFilmstripOrder(nextOrder);
+  }, []);
+
+  const finishFilmstripReorder = useCallback(() => {
+    const nextOrder = filmstripOrderRef.current;
+    setDraggedPageId(null);
+    if (
+      nextOrder.length !== displayPages.length ||
+      nextOrder.every((nodeId, index) => nodeId === displayPages[index]?.id)
+    ) return;
+    commitDraft(draftRef.current, true);
+    if (onReorderScriptDocuments) onReorderScriptDocuments({ orderedNodeIds: nextOrder });
+    else setProjectData((previous) => reorderConnectedScriptPages(previous, nextOrder));
+  }, [commitDraft, displayPages, onReorderScriptDocuments, setProjectData]);
 
   const createPageFromLine = useCallback((lineIndex: number, activateNewPage = true) => {
     if (!scriptNode?.id || !onSplitScriptDocument || pendingPatch || externalConflict) return null;
     const currentDraft = draftRef.current;
     const { currentBody, nextBody } = splitScreenplayDocumentAtLine(currentDraft.body, lineIndex);
+    const retainedBody = ensureScreenplayPageLineGrid(currentBody);
+    const continuedBody = ensureScreenplayPageLineGrid(nextBody);
     const nextNodeId = onSplitScriptDocument({
       sourceNodeId: scriptNode.id,
       title: currentDraft.title,
-      sourceContent: currentBody,
-      nextContent: nextBody,
+      sourceContent: retainedBody,
+      nextContent: continuedBody,
     });
     if (!nextNodeId) return null;
-    const retainedDraft = { ...currentDraft, body: currentBody };
+    const retainedDraft = { ...currentDraft, body: retainedBody };
     draftRef.current = retainedDraft;
     lastCommittedRef.current = retainedDraft;
     lastObservedSourceRef.current = retainedDraft;
@@ -589,7 +650,7 @@ export const WritingPanel: React.FC<Props> = ({
       sourceNodeId: scriptNode.id,
       title: currentDraft.title,
       sourceContent: currentDraft.body,
-      nextContent: "",
+      nextContent: createBlankScreenplayPageBody(),
     });
     if (!nextNodeId) return;
     draftRef.current = currentDraft;
@@ -718,17 +779,30 @@ export const WritingPanel: React.FC<Props> = ({
     downloadFountain(filename, content);
   };
 
+  const orderedFilmstripPages = useMemo(() => {
+    const pageById = new Map(displayPages.map((node) => [node.id, node]));
+    const ordered = filmstripOrder.map((nodeId) => pageById.get(nodeId)).filter(Boolean) as NodeFlowNode[];
+    displayPages.forEach((node) => {
+      if (!filmstripOrder.includes(node.id)) ordered.push(node);
+    });
+    return ordered;
+  }, [displayPages, filmstripOrder]);
+
   const screenplayHeader = (
     <ScreenplayHeader
       saveState={saveState}
       isFocusMode={isFocusMode}
       isInspectorOpen={isInspectorOpen}
-      onToggleFocus={() => setIsFocusMode((active) => !active)}
+      onToggleFocus={() => {
+        if (!isFocusMode) setIsCoverPageActive(false);
+        setIsFocusMode((active) => !active);
+      }}
       onToggleInspector={() => setIsInspectorOpen((open) => !open)}
       onShare={() => void handleShare()}
       onClose={handleClose}
       pageIndex={pageIndex}
       pageCount={pageSequence.length || (scriptNode ? 1 : 0)}
+      isCoverPage={isCoverPageActive}
       pageArrangement={pageArrangement}
       autoPagination={autoPagination}
       onPageArrangementChange={setPageArrangement}
@@ -737,10 +811,47 @@ export const WritingPanel: React.FC<Props> = ({
     />
   );
 
-  const displayPages = pageSequence.length ? pageSequence : scriptNode ? [scriptNode] : [];
   const visiblePages = isFocusMode || pageArrangement === "vertical"
     ? displayPages
+    : isCoverPageActive
+      ? []
     : displayPages.filter((node) => node.id === scriptNode?.id);
+
+  const renderCover = () => {
+    const coverTitle = draft.title.trim() || "Untitled Screenplay";
+    const projectLabel = (projectData.fileName || coverTitle).replace(/\.[^/.]+$/, "");
+    return (
+      <article
+        ref={coverElementRef}
+        className={`screenplay-document screenplay-cover ${isCoverPageActive ? "is-active" : "is-preview"}`}
+        tabIndex={isCoverPageActive ? undefined : 0}
+        role={isCoverPageActive ? undefined : "button"}
+        aria-label={isCoverPageActive ? "剧本封面" : `打开《${coverTitle}》剧本封面`}
+        onClick={isCoverPageActive ? undefined : () => openCoverPage()}
+        onKeyDown={isCoverPageActive ? undefined : (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openCoverPage();
+        }}
+      >
+        {isCoverPageActive ? screenplayHeader : null}
+        <div className="screenplay-cover__binding" aria-hidden="true">
+          <span className="is-top" />
+          <span className="is-middle" />
+          <span className="is-bottom" />
+        </div>
+        <div className="screenplay-cover__copy">
+          <span className="screenplay-cover__kicker">Screenplay</span>
+          <h1>{coverTitle}</h1>
+          <span className="screenplay-cover__credit">A screenplay manuscript</span>
+          <footer>
+            <span>{projectLabel}</span>
+            <span>{displayPages.length} script {displayPages.length === 1 ? "page" : "pages"}</span>
+          </footer>
+        </div>
+      </article>
+    );
+  };
 
   const renderPaper = (node: NodeFlowNode, index: number) => {
     const isActive = node.id === scriptNode?.id;
@@ -771,7 +882,7 @@ export const WritingPanel: React.FC<Props> = ({
         }}
       >
         <>
-          {isActive && !isFocusMode ? screenplayHeader : null}
+          {isActive && !isFocusMode && !isCoverPageActive ? screenplayHeader : null}
           {!isFocusMode ? (
             <header className="screenplay-document__masthead">
               <div>
@@ -782,7 +893,7 @@ export const WritingPanel: React.FC<Props> = ({
                     placeholder="未命名剧本"
                     aria-label="剧本标题"
                   />
-                ) : <strong>{draft.title}</strong>}
+                ) : <strong>{paperDraft.title}</strong>}
               </div>
               <small>{index + 1}/{Math.max(1, displayPages.length)} · {paperAnalysis.stats.scenes} 场</small>
             </header>
@@ -796,7 +907,7 @@ export const WritingPanel: React.FC<Props> = ({
             characterSuggestions={characterSuggestions}
             locationSuggestions={locationSuggestions}
             locationOptionsId={`screenplay-location-options-${node.id}`}
-            onChange={isActive ? (body) => setDraft((current) => ({ ...current, body })) : () => undefined}
+            onChange={isActive ? (body) => setDraft((current) => ({ ...current, body: ensureScreenplayPageLineGrid(body) })) : () => undefined}
             onActiveLineChange={isActive ? setActiveLineIndex : () => undefined}
             onSelectionChange={isActive ? (selection) => {
               setSelectionCommand(selection ? { ...selection, isAsking: false, message: "" } : null);
@@ -828,31 +939,32 @@ export const WritingPanel: React.FC<Props> = ({
                 <small>{Math.max(1, displayPages.length)} 页 · {analysis.stats.scenes} 场</small>
               </header>
             ) : null}
+            {!isFocusMode && (pageArrangement === "vertical" || isCoverPageActive) ? renderCover() : null}
             {visiblePages.map((node) => renderPaper(node, displayPages.findIndex((item) => item.id === node.id)))}
           </div>
-          {!isFocusMode && pageArrangement === "horizontal" && displayPages.length > 1 ? (
+          {!isFocusMode && pageArrangement === "horizontal" && displayPages.length > 0 ? (
             <>
               <button
                 type="button"
                 className="screenplay-page-edge is-previous"
-                disabled={pageIndex <= 0}
+                disabled={isCoverPageActive}
                 aria-label="前一张稿纸"
                 onPointerEnter={() => queueEdgeNavigation(-1)}
                 onPointerLeave={cancelEdgeNavigation}
                 onFocus={() => queueEdgeNavigation(-1)}
                 onBlur={cancelEdgeNavigation}
-                onClick={() => openScriptPage(pageIndex - 1)}
+                onClick={() => pageIndex === 0 ? openCoverPage() : openScriptPage(pageIndex - 1)}
               ><CaretLeft size={18} /></button>
               <button
                 type="button"
                 className="screenplay-page-edge is-next"
-                disabled={pageIndex >= displayPages.length - 1}
+                disabled={!isCoverPageActive && pageIndex >= displayPages.length - 1}
                 aria-label="后一张稿纸"
                 onPointerEnter={() => queueEdgeNavigation(1)}
                 onPointerLeave={cancelEdgeNavigation}
                 onFocus={() => queueEdgeNavigation(1)}
                 onBlur={cancelEdgeNavigation}
-                onClick={() => openScriptPage(pageIndex + 1)}
+                onClick={() => openScriptPage(isCoverPageActive ? 0 : pageIndex + 1)}
               ><CaretRight size={18} /></button>
             </>
           ) : null}
@@ -867,24 +979,50 @@ export const WritingPanel: React.FC<Props> = ({
         ) : null}
       </div>
 
-      {!isFocusMode && pageArrangement === "filmstrip" && displayPages.length > 1 ? (
+      {!isFocusMode && pageArrangement === "filmstrip" && displayPages.length > 0 ? (
         <nav className="screenplay-page-filmstrip" aria-label="稿纸缩略队列">
-          {displayPages.map((node, index) => {
+          <button
+            type="button"
+            className={`screenplay-page-filmstrip__cover ${isCoverPageActive ? "is-active" : ""}`}
+            onClick={() => openCoverPage()}
+            aria-label={`打开《${draft.title || "未命名剧本"}》剧本封面`}
+          >
+            <small>C</small>
+            <strong>封面</strong>
+            <span>{draft.title || "未命名剧本"}</span>
+          </button>
+          <Reorder.Group
+            axis="x"
+            values={filmstripOrder}
+            onReorder={handleFilmstripReorder}
+            className="screenplay-page-filmstrip__pages"
+          >
+          {orderedFilmstripPages.map((node) => {
+            const index = displayPages.findIndex((page) => page.id === node.id);
             const paperDraft = node.id === scriptNode?.id ? draft : readScriptNode(node, knownCharacterIdentities);
             return (
-              <button
+              <Reorder.Item
                 key={node.id}
-                type="button"
-                className={node.id === scriptNode?.id ? "is-active" : ""}
-                onClick={() => openScriptPage(index)}
-                aria-label={`定位到第 ${index + 1} 张稿纸：${paperDraft.title}`}
+                value={node.id}
+                className={`${node.id === scriptNode?.id && !isCoverPageActive ? "is-active" : ""} ${draggedPageId === node.id ? "is-dragging" : ""}`}
+                onDragStart={() => setDraggedPageId(node.id)}
+                onDragEnd={finishFilmstripReorder}
+                whileDrag={{ scale: 1.025, y: -5 }}
               >
-                <small>{String(index + 1).padStart(2, "0")}</small>
-                <strong>{paperDraft.title}</strong>
-                <span>{stripFountainMarkup(paperDraft.body).trim().slice(0, 46) || "空白稿纸"}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => openScriptPage(index)}
+                  aria-label={`定位到第 ${index + 1} 张稿纸：${paperDraft.title}，可拖动排序`}
+                >
+                  <DotsSixVertical className="screenplay-page-filmstrip__grip" size={13} weight="bold" aria-hidden="true" />
+                  <small>{String(index + 1).padStart(2, "0")}</small>
+                  <strong>{paperDraft.title}</strong>
+                  <span>{stripFountainMarkup(paperDraft.body).trim().slice(0, 46) || "空白稿纸"}</span>
+                </button>
+              </Reorder.Item>
             );
           })}
+          </Reorder.Group>
         </nav>
       ) : null}
 

@@ -3,13 +3,29 @@ import type { NodeFlowNode } from "../types";
 import {
   analyzeFountainLines,
   getNextScreenplayLineKind,
+  SCREENPLAY_PAGE_LINE_COUNT,
   serializeScreenplayLine,
   splitScreenplayLines,
   type ScreenplayLine,
 } from "./fountainEngine";
 
 export const SCREENPLAY_PAGE_RELATION = "screenplay-page" as const;
-export const DEFAULT_SCREENPLAY_PAGE_CAPACITY = 46;
+export const DEFAULT_SCREENPLAY_PAGE_CAPACITY = SCREENPLAY_PAGE_LINE_COUNT;
+
+export const ensureScreenplayPageLineGrid = (
+  body: string,
+  lineCount = SCREENPLAY_PAGE_LINE_COUNT
+) => {
+  const normalizedBody = body.replace(/\r\n?/g, "\n");
+  const lines = splitScreenplayLines(normalizedBody);
+  const targetLineCount = Math.max(1, Math.floor(lineCount));
+  if (lines.length >= targetLineCount) return normalizedBody;
+  return [...lines, ...Array.from({ length: targetLineCount - lines.length }, () => "")].join("\n");
+};
+
+export const createBlankScreenplayPageBody = (
+  lineCount = SCREENPLAY_PAGE_LINE_COUNT
+) => ensureScreenplayPageLineGrid("", lineCount);
 
 const getScriptNodes = (projectData: ProjectData) =>
   (projectData.flow?.flowNodes || []).filter((node) => node.type === "scriptPage");
@@ -83,6 +99,58 @@ export const getConnectedScriptPageSequence = (
     .sort(compareNodes)
     .forEach((node) => visit(node.id));
   return ordered;
+};
+
+export const reorderConnectedScriptPages = (
+  projectData: ProjectData,
+  orderedNodeIds: string[]
+): ProjectData => {
+  const uniqueNodeIds = Array.from(new Set(orderedNodeIds));
+  if (uniqueNodeIds.length < 2 || uniqueNodeIds.length !== orderedNodeIds.length) return projectData;
+
+  const flow = projectData.flow;
+  if (!flow) return projectData;
+  const scriptNodeIds = new Set(
+    (flow.flowNodes || []).filter((node) => node.type === "scriptPage").map((node) => node.id)
+  );
+  if (uniqueNodeIds.some((nodeId) => !scriptNodeIds.has(nodeId))) return projectData;
+
+  const currentOrder = getConnectedScriptPageSequence(projectData, uniqueNodeIds[0]).map((node) => node.id);
+  if (
+    currentOrder.length !== uniqueNodeIds.length ||
+    currentOrder.some((nodeId) => !uniqueNodeIds.includes(nodeId))
+  ) return projectData;
+  if (currentOrder.every((nodeId, index) => nodeId === uniqueNodeIds[index])) return projectData;
+
+  const reorderedIds = new Set(uniqueNodeIds);
+  const links = (flow.links || []).filter((link) => !(
+    link.data?.relation === SCREENPLAY_PAGE_RELATION &&
+    (reorderedIds.has(link.source) || reorderedIds.has(link.target))
+  ));
+  for (let index = 0; index < uniqueNodeIds.length - 1; index += 1) {
+    const source = uniqueNodeIds[index];
+    const target = uniqueNodeIds[index + 1];
+    links.push({
+      id: `screenplay-page-${source}-${target}`,
+      source,
+      target,
+      sourceHandle: "text",
+      targetHandle: "text",
+      data: { relation: SCREENPLAY_PAGE_RELATION },
+    });
+  }
+
+  const pageNumberById = new Map(uniqueNodeIds.map((nodeId, index) => [nodeId, index + 1]));
+  const flowNodes = (flow.flowNodes || []).map((node) => {
+    const pageNumber = pageNumberById.get(node.id);
+    if (!pageNumber) return node;
+    return { ...node, data: { ...node.data, pageNumber } };
+  });
+
+  return {
+    ...projectData,
+    flow: { ...flow, flowNodes, links },
+  };
 };
 
 export const splitScreenplayDocumentAtLine = (body: string, lineIndex: number) => {
@@ -164,8 +232,11 @@ export const findAutomaticPageBreakLine = (
   capacity = DEFAULT_SCREENPLAY_PAGE_CAPACITY
 ) => {
   const lines = analyzeFountainLines(body);
+  let lastContentIndex = lines.length - 1;
+  while (lastContentIndex >= 0 && !lines[lastContentIndex].raw.trim()) lastContentIndex -= 1;
+  if (lastContentIndex < 0) return null;
   let used = 0;
-  for (const line of lines) {
+  for (const line of lines.slice(0, lastContentIndex + 1)) {
     const next = used + getLineCapacity(line);
     if (next > capacity && line.index > 0) return line.index;
     used = next;

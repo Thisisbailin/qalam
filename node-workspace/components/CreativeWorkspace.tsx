@@ -39,6 +39,7 @@ import type {
   AgentScriptEditProposalBatch,
   StyloSubmitRequest,
   ScriptDocumentCommit,
+  ScriptPageReorderCommit,
   ScriptPageSplitCommit,
 } from "./stylo/interactionTypes";
 import { saveActiveFlowIntoProjects } from "../foundation/scaffold";
@@ -47,7 +48,11 @@ import { addPinoardNote, ensurePinoardForText } from "../../utils/pinoardWorkspa
 import { readNodeFlowImportFile } from "../nodeflow/package";
 import { removeLookbookIdentity, syncLookbookIdentitiesFromFountain } from "../../utils/lookbookIdentities";
 import { analyzeScreenplay, createScreenplayPreview } from "../screenplay/fountainEngine";
-import { getConnectedScriptPageSequence, SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
+import {
+  getConnectedScriptPageSequence,
+  reorderConnectedScriptPages,
+  SCREENPLAY_PAGE_RELATION,
+} from "../screenplay/manusPages";
 import {
   createManusMembershipLink,
   getManusFolderForPage,
@@ -724,6 +729,23 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     [setProjectData]
   );
 
+  const reorderScriptDocuments = useCallback(
+    ({ orderedNodeIds }: ScriptPageReorderCommit) => {
+      const updatedAt = Date.now();
+      setProjectData((previous) => {
+        const nextData = reorderConnectedScriptPages(previous, orderedNodeIds);
+        if (nextData === previous) return previous;
+        return {
+          ...nextData,
+          flowProjects: previous.flowProjects?.length
+            ? saveActiveFlowIntoProjects(nextData, updatedAt)
+            : previous.flowProjects,
+        };
+      });
+    },
+    [setProjectData]
+  );
+
   useEffect(() => {
     if (!snapToGrid) setSnapGuide(null);
   }, [snapToGrid]);
@@ -873,11 +895,16 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     if (typeof document === "undefined") return;
     const syncHost = () => {
       setFoundationViewportHost(document.getElementById("script-foundation-viewport-host"));
-      setFoundationViewportTrayHost(document.getElementById("script-foundation-viewport-tray-host"));
+      setFoundationViewportTrayHost(document.getElementById("script-foundation-dock-tray-host"));
     };
     syncHost();
     const frame = window.requestAnimationFrame(syncHost);
-    return () => window.cancelAnimationFrame(frame);
+    const observer = new MutationObserver(syncHost);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, [editingScriptNodeId]);
 
   const handleToggleReadingMode = useCallback(() => {
@@ -1607,6 +1634,9 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
         accountThemeControls={accountThemeControls}
         showGlobalAccountTrigger
         globalAccountHostId="script-foundation-account-host"
+        globalDockTrayHostId="script-foundation-dock-tray-host"
+        activeDockTray={activeDockTray}
+        onDockTrayChange={setActiveDockTray}
         showToolbar={false}
         variant="embedded"
       />
@@ -1625,6 +1655,9 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
               onToggleMiniMap={() => setShowMiniMap((prev) => !prev)}
               readingMode={readingMode}
               onToggleReadingMode={handleToggleReadingMode}
+              expanded={activeDockTray === "viewport"}
+              onExpandedChange={(expanded) => setActiveDockTray(expanded ? "viewport" : null)}
+              trayHost={foundationViewportTrayHost}
             />,
             foundationViewportHost
           )
@@ -1683,6 +1716,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
           onCommitScriptDocument={commitScriptDocument}
           onDeleteLookbookIdentity={deleteLookbookIdentity}
           onSplitScriptDocument={splitScriptDocument}
+          onReorderScriptDocuments={reorderScriptDocuments}
           onOpenLookbook={(identityNodeId) => {
             setEditingScriptNodeId(null);
             setActiveLookbookNodeId(identityNodeId);

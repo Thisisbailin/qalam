@@ -45,3 +45,7 @@ export type ScriptPageSplitCommit = {
   sourceContent: string;
   nextContent: string;
 };
+
+export type ScriptPageReorderCommit = {
+  orderedNodeIds: string[];
+};

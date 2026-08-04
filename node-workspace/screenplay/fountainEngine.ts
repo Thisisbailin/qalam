@@ -15,6 +15,8 @@ export const SCREENPLAY_LINE_KINDS = [
   "page_break",
 ] as const;
 
+export const SCREENPLAY_PAGE_LINE_COUNT = 54;
+
 export type ScreenplayLineKind = (typeof SCREENPLAY_LINE_KINDS)[number];
 
 export type ScreenplayLine = {
@@ -567,7 +569,7 @@ export const analyzeScreenplay = (
     .reduce((total, line) => total + Array.from(line.content.replace(/\s/g, "")).length, 0);
   const glyphs = visibleLines.reduce((total, line) => total + Array.from(line.content.replace(/\s/g, "")).length, 0);
   const words = visibleLines.reduce((total, line) => total + (line.content.match(/[\p{L}\p{N}]+/gu)?.length || 0), 0);
-  const estimatedPages = Math.max(1, Math.ceil(visibleLines.length / 52));
+  const estimatedPages = Math.max(1, Math.ceil(visibleLines.length / SCREENPLAY_PAGE_LINE_COUNT));
 
   return {
     lines,

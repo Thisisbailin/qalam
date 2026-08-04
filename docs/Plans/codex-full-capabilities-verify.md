@@ -9,7 +9,7 @@
 - AC5：`.codex/config.toml` 使用 `default_tools_approval_mode = "writes"`；manifest 单测验证只读与 destructive annotations；通过。
 - AC6：完整 manifest 不含两项 `generation_approval` 工具；`APP_REVIEW_REQUIRED` 阻断 Fountain 正文持久化；通过。
 - AC7：专项测试、Worker dry-run、Pages Functions build、生产应用 build 通过。严格全仓 typecheck 只有既有 screenplay/service 错误；全仓测试 244/245，通过项包含全部 Codex 与 realtime 测试，唯一失败来自用户进行中的 `publicAccountSquare`/FlowSurface 断言。
-- AC8：等待生产部署与用户在新版授权 UI 执行最终完整 scope 确认后补充真实创建→读取→清理结果。
+- AC8：生产 `project_full` 配对后，在 `flow-project-main` 创建 `Codex 接入临时验证` Foundation time block，读取确认后删除，再次读取确认不存在；revision `236476 → 236483 → 236485`，通过且无测试对象残留。
 
 ## Build Evidence
 
@@ -19,6 +19,10 @@
 - `npx wrangler pages functions build`：通过；仅有现存 Agents SDK Node builtin compatibility warnings。
 - `npm run build`：通过，7278 modules transformed。
 - SQLite memory migration：0012 → 0013 后可同时插入 `project_read` 与 `project_full`，旧列结构保留并新增 `requested_scope`。
+- D1 remote migration：`0013_codex_full_project_access.sql` 应用成功。
+- Realtime Worker production：version `f2964090-560f-4d3e-b7e2-fda1e2116cb4`。
+- Pages production：deployment `55565cd6-fd01-4ad4-8043-7d0dec6cdd27`，source `adac40f`。
+- 生产 MCP manifest：scope `project_full`，15 个共享工具；临时 block 创建、读取、删除、缺失复读全部通过。
 
 ## Platform Difference Checks
 

@@ -80,29 +80,24 @@ test("Pinoard notes remain ordinary text nodes and support add, edit, and delete
   assert.ok(removed.flow?.flowNodes?.some((node) => node.id === prepared.pinoardId));
 });
 
-test("Pinoard focus reuses Canvas Flow text nodes without a separate module surface", () => {
+test("Pinoard opens as an independent editor workspace while Flow keeps memberships", () => {
   const flowSource = readFileSync("node-workspace/components/FlowSurface.tsx", "utf8");
   const workspaceSource = readFileSync("node-workspace/components/CreativeWorkspace.tsx", "utf8");
+  const panelSource = readFileSync("node-workspace/components/PinoardPanel.tsx", "utf8");
   const nodeSource = readFileSync("node-workspace/nodes/PinoardNode.tsx", "utf8");
   const nodeStyles = readFileSync("node-workspace/styles/nodeflow.css", "utf8");
 
   assert.match(flowSource, /label: "Pinoard"[\s\S]*label: "Manus"/);
-  assert.match(flowSource, /buildFocusedWrapperLayout/);
-  assert.match(flowSource, /focusedWrapperMemberIds\.has\(node\.id\)/);
-  assert.match(flowSource, /focusedLayout \? "wrapper-focus-node"/);
-  assert.match(flowSource, /nodesDraggable: !isLocked && !focusedWrapperId/);
+  assert.match(flowSource, /isCollapsiblePinoard/);
+  assert.match(flowSource, /flowContentTruncated/);
   assert.match(workspaceSource, /ensurePinoardForText\(projectData, textNodeId\)/);
-  assert.match(workspaceSource, /focusedWrapperId: activePinoard\?\.pinoardId \|\| null/);
-  assert.match(workspaceSource, /className="wrapper-focus-toolbar"/);
-  assert.doesNotMatch(workspaceSource, /PinoardPanel/);
-  assert.doesNotMatch(workspaceSource, /pinoard-toolbar__identity/);
-  assert.match(nodeStyles, /\.react-flow__node\.wrapper-focus-node \.node-card-base/);
-  assert.match(nodeStyles, /\.wrapper-focus-toolbar/);
-  assert.match(nodeSource, /nodeType="pinoard-blueprint"/);
-  assert.match(nodeSource, /pinoard-blueprint__upper/);
-  assert.match(nodeSource, /pinoard-blueprint__route/);
-  assert.match(nodeStyles, /\.pinoard-blueprint__upper[\s\S]*clip-path: polygon/);
-  assert.match(nodeStyles, /\.pinoard-blueprint__paper-stack[\s\S]*#e8e3d8/);
-  assert.match(nodeStyles, /\.pinoard-blueprint__pin[\s\S]*radial-gradient/);
-  assert.match(nodeStyles, /\.pinoard-blueprint__fold-shadow/);
+  assert.match(workspaceSource, /<PinoardPanel/);
+  assert.doesNotMatch(workspaceSource, /focusedWrapperId: activePinoard/);
+  assert.match(panelSource, /className="pinoard-workspace"/);
+  assert.match(panelSource, /getPinoardMembers/);
+  assert.match(panelSource, /updatePinoardNote/);
+  assert.match(nodeSource, /nodeType="pinoard-wrapper"/);
+  assert.match(nodeSource, /pinoard-wrapper-node__sheet--front/);
+  assert.match(nodeStyles, /\.pinoard-wrapper-node__sheet--front/);
+  assert.match(nodeStyles, /\.pinoard-wrapper-node__pin/);
 });

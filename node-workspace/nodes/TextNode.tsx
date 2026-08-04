@@ -11,6 +11,10 @@ import {
     resolveMentionTarget,
     toSearch,
 } from "../utils/entityBindings";
+import {
+    classifyIncomingTextProjection,
+    recordPendingTextEcho,
+} from "./textProjection";
 
 type Props = {
     id: string;
@@ -137,7 +141,7 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
     const lastHtmlRef = useRef<string>("");
     const pendingSelectionRef = useRef<number | null>(null);
     const baseStyleRef = useRef<{ height?: string; minHeight?: string } | null>(null);
-    const isLocalUpdateRef = useRef(false);
+    const pendingLocalTextEchoesRef = useRef<string[]>([]);
     const skipNextCursorUpdateRef = useRef(false);
     const skipBeforeInputRef = useRef(false);
     const [draftText, setDraftText] = useState(data.text || "");
@@ -215,17 +219,21 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
     const isDocumentTextNode = typeof data.episodeId === "number" || typeof data.documentId === "string";
     const isReadOnly = data.readOnly === true;
     const isAgentReviewPending = data.agentReviewPending === true;
+    const isFlowPreviewTruncated = data.flowContentTruncated === true && !isFocused;
+    const renderedText = isFlowPreviewTruncated && draftText.length > 600
+        ? `${draftText.slice(0, 600).trimEnd()}…`
+        : draftText;
 
     const renderedHtml = useMemo(() => {
-        if (isScriptDocument || !draftText) return "";
+        if (isScriptDocument || !renderedText) return "";
         const parts: string[] = [];
         let lastIndex = 0;
         const regex = /@([\w\u4e00-\u9fa5\-\/]+)/g;
         let match: RegExpExecArray | null;
-        while ((match = regex.exec(draftText))) {
+        while ((match = regex.exec(renderedText))) {
             const start = match.index;
             const end = start + match[0].length;
-            parts.push(escapeHtml(draftText.slice(lastIndex, start)));
+            parts.push(escapeHtml(renderedText.slice(lastIndex, start)));
             const name = match[1];
             const hit = resolveMention(name);
             const kind = hit?.kind || "unknown";
@@ -238,9 +246,9 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
             );
             lastIndex = end;
         }
-        parts.push(escapeHtml(draftText.slice(lastIndex)));
+        parts.push(escapeHtml(renderedText.slice(lastIndex)));
         return parts.join("").replace(/\n/g, "<br />");
-    }, [draftText, isScriptDocument, resolveMention]);
+    }, [isScriptDocument, renderedText, resolveMention]);
 
     const updateCursor = useCallback(() => {
         const el = editorRef.current;
@@ -258,7 +266,10 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
         setDraftText(next);
         setCursorPos(nextPos);
         pendingSelectionRef.current = nextPos;
-        isLocalUpdateRef.current = true;
+        pendingLocalTextEchoesRef.current = recordPendingTextEcho(
+            pendingLocalTextEchoesRef.current,
+            next,
+        );
         skipNextCursorUpdateRef.current = true;
         const mentions = computeMentionMeta(next);
         updateNodeData(id, { text: next, atMentions: mentions.atMentions, entityBindings: mentions.entityBindings });
@@ -278,7 +289,10 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
         setCursorPos(pos);
         pendingSelectionRef.current = pos;
         if (!isComposingRef.current) {
-            isLocalUpdateRef.current = true;
+            pendingLocalTextEchoesRef.current = recordPendingTextEcho(
+                pendingLocalTextEchoesRef.current,
+                value,
+            );
             const mentions = computeMentionMeta(value);
             updateNodeData(id, { text: value, atMentions: mentions.atMentions, entityBindings: mentions.entityBindings });
         }
@@ -295,7 +309,10 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
         setDraftText(next);
         setCursorPos(nextPos);
         pendingSelectionRef.current = nextPos;
-        isLocalUpdateRef.current = true;
+        pendingLocalTextEchoesRef.current = recordPendingTextEcho(
+            pendingLocalTextEchoesRef.current,
+            next,
+        );
         const mentions = computeMentionMeta(next);
         updateNodeData(id, { text: next, atMentions: mentions.atMentions, entityBindings: mentions.entityBindings });
         requestAnimationFrame(() => {
@@ -379,12 +396,14 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
 
     useEffect(() => {
         if (isComposingRef.current) return;
-        if (isLocalUpdateRef.current) {
-            isLocalUpdateRef.current = false;
-            return;
-        }
-        if ((data.text || "") === draftText) return;
         const next = data.text || "";
+        const projection = classifyIncomingTextProjection({
+            incoming: next,
+            draft: draftText,
+            pendingLocalEchoes: pendingLocalTextEchoesRef.current,
+        });
+        pendingLocalTextEchoesRef.current = projection.pendingLocalEchoes;
+        if (!projection.adopt) return;
         setDraftText(next);
         setCursorPos(next.length);
         pendingSelectionRef.current = next.length;
@@ -510,7 +529,10 @@ export const TextNode: React.FC<Props & { selected?: boolean }> = ({ data, id, s
                     onBlur={() => {
                         setIsFocused(false);
                         if (!isComposingRef.current && draftText !== data.text) {
-                            isLocalUpdateRef.current = true;
+                            pendingLocalTextEchoesRef.current = recordPendingTextEcho(
+                                pendingLocalTextEchoesRef.current,
+                                draftText,
+                            );
                             const mentions = computeMentionMeta(draftText);
                             updateNodeData(id, { text: draftText, atMentions: mentions.atMentions, entityBindings: mentions.entityBindings });
                         }

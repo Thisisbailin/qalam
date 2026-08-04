@@ -24,6 +24,7 @@ import { CanvasContentLocator } from "./CanvasContentLocator";
 import { EdgeAlignmentGuides } from "./EdgeAlignmentGuides";
 import { ViewportControls } from "./ViewportControls";
 import { ManusPanel } from "./ManusPanel";
+import { PinoardPanel } from "./PinoardPanel";
 import { LookbookStudioPanel } from "./lookbook/LookbookStudioPanel";
 import { AccountWorkspace, type AccountWorkspaceView } from "./AccountWorkspace";
 import { Toast } from "./Toast";
@@ -31,7 +32,7 @@ import { AnnotationModal } from "./AnnotationModal";
 import { AppConfig, ProjectData, SyncState } from "../../types";
 import type { ModuleKey } from "./ModuleBar";
 import { FileText, List } from "lucide-react";
-import { ChatCenteredDots, Plus, X } from "@phosphor-icons/react";
+import { Plus } from "@phosphor-icons/react";
 import type { EdgeAlignmentGuide } from "../utils/edgeAlignment";
 import type { BottomDockTray, SharedCanvasControls, SharedCanvasViewport } from "./canvas/types";
 import { locateCanvasContent, type CanvasContentDirection } from "./canvas/contentLocator";
@@ -44,7 +45,7 @@ import type {
 } from "./stylo/interactionTypes";
 import { saveActiveFlowIntoProjects } from "../foundation/scaffold";
 import { resolveStyloProjectId } from "../../agents/runtime/projectScope";
-import { addPinoardNote, ensurePinoardForText } from "../../utils/pinoardWorkspace";
+import { ensurePinoardForText } from "../../utils/pinoardWorkspace";
 import { readNodeFlowImportFile } from "../nodeflow/package";
 import { removeLookbookIdentity, syncLookbookIdentitiesFromFountain } from "../../utils/lookbookIdentities";
 import { analyzeScreenplay, createScreenplayPreview } from "../screenplay/fountainEngine";
@@ -372,8 +373,6 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     pinoardId: string;
     textNodeId: string | null;
   } | null>(null);
-  const pinoardEntryViewportRef = useRef<SharedCanvasViewport | null>(null);
-  const focusedPinoardIdRef = useRef<string | null>(null);
   const [themeAnchor, setThemeAnchor] = useState<DOMRect | null>(null);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [accountWorkspaceView, setAccountWorkspaceView] = useState<AccountWorkspaceView | null>(null);
@@ -414,21 +413,6 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     },
     [projectData, setProjectData]
   );
-  const handleAddPinoardNote = useCallback(() => {
-    if (!activePinoard) return;
-    let createdNodeId: string | null = null;
-    setProjectData((previous) => {
-      const result = addPinoardNote(previous, activePinoard.pinoardId);
-      createdNodeId = result.nodeId;
-      return result.projectData;
-    });
-    window.setTimeout(() => {
-      if (!createdNodeId) return;
-      setActivePinoard((current) => current
-        ? { ...current, textNodeId: createdNodeId }
-        : current);
-    }, 0);
-  }, [activePinoard, setProjectData]);
   useEffect(() => {
     setStyloSubmitRequest(null);
     setAgentScriptEditProposals(null);
@@ -943,7 +927,6 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
       setActiveLookbookNodeId(nodeId);
     },
     onOpenPinoard: handleOpenPinoard,
-    focusedWrapperId: activePinoard?.pinoardId || null,
     canvasControls: sharedCanvasControls,
     screenToFlowPosition,
     isActive: true,
@@ -963,48 +946,6 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     activeDockTray,
     onDockTrayChange: setActiveDockTray,
   });
-
-  const focusedPinoardNodeSignature = activePinoard
-    ? flowSurface.nodes.map((node) => node.id).sort().join("|")
-    : "";
-
-  useEffect(() => {
-    const focusedPinoardId = activePinoard?.pinoardId || null;
-    if (focusedPinoardId) {
-      if (!focusedPinoardIdRef.current) {
-        pinoardEntryViewportRef.current = getViewport();
-      }
-      focusedPinoardIdRef.current = focusedPinoardId;
-      const frame = window.requestAnimationFrame(() => {
-        const focusedNodes = flowSurface.nodes.filter((node) => node.hidden !== true);
-        if (!focusedNodes.length) return;
-        void fitView({
-          nodes: focusedNodes,
-          padding: 0.16,
-          duration: 360,
-          minZoom,
-          maxZoom: Math.min(maxZoom, 1.2),
-        }).then((didFit) => {
-          if (!didFit || focusedPinoardIdRef.current !== focusedPinoardId) return;
-          const nextViewport = getViewport();
-          setLiveViewport(nextViewport);
-          setZoomValue(nextViewport.zoom);
-          setViewportState(nextViewport);
-        });
-      });
-      return () => window.cancelAnimationFrame(frame);
-    }
-
-    if (!focusedPinoardIdRef.current) return;
-    focusedPinoardIdRef.current = null;
-    const previousViewport = pinoardEntryViewportRef.current;
-    pinoardEntryViewportRef.current = null;
-    if (!previousViewport) return;
-    setLiveViewport(previousViewport);
-    setZoomValue(previousViewport.zoom);
-    setViewportState(previousViewport);
-    void setViewport(previousViewport, { duration: 320 });
-  }, [activePinoard?.pinoardId, fitView, focusedPinoardNodeSignature, flowSurface.nodes, getViewport, maxZoom, minZoom, setViewport, setViewportState]);
 
   useEffect(() => {
     if (!activePinoard) return;
@@ -1476,7 +1417,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
         className="flex-1 relative node-flow-canvas"
         data-zoomed={zoomValue > 1}
         data-connecting={false}
-        data-wrapper-focus={editingScriptNodeId !== null ? "manus" : activePinoard !== null ? "pinoard" : undefined}
+        data-wrapper-focus={editingScriptNodeId !== null ? "manus" : undefined}
         style={backgroundStyle}
         onPointerDownCapture={handleCanvasPointerDownCapture}
         onPointerMoveCapture={handleCanvasPointerMoveCapture}
@@ -1562,21 +1503,6 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
           {flowSurface.miniMap}
         </ReactFlow>
         {flowSurface.overlays}
-
-        {activePinoard ? (
-          <nav className="wrapper-focus-toolbar" aria-label="Pinoard 操作">
-            <button type="button" onClick={handleAddPinoardNote} aria-label="新增文本节点" title="新增文本节点">
-              <Plus size={17} weight="regular" aria-hidden="true" />
-            </button>
-            <button type="button" onClick={() => setStyloOpenRequest((count) => count + 1)} aria-label="打开 Stylo Agent" title="Stylo Agent">
-              <ChatCenteredDots size={17} weight="regular" aria-hidden="true" />
-            </button>
-            <span aria-hidden="true" />
-            <button type="button" onClick={() => setActivePinoard(null)} aria-label="退出 Pinoard 聚焦视图" title="返回完整 Flow">
-              <X size={17} weight="regular" aria-hidden="true" />
-            </button>
-          </nav>
-        ) : null}
 
         {!activePinoard && !hasUserFlowNodes ? (
           <div className="canvas-empty-state" style={{ left: effectiveAgentDockWidth }} role="status">
@@ -1726,6 +1652,16 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
           onClose={() => {
             setEditingScriptNodeId(null);
           }}
+        />
+      ) : null}
+      {activePinoard !== null ? (
+        <PinoardPanel
+          projectData={projectData}
+          setProjectData={setProjectData}
+          pinoardId={activePinoard.pinoardId}
+          initialTextNodeId={activePinoard.textNodeId}
+          onOpenStylo={() => setStyloOpenRequest((count) => count + 1)}
+          onClose={() => setActivePinoard(null)}
         />
       ) : null}
       {activeLookbookNodeId !== null ? (

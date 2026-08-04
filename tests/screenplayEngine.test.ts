@@ -15,6 +15,7 @@ import {
 } from "../node-workspace/screenplay/fountainEngine";
 import {
   classifyIncomingScreenplaySource,
+  mergeConcurrentScreenplayDrafts,
   prepareScreenplayDraftForSave,
 } from "../node-workspace/screenplay/saveCoordinator";
 import {
@@ -129,6 +130,56 @@ test("Manus resolves a connected page sequence from any page and splits at line 
   assert.deepEqual(
     reordered.flow?.flowNodes?.map((node) => node.data?.pageNumber),
     [2, 3, 1]
+  );
+});
+
+test("Manus keeps every manuscript page visible when an ordering edge is missing", () => {
+  const nodes = ["page-a", "page-b", "page-c"].map((id, index) => ({
+    id,
+    type: "scriptPage" as const,
+    position: { x: index * 360, y: 0 },
+    data: {
+      title: "潮汐线",
+      text: `!第${index + 1}页`,
+      documentKind: "script" as const,
+      format: "fountain" as const,
+      manuscriptId: "manuscript-tide",
+      pageNumber: index + 1,
+    },
+  }));
+  const projectData = {
+    flow: {
+      flowNodes: nodes,
+      links: [
+        { id: "bc", source: "page-b", target: "page-c", data: { relation: "screenplay-page" as const } },
+      ],
+    },
+  } as ProjectData;
+
+  assert.deepEqual(
+    getConnectedScriptPageSequence(projectData, "page-c").map((node) => node.id),
+    ["page-a", "page-b", "page-c"]
+  );
+});
+
+test("Manus folder membership recovers legacy pages without a manuscript id", () => {
+  const projectData = {
+    flow: {
+      flowNodes: [
+        { id: "manus", type: "folder", position: { x: 0, y: 0 }, data: { folderKind: "manus" } },
+        { id: "page-a", type: "scriptPage", position: { x: 100, y: 0 }, data: { pageNumber: 1 } },
+        { id: "page-b", type: "scriptPage", position: { x: 460, y: 0 }, data: { pageNumber: 2 } },
+      ],
+      links: [
+        { id: "ma", source: "manus", target: "page-a", data: { relation: "folder-membership" as const } },
+        { id: "mb", source: "manus", target: "page-b", data: { relation: "folder-membership" as const } },
+      ],
+    },
+  } as ProjectData;
+
+  assert.deepEqual(
+    getConnectedScriptPageSequence(projectData, "page-b").map((node) => node.id),
+    ["page-a", "page-b"]
   );
 });
 
@@ -321,6 +372,32 @@ test("autosave coordinator ignores stale echoes and adopts real external changes
     title: "剧本文档",
     body: "!A\n!B",
   });
+});
+
+test("screenplay drafts auto-merge disjoint text edits and flag overlapping replacements", () => {
+  const base = { title: "第一场", body: "第一行\n第二行" };
+  const disjoint = mergeConcurrentScreenplayDrafts(
+    base,
+    { ...base, body: "第一行（本地）\n第二行" },
+    { ...base, body: "第一行\n第二行（远端）" },
+  );
+  assert.deepEqual(disjoint.conflicts, []);
+  assert.match(disjoint.merged.body, /本地/);
+  assert.match(disjoint.merged.body, /远端/);
+
+  const overlapping = mergeConcurrentScreenplayDrafts(
+    base,
+    { ...base, body: "本地替换\n第二行" },
+    { ...base, body: "远端替换\n第二行" },
+  );
+  assert.deepEqual(overlapping.conflicts, ["body"]);
+
+  const titleConflict = mergeConcurrentScreenplayDrafts(
+    base,
+    { ...base, title: "第一场·本地" },
+    { ...base, title: "第一场·远端" },
+  );
+  assert.deepEqual(titleConflict.conflicts, ["title"]);
 });
 
 test("agent screenplay patches remain reviewable and deterministic", () => {

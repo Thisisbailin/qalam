@@ -1,3 +1,8 @@
+import {
+  canAutoMergeConcurrentText,
+  mergeConcurrentText,
+} from "../../collaboration/threeWayTextMerge";
+
 export type ScreenplayDraftSnapshot = {
   title: string;
   body: string;
@@ -10,6 +15,11 @@ export type PendingScreenplaySave = {
 
 export type IncomingSourceDecision = "acknowledge" | "stale" | "adopt" | "conflict" | "unchanged";
 
+export type ScreenplayDraftMerge = {
+  merged: ScreenplayDraftSnapshot;
+  conflicts: Array<"title" | "body">;
+};
+
 export const screenplayDraftsEqual = (left: ScreenplayDraftSnapshot, right: ScreenplayDraftSnapshot) =>
   left.title === right.title && left.body === right.body;
 
@@ -19,6 +29,33 @@ export const prepareScreenplayDraftForSave = (draft: ScreenplayDraftSnapshot): S
   // structural inference here can silently change untouched lines during autosave.
   body: draft.body.replace(/\r\n?/g, "\n"),
 });
+
+export const mergeConcurrentScreenplayDrafts = (
+  base: ScreenplayDraftSnapshot,
+  local: ScreenplayDraftSnapshot,
+  remote: ScreenplayDraftSnapshot,
+): ScreenplayDraftMerge => {
+  const conflicts: ScreenplayDraftMerge["conflicts"] = [];
+  const mergeField = (field: "title" | "body") => {
+    if (local[field] === base[field]) return remote[field];
+    if (remote[field] === base[field] || local[field] === remote[field]) return local[field];
+    // A title is a semantic register, not a collaborative document. Two
+    // distinct title changes require an explicit choice even if their raw
+    // character ranges would be mechanically mergeable.
+    if (
+      field === "title"
+      || !canAutoMergeConcurrentText(base[field], local[field], remote[field])
+    ) {
+      conflicts.push(field);
+      return local[field];
+    }
+    return mergeConcurrentText(base[field], local[field], remote[field]);
+  };
+  return {
+    merged: { title: mergeField("title"), body: mergeField("body") },
+    conflicts,
+  };
+};
 
 export const classifyIncomingScreenplaySource = (input: {
   source: ScreenplayDraftSnapshot;

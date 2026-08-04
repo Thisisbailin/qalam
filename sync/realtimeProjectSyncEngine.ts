@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import type { ProjectData, SyncStatus } from "../types";
 import {
   applyProjectSnapshot,
+  applyProjectSnapshotDelta,
   applyProjectNodeGeometryPatches,
   decodeUpdateBase64,
   encodeUpdateBase64,
@@ -136,6 +137,8 @@ export class RealtimeProjectSyncEngine {
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private latestInput: ProjectData | null = null;
   private stagedLocalInput: ProjectData | null = null;
+  private stagedLocalBase: ProjectData | null = null;
+  private bootstrapBase: ProjectData | null = null;
   private latestLocal: ProjectData | null = null;
   private latestLocalFingerprint: string | null = null;
   private latestLocalByteLength = 0;
@@ -180,6 +183,7 @@ export class RealtimeProjectSyncEngine {
     const initialLocal = this.options.codec.snapshot(local);
     const initialFingerprint = this.options.codec.fingerprint(initialLocal);
     const initialByteLength = this.assertSnapshotCanSync(initialLocal);
+    this.bootstrapBase = initialLocal;
     this.latestLocal = initialLocal;
     this.latestLocalFingerprint = initialFingerprint;
     this.latestLocalByteLength = initialByteLength;
@@ -210,36 +214,12 @@ export class RealtimeProjectSyncEngine {
         readProjectSnapshot<ProjectData & Record<string, unknown>>(this.doc),
       );
       const persistedFingerprint = this.options.codec.fingerprint(persistedProject);
-      if (persistedFingerprint !== initialFingerprint) {
-        if (recoveredOutbox.length) {
-          // The outbox is an explicit record of edits that were accepted by
-          // this client but not yet acknowledged by the server. It is newer
-          // than a separately debounced localStorage snapshot even when an
-          // action (for example geometry) did not advance the project revision.
-          this.applyDocumentToApp();
-        } else {
-          const initialIsEmpty = this.options.codec.isEmpty(initialLocal);
-          const persistedIsEmpty = this.options.codec.isEmpty(persistedProject);
-          const initialRevision = this.options.codec.revision?.(initialLocal) ?? null;
-          const persistedRevision = this.options.codec.revision?.(persistedProject) ?? null;
-          const persistedIsNewer = initialIsEmpty && !persistedIsEmpty
-            || (
-              !persistedIsEmpty
-              && initialRevision !== null
-              && persistedRevision !== null
-              && persistedRevision > initialRevision
-            );
-          if (persistedIsNewer) {
-            this.applyDocumentToApp();
-          } else {
-            this.bootstrapLocalDirty = true;
-            applyProjectSnapshot(
-              this.doc,
-              initialLocal as unknown as Record<string, unknown>,
-              LOCAL_ORIGIN,
-            );
-          }
-        }
+      if (persistedFingerprint !== initialFingerprint && recoveredOutbox.length) {
+        // Only a durable outbox proves that this device has authored work not
+        // yet acknowledged by the cloud. A newer-looking localStorage snapshot
+        // is not authority and must never be uploaded merely because this
+        // client happened to open later.
+        this.applyDocumentToApp();
       }
     } else if (!this.options.codec.isEmpty(initialLocal)) {
       // The primary local project store can survive while the Yjs checkpoint
@@ -268,6 +248,7 @@ export class RealtimeProjectSyncEngine {
       const patches = this.expectedGeometryPatches;
       this.expectedGeometryPatches = [];
       this.latestInput = local;
+      if (this.stagedLocalInput) this.stagedLocalInput = local;
       this.latestLocal = patchProjectSyncSnapshotGeometry(
         this.latestLocal,
         local,
@@ -286,7 +267,9 @@ export class RealtimeProjectSyncEngine {
       }
       return;
     }
+    const previousInput = this.latestInput;
     this.expectedGeometryPatches = [];
+    if (!this.stagedLocalBase && previousInput) this.stagedLocalBase = previousInput;
     this.latestInput = local;
     this.stagedLocalInput = local;
     if (this.stageApplyTimer) clearTimeout(this.stageApplyTimer);
@@ -315,6 +298,8 @@ export class RealtimeProjectSyncEngine {
   private applyStagedLocal() {
     const local = this.stagedLocalInput;
     this.stagedLocalInput = null;
+    const baseInput = this.stagedLocalBase;
+    this.stagedLocalBase = null;
     if (!local || this.disposed) return;
     const next = this.options.codec.snapshot(local);
     const nextByteLength = this.measureSnapshot(next);
@@ -333,23 +318,42 @@ export class RealtimeProjectSyncEngine {
     this.latestLocal = next;
     this.latestLocalFingerprint = fingerprint;
     this.latestLocalByteLength = nextByteLength;
-    if (!this.ready) {
-      this.bootstrapLocalDirty = true;
-      // A real edit made while the socket is connecting is still an offline
-      // edit: apply and checkpoint it immediately. The initial React effect is
-      // filtered above by fingerprint, so it no longer creates a false upload.
-      applyProjectSnapshot(
-        this.doc,
-        this.latestLocal as unknown as Record<string, unknown>,
-        LOCAL_ORIGIN,
+    if (!this.ready && this.bootstrapWithoutPersistedBase && isProjectDocumentEmpty(this.doc)) {
+      // A fresh device has no trusted CRDT base yet. Keep the visible edit as a
+      // semantic delta until the server snapshot arrives; seeding a Y.Doc with
+      // the device's old full snapshot would let it overwrite newer cloud data.
+      this.bootstrapLocalDirty = Boolean(
+        this.bootstrapBase
+        && this.options.codec.fingerprint(this.bootstrapBase) !== fingerprint
       );
       return;
     }
-    applyProjectSnapshot(
-      this.doc,
-      this.latestLocal as unknown as Record<string, unknown>,
-      LOCAL_ORIGIN,
-    );
+    if (!this.ready) {
+      this.bootstrapLocalDirty = true;
+      if (baseInput) {
+        const base = this.options.codec.snapshot(baseInput);
+        applyProjectSnapshotDelta(
+          this.doc,
+          base as unknown as Record<string, unknown>,
+          next as unknown as Record<string, unknown>,
+          LOCAL_ORIGIN,
+        );
+      } else {
+        applyProjectSnapshot(this.doc, next as unknown as Record<string, unknown>, LOCAL_ORIGIN);
+      }
+      return;
+    }
+    if (baseInput) {
+      const base = this.options.codec.snapshot(baseInput);
+      applyProjectSnapshotDelta(
+        this.doc,
+        base as unknown as Record<string, unknown>,
+        next as unknown as Record<string, unknown>,
+        LOCAL_ORIGIN,
+      );
+    } else {
+      applyProjectSnapshot(this.doc, next as unknown as Record<string, unknown>, LOCAL_ORIGIN);
+    }
   }
 
   async acquire(local: ProjectData, expectedRevision: number): Promise<RealtimeSyncLease> {
@@ -520,6 +524,7 @@ export class RealtimeProjectSyncEngine {
       const epochChanged = message.type === "sync"
         && Number.isSafeInteger(serverEpoch)
         && serverEpoch !== this.epoch;
+      const awaitingAuthoritativeBootstrap = this.bootstrapWithoutPersistedBase;
       try {
         remoteUpdate = decodeUpdateBase64(message.update);
         if (serverDoc) Y.applyUpdate(serverDoc, remoteUpdate, REMOTE_ORIGIN);
@@ -527,8 +532,7 @@ export class RealtimeProjectSyncEngine {
           const hadLocalChanges = Boolean(
             this.pendingOfflineUpdate
             || this.pendingAcks.size
-            || this.bootstrapLocalDirty
-            || this.bootstrapWithoutPersistedBase
+            || (this.bootstrapLocalDirty && !awaitingAuthoritativeBootstrap)
           );
           const oldLocal = hadLocalChanges && !isProjectDocumentEmpty(this.doc)
             ? this.options.codec.snapshot(
@@ -546,15 +550,16 @@ export class RealtimeProjectSyncEngine {
           this.replaceDocument(remoteUpdate);
           this.replaceConfirmedDocument(remoteUpdate);
           this.epoch = serverEpoch;
-          this.bootstrapLocalDirty = false;
-          this.bootstrapWithoutPersistedBase = false;
           const resetGeneration = message.epochReason === "reset"
             || Boolean(serverDoc && isProjectDocumentEmpty(serverDoc));
-          if (resetGeneration) {
+          if (message.epochReason === "reset") {
             this.latestLocal = null;
             this.latestLocalFingerprint = null;
+            this.bootstrapBase = null;
+            this.bootstrapLocalDirty = false;
+            this.bootstrapWithoutPersistedBase = false;
             this.options.onReset?.("reset");
-          } else if (serverDoc && oldLocal && hadLocalChanges) {
+          } else if (!resetGeneration && serverDoc && oldLocal && hadLocalChanges) {
             const remote = this.options.codec.snapshot(
               readProjectSnapshot<ProjectData & Record<string, unknown>>(serverDoc),
             );
@@ -598,24 +603,26 @@ export class RealtimeProjectSyncEngine {
             readProjectSnapshot<ProjectData & Record<string, unknown>>(serverDoc),
           )
           : null;
-        const localRevision = this.latestLocal
-          ? this.options.codec.revision?.(this.latestLocal) ?? null
-          : null;
-        const serverRevision = serverProject
-          ? this.options.codec.revision?.(serverProject) ?? null
-          : null;
-        const restoreUncheckpointedLocal = this.bootstrapWithoutPersistedBase
-          && this.latestLocal
-          && (
-            !serverProject
-            || (
-              localRevision !== null
-              && serverRevision !== null
-              && localRevision > serverRevision
-            )
-          );
-        if ((isProjectDocumentEmpty(this.doc) || restoreUncheckpointedLocal) && this.latestLocal) {
-          applyProjectSnapshot(this.doc, this.latestLocal as unknown as Record<string, unknown>, LOCAL_ORIGIN);
+        if (this.bootstrapWithoutPersistedBase && this.latestLocal) {
+          if (!serverProject) {
+            // This is a genuinely empty cloud room (new project), so the first
+            // local snapshot initializes it.
+            applyProjectSnapshot(
+              this.doc,
+              this.latestLocal as unknown as Record<string, unknown>,
+              LOCAL_ORIGIN,
+            );
+          } else if (this.bootstrapLocalDirty && this.bootstrapBase) {
+            // A fresh/stale device edited before the handshake completed.
+            // Replay only what the user changed after opening; the cloud room
+            // remains the baseline for every untouched field and Manus page.
+            applyProjectSnapshotDelta(
+              this.doc,
+              this.bootstrapBase as unknown as Record<string, unknown>,
+              this.latestLocal as unknown as Record<string, unknown>,
+              LOCAL_ORIGIN,
+            );
+          }
         }
         // A visible local snapshot staged before the handshake has already
         // produced field-level Yjs operations against the persisted base.
@@ -623,6 +630,7 @@ export class RealtimeProjectSyncEngine {
         // that arrived from another client in this server sync.
         this.bootstrapLocalDirty = false;
         this.bootstrapWithoutPersistedBase = false;
+        this.bootstrapBase = null;
       }
       this.applyDocumentToApp();
       if (message.type === "sync" && serverDoc) {
@@ -894,11 +902,6 @@ export class RealtimeProjectSyncEngine {
       this.pendingAcks.set(opId, { update, timeout, resolve, reject });
     });
     this.scheduleOutboxPersistence();
-    this.inFlightSends.add(promise);
-    void promise.then(
-      () => this.inFlightSends.delete(promise),
-      () => this.inFlightSends.delete(promise),
-    );
     try {
       this.socket.send(JSON.stringify({
         type: "update",
@@ -908,18 +911,25 @@ export class RealtimeProjectSyncEngine {
         projectBytes: this.latestLocalByteLength,
         epoch: this.epoch,
       }));
-    } catch (cause) {
+    } catch {
       const pending = this.pendingAcks.get(opId);
       if (pending) {
         clearTimeout(pending.timeout);
         this.pendingAcks.delete(opId);
         this.queueUpdate(pending.update, opId);
-        pending.reject(cause instanceof Error ? cause : new Error("实时项目更新发送失败。"));
       }
       this.ready = false;
       this.socket?.close(1011, "Realtime update send failed");
-      return promise;
+      // The operation is back in the durable outbox. Background saving should
+      // transition to offline/retry without producing an unhandled rejection;
+      // synchronous callers verify the pending boundary in applyAndWait.
+      return Promise.resolve(this.serverSeq);
     }
+    this.inFlightSends.add(promise);
+    void promise.then(
+      () => this.inFlightSends.delete(promise),
+      () => this.inFlightSends.delete(promise),
+    );
     this.options.onStatusChange?.("syncing", {
       pendingOps: this.pendingOperationCount(),
       retryCount: 0,
@@ -1101,7 +1111,11 @@ export class RealtimeProjectSyncEngine {
       clearTimeout(this.stageApplyTimer);
       this.stageApplyTimer = null;
     }
+    const previousInput = this.latestInput
+      ? this.options.codec.snapshot(this.latestInput)
+      : this.latestLocal;
     this.stagedLocalInput = null;
+    this.stagedLocalBase = null;
     this.latestInput = snapshot;
     this.latestLocal = snapshot;
     this.latestLocalFingerprint = this.options.codec.fingerprint(snapshot);
@@ -1110,15 +1124,26 @@ export class RealtimeProjectSyncEngine {
       clearTimeout(this.stageTimer);
       this.stageTimer = null;
     }
-    applyProjectSnapshot(this.doc, snapshot as unknown as Record<string, unknown>, LOCAL_ORIGIN);
+    if (previousInput) {
+      applyProjectSnapshotDelta(
+        this.doc,
+        previousInput as unknown as Record<string, unknown>,
+        snapshot as unknown as Record<string, unknown>,
+        LOCAL_ORIGIN,
+      );
+    } else {
+      applyProjectSnapshot(this.doc, snapshot as unknown as Record<string, unknown>, LOCAL_ORIGIN);
+    }
     if (this.stageTimer) {
       clearTimeout(this.stageTimer);
       this.stageTimer = null;
     }
-    this.lastLocalSend = this.flushPendingUpdate();
-    const sendsAtBoundary = Array.from(this.inFlightSends);
-    if (!sendsAtBoundary.length) return this.serverSeq;
-    const receipts = await Promise.all(sendsAtBoundary);
+    const boundaryFlush = this.flushPendingUpdate();
+    this.lastLocalSend = boundaryFlush;
+    const receipts = await Promise.all([boundaryFlush, ...Array.from(this.inFlightSends)]);
+    if (!this.ready || this.pendingOperationCount() > 0) {
+      throw new Error("实时项目更改尚未得到云端确认，Agent 请求未发送。");
+    }
     return Math.max(this.serverSeq, ...receipts);
   }
 

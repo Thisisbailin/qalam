@@ -4,6 +4,7 @@ import * as Y from "yjs";
 import {
   applyProjectNodeGeometryPatches,
   applyProjectSnapshot,
+  applyProjectSnapshotDelta,
   readProjectSnapshot,
 } from "../collaboration/yProjectDocument";
 
@@ -127,6 +128,46 @@ test("concurrent text edits converge without a whole-project conflict choice", (
   assert.equal(leftText, rightText);
   assert.match(leftText, /LEFT/);
   assert.match(leftText, /RIGHT/);
+});
+
+test("a stale client delta cannot delete a Manus page it never observed", () => {
+  const cloud = new Y.Doc();
+  const cloudProject = baseProject();
+  cloudProject.flow.flowNodes = [
+    { id: "page-a", type: "scriptPage", position: { x: 0, y: 0 }, data: { manuscriptId: "manus-1", content: "A" } },
+    { id: "page-b", type: "scriptPage", position: { x: 360, y: 0 }, data: { manuscriptId: "manus-1", content: "B" } },
+  ];
+  applyProjectSnapshot(cloud, cloudProject, "cloud");
+
+  const staleBefore = structuredClone(cloudProject);
+  staleBefore.flow.flowNodes = [structuredClone(cloudProject.flow.flowNodes[1])];
+  const staleAfter = structuredClone(staleBefore);
+  staleAfter.flow.flowNodes[0].data.content = "B edited after login";
+  applyProjectSnapshotDelta(cloud, staleBefore, staleAfter, "stale-device-edit");
+
+  const result = readProjectSnapshot<typeof cloudProject>(cloud);
+  assert.deepEqual(result.flow.flowNodes.map((node: { id: string }) => node.id), ["page-a", "page-b"]);
+  assert.equal(result.flow.flowNodes[0].data.content, "A");
+  assert.equal(result.flow.flowNodes[1].data.content, "B edited after login");
+});
+
+test("delta sync still honors an explicit local page deletion", () => {
+  const doc = new Y.Doc();
+  const before = baseProject();
+  before.flow.flowNodes = [
+    { id: "page-a", type: "scriptPage", position: { x: 0, y: 0 }, data: { content: "A" } },
+    { id: "page-b", type: "scriptPage", position: { x: 360, y: 0 }, data: { content: "B" } },
+  ];
+  applyProjectSnapshot(doc, before, "seed");
+  const after = structuredClone(before);
+  after.flow.flowNodes = [after.flow.flowNodes[1]];
+
+  applyProjectSnapshotDelta(doc, before, after, "delete-page-a");
+
+  assert.deepEqual(
+    readProjectSnapshot<typeof before>(doc).flow.flowNodes.map((node: { id: string }) => node.id),
+    ["page-b"],
+  );
 });
 
 test("node geometry patches update one Yjs node without replacing project content", () => {

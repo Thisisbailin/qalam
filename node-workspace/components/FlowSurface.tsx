@@ -393,7 +393,7 @@ const scriptCreateOptions: ScriptCreateOption[] = [
 
 const SCRIPT_PAGE_NODE_SIZE = { width: 286, height: 356 };
 const MARKDOWN_TEXT_NODE_SIZE = { width: 320, height: 252 };
-const PINOARD_NODE_SIZE = { width: 372, height: 278 };
+const PINOARD_NODE_SIZE = { width: 286, height: 356 };
 
 const getFixedFlowNodeDimensions = (type?: FlowRenderNode["type"] | null) => {
   if (type === "pinoard") return PINOARD_NODE_SIZE;
@@ -2028,6 +2028,7 @@ export const useFlowSurface = ({
           data: {
             ...createDefaultNodeFlowNodeData(node.type),
             ...(node.data || {}),
+            flowContentTruncated: node.type === "text" && typeof node.data?.text === "string" && node.data.text.length > 600,
             wrapperMemberCount: wrapperMemberIds.length,
             wrapperRoot: isLookbookNodeType(node.type) || node.type === "pinoard" || isManusFolderNode(node),
             wrapperPreview,
@@ -3786,7 +3787,8 @@ export const useFlowSurface = ({
       const memberCount = typeof node.data.wrapperMemberCount === "number" ? node.data.wrapperMemberCount : 0;
       const isCollapsibleLookbook = isLookbookNodeType(node.type) && memberCount > 0;
       const isCollapsibleScreenplay = node.type === "folder" && isManusFolderNode(node as unknown as NodeFlowNode) && memberCount > 0;
-      if (!isCollapsibleLookbook && !isCollapsibleScreenplay) return;
+      const isCollapsiblePinoard = node.type === "pinoard" && memberCount > 0;
+      if (!isCollapsibleLookbook && !isCollapsibleScreenplay && !isCollapsiblePinoard) return;
       if (wrapperClickTimerRef.current) clearTimeout(wrapperClickTimerRef.current);
       wrapperClickTimerRef.current = setTimeout(() => {
         wrapperClickTimerRef.current = null;

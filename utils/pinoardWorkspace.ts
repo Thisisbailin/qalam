@@ -162,7 +162,7 @@ export const ensurePinoardForText = (
       x: textNode.position.x - 428,
       y: textNode.position.y + 12,
     },
-    style: { width: 372, height: 278 },
+    style: { width: 286, height: 356 },
     data: {
       title: "Pinoard",
       wrapperCollapsed: false,

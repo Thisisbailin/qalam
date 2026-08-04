@@ -76,7 +76,8 @@ test("account workspace owns project hierarchy and the user square entry", () =>
   assert.match(actionBar, /onOpenAccountWorkspace/);
   assert.match(actionBar, /onOpenUserSquare/);
   assert.doesNotMatch(foundation, /script-foundation-gateway__section--projects/);
-  assert.match(foundation, /Foundation 只保留当前项目内部的时间与空间结构/);
+  assert.doesNotMatch(foundation, /onOpenAccountWorkspace|onOpenUserSquare/);
+  assert.match(foundation, /script-foundation-gateway-card--index/);
 });
 
 test("username and project visibility rules are deterministic", async () => {

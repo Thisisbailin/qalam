@@ -13,6 +13,14 @@ import type { SyncCodec } from "../sync/realtimeSyncTypes";
 import type { ProjectData, SyncStatus } from "../types";
 
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+const waitFor = async (predicate: () => boolean, timeoutMs = 1_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await wait(5);
+  }
+  return true;
+};
 
 const project = (revision: number, x: number): ProjectData => ({
   activeFlowProjectId: "project-main",
@@ -75,6 +83,10 @@ class FakeSocket {
   emit(message: Record<string, unknown>) {
     this.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
   }
+
+  emitRaw(data: string) {
+    this.onmessage?.({ data } as MessageEvent);
+  }
 }
 
 const serverSync = (value: ProjectData, serverSeq = 0) => {
@@ -118,7 +130,7 @@ const createEngine = (input: {
   },
 });
 
-test("a stale local Yjs checkpoint cannot overwrite a newer visible project at startup", async () => {
+test("an unacknowledged localStorage snapshot cannot replace the trusted Yjs checkpoint at startup", async () => {
   const persistedDoc = new Y.Doc();
   applyProjectSnapshot(
     persistedDoc,
@@ -138,8 +150,8 @@ test("a stale local Yjs checkpoint cannot overwrite a newer visible project at s
   const snapshot = readProjectSnapshot<ProjectData & Record<string, unknown>>(
     (engine as any).doc,
   );
-  assert.equal(snapshot.flow?.revision, 2);
-  assert.equal(snapshot.flow?.flowNodes?.[0]?.position.x, 84);
+  assert.equal(snapshot.flow?.revision, 1);
+  assert.equal(snapshot.flow?.flowNodes?.[0]?.position.x, 10);
   assert.equal(applied.length, 0);
   engine.dispose();
 });
@@ -262,7 +274,7 @@ test("an idle server rebase preserves offline edits without overwriting unrelate
   remoteDoc.destroy();
 });
 
-test("startup merge preserves unrelated remote edits instead of replaying a full local snapshot", async () => {
+test("startup adopts cloud state instead of replaying a later-opened device snapshot", async () => {
   const base = project(1, 10);
   const baseDoc = new Y.Doc();
   applyProjectSnapshot(baseDoc, base as unknown as Record<string, unknown>, "base");
@@ -284,15 +296,16 @@ test("startup merge preserves unrelated remote edits instead of replaying a full
   const merged = readProjectSnapshot<ProjectData & Record<string, unknown>>(
     (engine as any).doc,
   );
-  assert.equal(merged.flow?.flowNodes?.[0]?.position.x, 84);
+  assert.equal(merged.flow?.flowNodes?.[0]?.position.x, 10);
   assert.equal(
     merged.flow?.flowNodes?.[0]?.data.markdown,
     "edited on another device",
   );
+  assert.equal(socket.sent.some((message) => message.type === "update"), false);
   engine.dispose();
 });
 
-test("a newer visible local project survives when its Yjs checkpoint is missing", async () => {
+test("a fresh device without a checkpoint treats a non-empty cloud room as authority", async () => {
   const socket = new FakeSocket();
   const engine = createEngine({ socket, persisted: null });
   const local = project(4, 84);
@@ -304,8 +317,39 @@ test("a newer visible local project survives when its Yjs checkpoint is missing"
   const merged = readProjectSnapshot<ProjectData & Record<string, unknown>>(
     (engine as any).doc,
   );
-  assert.equal(merged.flow?.revision, 4);
-  assert.equal(merged.flow?.flowNodes?.[0]?.position.x, 84);
+  assert.equal(merged.flow?.revision, 3);
+  assert.equal(merged.flow?.flowNodes?.[0]?.position.x, 10);
+  assert.equal(socket.sent.some((message) => message.type === "update"), false);
+  engine.dispose();
+});
+
+test("an edit made before first sync replays only its delta over newer cloud pages", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  const edited = project(2, 84);
+  const remote = project(2, 10);
+  remote.flow!.flowNodes!.push({
+    id: "page-added-remotely",
+    type: "scriptPage",
+    position: { x: 380, y: 20 },
+    data: { title: "第二张", manuscriptId: "manus-main", content: "remote page" },
+  });
+  const engine = createEngine({ socket, persisted: null });
+  await engine.start(initial);
+  engine.stage(edited);
+  await wait(10);
+
+  socket.emit(serverSync(remote, 2));
+  await wait(10);
+
+  const merged = readProjectSnapshot<ProjectData & Record<string, unknown>>(
+    (engine as any).doc,
+  );
+  assert.equal(merged.flow?.flowNodes?.find((node) => node.id === "node-1")?.position.x, 84);
+  assert.equal(
+    merged.flow?.flowNodes?.find((node) => node.id === "page-added-remotely")?.data.content,
+    "remote page",
+  );
   assert.ok(socket.sent.some((message) => message.type === "update"));
   engine.dispose();
 });
@@ -319,7 +363,7 @@ test("Agent acquisition waits for an update that was already awaiting ACK", asyn
   socket.emit(serverSync(initial));
 
   engine.stage(changed);
-  await wait(10);
+  await waitFor(() => socket.sent.some((message) => message.type === "update"));
   const updateMessage = socket.sent.find((message) => message.type === "update");
   assert.ok(updateMessage);
   assert.equal(typeof updateMessage.projectBytes, "number");
@@ -536,6 +580,45 @@ test("a malformed remote update is contained and reconnects without mutating the
   engine.dispose();
 });
 
+test("a legacy worker heartbeat validation response cannot enter an error loop", async () => {
+  const socket = new FakeSocket();
+  const statuses: SyncStatus[] = [];
+  const errors: unknown[] = [];
+  const initial = project(1, 10);
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    onStatusChange: (status) => statuses.push(status),
+    onError: (error) => errors.push(error),
+    documentStore: {
+      read: async () => null,
+      write: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+  await engine.start(initial);
+  socket.emit(serverSync(initial));
+
+  (engine as any).sendHeartbeat();
+  socket.emit({ type: "error", error: "Invalid realtime message" });
+  await wait();
+
+  assert.equal(errors.length, 0);
+  assert.equal(statuses.at(-1), "synced");
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  assert.equal((engine as any).ready, true);
+  engine.dispose();
+});
+
 test("a disconnected unacknowledged operation reuses its id after reconnect", async () => {
   const firstSocket = new FakeSocket();
   const secondSocket = new FakeSocket();
@@ -569,7 +652,7 @@ test("a disconnected unacknowledged operation reuses its id after reconnect", as
   await engine.start(initial);
   firstSocket.emit(serverSyncFromDocument(authority));
   engine.stage(project(2, 84));
-  await wait(10);
+  await waitFor(() => firstSocket.sent.some((message) => message.type === "update"));
   const firstUpdate = firstSocket.sent.find((message) => message.type === "update");
   assert.ok(firstUpdate?.opId);
 
@@ -578,7 +661,7 @@ test("a disconnected unacknowledged operation reuses its id after reconnect", as
   (engine as any).reconnectTimer = null;
   await (engine as any).connect();
   secondSocket.emit(serverSyncFromDocument(authority));
-  await wait(10);
+  await waitFor(() => secondSocket.sent.some((message) => message.type === "update"));
 
   const retriedUpdate = secondSocket.sent.find((message) => message.type === "update");
   assert.equal(retriedUpdate?.opId, firstUpdate.opId);

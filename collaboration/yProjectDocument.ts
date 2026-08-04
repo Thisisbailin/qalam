@@ -213,12 +213,123 @@ const syncMap = (map: Y.Map<unknown>, value: Record<string, unknown>) => {
   entries.forEach(([key, entry]) => syncMapValue(map, key, entry));
 };
 
+const valuesEqual = (left: unknown, right: unknown) =>
+  Object.is(left, right) || stableJson(left) === stableJson(right);
+
+const syncIdArrayDelta = (
+  wrapper: Y.Map<unknown>,
+  previous: Array<Record<string, unknown> & { id: string }>,
+  next: Array<Record<string, unknown> & { id: string }>,
+) => {
+  let items = wrapper.get(ITEMS_KEY);
+  let order = wrapper.get(ORDER_KEY);
+  if (!(items instanceof Y.Map)) {
+    items = new Y.Map<unknown>();
+    wrapper.set(ITEMS_KEY, items);
+  }
+  if (!(order instanceof Y.Array)) {
+    order = new Y.Array<string>();
+    wrapper.set(ORDER_KEY, order);
+  }
+  const itemMap = items as Y.Map<unknown>;
+  const orderArray = order as Y.Array<string>;
+  if (wrapper.get(KIND_KEY) !== ID_ARRAY_KIND) wrapper.set(KIND_KEY, ID_ARRAY_KIND);
+
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  const nextById = new Map(next.map((item) => [item.id, item]));
+  previousById.forEach((_item, id) => {
+    if (!nextById.has(id)) itemMap.delete(id);
+  });
+  nextById.forEach((item, id) => {
+    const previousItem = previousById.get(id);
+    if (previousItem && valuesEqual(previousItem, item)) return;
+    const existing = itemMap.get(id);
+    if (previousItem && existing instanceof Y.Map && existing.get(KIND_KEY) !== ID_ARRAY_KIND) {
+      syncMapDelta(existing, previousItem, item);
+    } else {
+      itemMap.set(id, createSharedObject(item));
+    }
+  });
+
+  const previousOrder = previous.map((item) => item.id);
+  const nextOrder = next.map((item) => item.id);
+  if (!valuesEqual(previousOrder, nextOrder)) {
+    const nextIds = new Set(nextOrder);
+    const previousIds = new Set(previousOrder);
+    const remoteOnly = orderArray.toArray().filter(
+      (id): id is string => typeof id === "string" && !previousIds.has(id) && !nextIds.has(id) && itemMap.has(id),
+    );
+    const mergedOrder = [...nextOrder, ...remoteOnly];
+    if (orderArray.length) orderArray.delete(0, orderArray.length);
+    if (mergedOrder.length) orderArray.insert(0, mergedOrder);
+  }
+};
+
+const syncMapDelta = (
+  map: Y.Map<unknown>,
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+) => {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  keys.forEach((key) => {
+    const previousHasKey = Object.hasOwn(previous, key) && previous[key] !== undefined;
+    const nextHasKey = Object.hasOwn(next, key) && next[key] !== undefined;
+    if (!nextHasKey) {
+      if (previousHasKey) map.delete(key);
+      return;
+    }
+    const previousValue = previous[key];
+    const nextValue = next[key];
+    if (previousHasKey && valuesEqual(previousValue, nextValue)) return;
+
+    const existing = map.get(key);
+    if (
+      previousHasKey &&
+      isRecord(previousValue) &&
+      isRecord(nextValue) &&
+      existing instanceof Y.Map &&
+      existing.get(KIND_KEY) !== ID_ARRAY_KIND
+    ) {
+      syncMapDelta(existing, previousValue, nextValue);
+      return;
+    }
+    if (
+      previousHasKey &&
+      Array.isArray(previousValue) &&
+      Array.isArray(nextValue) &&
+      isIdArrayValue(key, previousValue) &&
+      isIdArrayValue(key, nextValue) &&
+      existing instanceof Y.Map &&
+      existing.get(KIND_KEY) === ID_ARRAY_KIND
+    ) {
+      syncIdArrayDelta(existing, previousValue, nextValue);
+      return;
+    }
+    syncMapValue(map, key, nextValue);
+  });
+};
+
 export const applyProjectSnapshot = (
   doc: Y.Doc,
   project: Record<string, unknown>,
   origin: unknown,
 ) => {
   doc.transact(() => syncMap(doc.getMap("project"), project), origin);
+};
+
+/**
+ * Applies only changes authored between two application snapshots. Remote
+ * fields and id-array members absent from both snapshots remain untouched.
+ * Deletion is therefore explicit (present before, absent after) instead of
+ * being inferred from a stale client's incomplete project image.
+ */
+export const applyProjectSnapshotDelta = (
+  doc: Y.Doc,
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+  origin: unknown,
+) => {
+  doc.transact(() => syncMapDelta(doc.getMap("project"), previous, next), origin);
 };
 
 export type ProjectNodeGeometryPatch = {

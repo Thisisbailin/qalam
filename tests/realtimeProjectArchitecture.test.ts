@@ -237,6 +237,7 @@ test("realtime connections recover from transient initialization and stale close
   const worker = read("realtime-worker/src/index.ts");
 
   assert.match(worker, /new WebSocketRequestResponsePair\("ping", "pong"\)/);
+  assert.match(worker, /if \(raw === "ping"\) \{[\s\S]*this\.sendSocketMessage\(socket, "pong"\)/);
   assert.match(worker, /getWebSockets\(\)\.filter\(isOpenSocket\)/);
   assert.match(worker, /this\.identityPromise === guarded[\s\S]*this\.identityPromise = null/);
   assert.match(worker, /this\.loadPromise === guarded[\s\S]*this\.loadPromise = null/);

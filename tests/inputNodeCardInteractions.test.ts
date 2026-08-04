@@ -27,7 +27,7 @@ test("input cards expose desktop and touch context actions without regressing me
 
   const finalMobilePass = stylesheet.slice(stylesheet.lastIndexOf("/* Mobile dock: final cascade layer"));
   assert.match(finalMobilePass, /bottom:\s*calc\(8px \+ env\(safe-area-inset-bottom, 0px\)\)/);
-  assert.match(finalMobilePass, /\.script-foundation-dock__bar \.script-foundation-bar-label[\s\S]*?width:\s*44px !important;/);
+  assert.match(finalMobilePass, /\.script-foundation-dock\.script-foundation-filmstrip \.script-foundation-bar-label[\s\S]*?width:\s*44px !important;/);
   assert.match(finalMobilePass, /grid-template-columns:\s*repeat\(3, 44px\)/);
   assert.match(finalMobilePass, /\.input-node-context-menu__swatch\s*\{[\s\S]*?width:\s*44px;/);
 });

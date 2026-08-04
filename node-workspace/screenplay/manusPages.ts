@@ -34,8 +34,21 @@ export const createBlankScreenplayPageBody = (
 const getScriptNodes = (projectData: ProjectData) =>
   (projectData.flow?.flowNodes || []).filter((node) => node.type === "scriptPage");
 
+const readPageNumber = (node: NodeFlowNode) => {
+  const pageNumber = Number(node.data?.pageNumber);
+  return Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : Number.POSITIVE_INFINITY;
+};
+
 const compareNodes = (left: NodeFlowNode, right: NodeFlowNode) =>
-  left.position.y - right.position.y || left.position.x - right.position.x || left.id.localeCompare(right.id);
+  readPageNumber(left) - readPageNumber(right) ||
+  left.position.y - right.position.y ||
+  left.position.x - right.position.x ||
+  left.id.localeCompare(right.id);
+
+const readManuscriptId = (node?: NodeFlowNode | null) => {
+  const manuscriptId = node?.data?.manuscriptId;
+  return typeof manuscriptId === "string" ? manuscriptId.trim() : "";
+};
 
 export const getConnectedScriptPageSequence = (
   projectData: ProjectData,
@@ -43,38 +56,75 @@ export const getConnectedScriptPageSequence = (
 ): NodeFlowNode[] => {
   const scriptNodes = getScriptNodes(projectData);
   if (!scriptNodes.length) return [];
+  const allNodes = projectData.flow?.flowNodes || [];
   const nodeById = new Map(scriptNodes.map((node) => [node.id, node]));
+  const allNodeById = new Map(allNodes.map((node) => [node.id, node]));
   const anchor = (anchorNodeId && nodeById.get(anchorNodeId)) || scriptNodes[0];
-  const links = (projectData.flow?.links || []).filter(
+  const allLinks = projectData.flow?.links || [];
+  const isManusMembership = (link: (typeof allLinks)[number]) =>
+    link.data?.relation === "folder-membership" && (
+      link.data?.folderKind === "manus" ||
+      allNodeById.get(link.source)?.data?.folderKind === "manus"
+    );
+  const pageLinks = allLinks.filter(
     (link) =>
       link.data?.relation === SCREENPLAY_PAGE_RELATION &&
       nodeById.has(link.source) &&
       nodeById.has(link.target)
   );
-  if (!links.length) return [anchor];
 
   const neighbors = new Map<string, Set<string>>();
-  links.forEach((link) => {
+  pageLinks.forEach((link) => {
     if (!neighbors.has(link.source)) neighbors.set(link.source, new Set());
     if (!neighbors.has(link.target)) neighbors.set(link.target, new Set());
     neighbors.get(link.source)?.add(link.target);
     neighbors.get(link.target)?.add(link.source);
   });
-  const component = new Set<string>();
-  const queue = [anchor.id];
-  while (queue.length) {
-    const nodeId = queue.shift();
-    if (!nodeId || component.has(nodeId)) continue;
-    component.add(nodeId);
-    neighbors.get(nodeId)?.forEach((neighborId) => {
-      if (!component.has(neighborId)) queue.push(neighborId);
+
+  // Manus membership is durable domain data. screenplay-page edges are only
+  // a repairable ordering projection, so a delayed edge can never hide a page.
+  const manuscriptId = readManuscriptId(anchor);
+  const folderIds = new Set(
+    allLinks
+      .filter((link) => isManusMembership(link) && link.target === anchor.id)
+      .map((link) => link.source)
+  );
+  const members = new Set<string>([anchor.id]);
+  if (manuscriptId) {
+    scriptNodes.forEach((node) => {
+      if (readManuscriptId(node) === manuscriptId) members.add(node.id);
+    });
+  }
+  if (folderIds.size) {
+    allLinks.forEach((link) => {
+      if (
+        isManusMembership(link) &&
+        folderIds.has(link.source) &&
+        nodeById.has(link.target)
+      ) members.add(link.target);
     });
   }
 
-  const componentLinks = links.filter((link) => component.has(link.source) && component.has(link.target));
+  // Preserve legacy manuscripts that have only ordering edges, without ever
+  // crossing an edge into a different explicit manuscript.
+  const queue = Array.from(members);
+  const traversed = new Set<string>();
+  while (queue.length) {
+    const nodeId = queue.shift();
+    if (!nodeId || traversed.has(nodeId)) continue;
+    traversed.add(nodeId);
+    neighbors.get(nodeId)?.forEach((neighborId) => {
+      const neighborManuscriptId = readManuscriptId(nodeById.get(neighborId));
+      if (manuscriptId && neighborManuscriptId && neighborManuscriptId !== manuscriptId) return;
+      members.add(neighborId);
+      if (!traversed.has(neighborId)) queue.push(neighborId);
+    });
+  }
+
+  const componentLinks = pageLinks.filter((link) => members.has(link.source) && members.has(link.target));
   const incoming = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
-  component.forEach((nodeId) => {
+  members.forEach((nodeId) => {
     incoming.set(nodeId, 0);
     outgoing.set(nodeId, []);
   });
@@ -84,7 +134,7 @@ export const getConnectedScriptPageSequence = (
   });
   outgoing.forEach((targets) => targets.sort((left, right) => compareNodes(nodeById.get(left)!, nodeById.get(right)!)));
 
-  const heads = Array.from(component)
+  const heads = Array.from(members)
     .filter((nodeId) => (incoming.get(nodeId) || 0) === 0)
     .map((nodeId) => nodeById.get(nodeId)!)
     .sort(compareNodes);
@@ -98,7 +148,7 @@ export const getConnectedScriptPageSequence = (
     outgoing.get(nodeId)?.forEach(visit);
   };
   (heads.length ? heads : [anchor]).forEach((node) => visit(node.id));
-  Array.from(component)
+  Array.from(members)
     .map((nodeId) => nodeById.get(nodeId)!)
     .sort(compareNodes)
     .forEach((node) => visit(node.id));

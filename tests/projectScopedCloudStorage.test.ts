@@ -207,6 +207,28 @@ test("epoch rebasing keeps an offline local field and an unrelated remote field"
   assert.equal((merged.flowProjects?.[0].flow.flowNodes?.[0].data as any).markdown, "remote");
 });
 
+test("epoch rebasing retains concurrent insertions in the same text field", () => {
+  const base = projectData("project-a", ["project-a"]);
+  base.flowProjects![0].flow.flowNodes = [{
+    id: "node-a",
+    type: "text",
+    position: { x: 1, y: 2 },
+    data: { markdown: "OPEN" },
+  } as any];
+  base.flow = base.flowProjects![0].flow;
+  const local = structuredClone(base);
+  (local.flowProjects![0].flow.flowNodes![0].data as any).markdown = "OPEN LEFT";
+  local.flow = local.flowProjects![0].flow;
+  const remote = structuredClone(base);
+  (remote.flowProjects![0].flow.flowNodes![0].data as any).markdown = "OPEN RIGHT";
+  remote.flow = remote.flowProjects![0].flow;
+
+  const merged = mergeProjectSnapshotsAcrossEpoch(base, local, remote);
+  const markdown = String((merged.flowProjects?.[0].flow.flowNodes?.[0].data as any).markdown);
+  assert.match(markdown, /LEFT/);
+  assert.match(markdown, /RIGHT/);
+});
+
 test("resetting one project keeps every sibling project intact", () => {
   const local = projectData("project-a", ["project-a", "project-b"]);
   local.flowProjects![1].flow.revision = 7;

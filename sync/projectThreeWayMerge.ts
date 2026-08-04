@@ -1,4 +1,5 @@
 import type { ProjectData } from "../types";
+import { mergeConcurrentText } from "../collaboration/threeWayTextMerge";
 
 const MISSING = Symbol("stylo-missing");
 type MergeValue = unknown | typeof MISSING;
@@ -90,6 +91,10 @@ const mergeValue = (
   if (valuesEqual(remote, base)) return local;
   if (local === MISSING) return MISSING;
   if (remote === MISSING) return local;
+
+  if (typeof base === "string" && typeof local === "string" && typeof remote === "string") {
+    return mergeConcurrentText(base, local, remote);
+  }
 
   if (Array.isArray(base) && Array.isArray(local) && Array.isArray(remote)) {
     return supportsIdMerge([base, local, remote])

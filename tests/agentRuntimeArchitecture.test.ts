@@ -808,8 +808,9 @@ test("Agent project sync barrier uses an immutable snapshot lease instead of UI 
   const engineSource = readFileSync("sync/realtimeProjectSyncEngine.ts", "utf8");
   assert.match(engineSource, /private lastLocalSend: Promise<number> \| null/);
   assert.match(engineSource, /private async applyAndWait\(snapshot: ProjectData\)/);
-  assert.match(engineSource, /const sendsAtBoundary = Array\.from\(this\.inFlightSends\)/);
-  assert.match(engineSource, /await Promise\.all\(sendsAtBoundary\)/);
+  assert.match(engineSource, /const boundaryFlush = this\.flushPendingUpdate\(\)/);
+  assert.match(engineSource, /await Promise\.all\(\[boundaryFlush, \.\.\.Array\.from\(this\.inFlightSends\)\]\)/);
+  assert.match(engineSource, /this\.pendingOperationCount\(\) > 0/);
 
   const agentSource = readFileSync("node-workspace/components/StyloAgent.tsx", "utf8");
   assert.match(agentSource, /const snapshot = mergeNodeFlowIntoProjectData/);

@@ -30,6 +30,7 @@ import {
 } from "../screenplay/fountainEngine";
 import {
   classifyIncomingScreenplaySource,
+  mergeConcurrentScreenplayDrafts,
   prepareScreenplayDraftForSave,
   screenplayDraftsEqual,
   type PendingScreenplaySave,
@@ -109,6 +110,62 @@ type SelectionCommand = {
 };
 
 type ReviewedSnapshot = WritingDraft;
+
+type FilmstripPageItemProps = {
+  nodeId: string;
+  title: string;
+  preview: string;
+  pageNumber: number;
+  isActive: boolean;
+  isDragging: boolean;
+  onOpen: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+};
+
+const FilmstripPageItem: React.FC<FilmstripPageItemProps> = ({
+  nodeId,
+  title,
+  preview,
+  pageNumber,
+  isActive,
+  isDragging,
+  onOpen,
+  onDragStart,
+  onDragEnd,
+}) => {
+  return (
+    <Reorder.Item
+      value={nodeId}
+      dragElastic={0.06}
+      dragMomentum={false}
+      className={`${isActive ? "is-active" : ""} ${isDragging ? "is-dragging" : ""}`}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      whileDrag={{ scale: 1.02, y: -3 }}
+    >
+      <button
+        type="button"
+        className="screenplay-page-filmstrip__page-button"
+        onClick={onOpen}
+        onPointerDown={(event) => event.stopPropagation()}
+        aria-label={`定位到第 ${pageNumber} 张稿纸：${title}`}
+      >
+        <small>{String(pageNumber).padStart(2, "0")}</small>
+        <strong>{title}</strong>
+        <span>{preview || "空白稿纸"}</span>
+      </button>
+      <button
+        type="button"
+        className="screenplay-page-filmstrip__drag-handle"
+        aria-label={`拖动第 ${pageNumber} 张稿纸调整顺序`}
+        title="拖动调整顺序"
+      >
+        <DotsSixVertical size={15} weight="bold" aria-hidden="true" />
+      </button>
+    </Reorder.Item>
+  );
+};
 
 const ensureFlow = (flow: ProjectData["flow"]): NonNullable<ProjectData["flow"]> => ({
   flowNodes: Array.isArray(flow?.flowNodes) ? flow.flowNodes : [],
@@ -251,6 +308,7 @@ export const WritingPanel: React.FC<Props> = ({
   const [pendingIdentityRemovalId, setPendingIdentityRemovalId] = useState<string | null>(null);
   const dismissedIdentityRemovalIdsRef = useRef(new Set<string>());
   const handledProposalIdsRef = useRef(new Set<string>());
+  const shouldActivateCreatedTitlePageRef = useRef(false);
   const pageElementRefs = useRef(new Map<string, HTMLElement>());
   const edgeHoverTimerRef = useRef<number | null>(null);
 
@@ -263,8 +321,15 @@ export const WritingPanel: React.FC<Props> = ({
 
   useEffect(() => {
     if (!scriptNode?.id || titlePageNode) return;
+    shouldActivateCreatedTitlePageRef.current = true;
     setProjectData((previous) => ensureScreenplayTitlePage(previous, scriptNode.id).projectData);
   }, [scriptNode?.id, setProjectData, titlePageNode]);
+
+  useEffect(() => {
+    if (!titlePageNode || !shouldActivateCreatedTitlePageRef.current) return;
+    shouldActivateCreatedTitlePageRef.current = false;
+    setActiveScriptNodeId(titlePageNode.id);
+  }, [titlePageNode]);
 
   useEffect(() => {
     if (!initialScriptNodeId) return;
@@ -422,8 +487,24 @@ export const WritingPanel: React.FC<Props> = ({
       setSaveState("saved");
       return;
     }
-    setExternalConflict(sourceDraft);
+    const merge = mergeConcurrentScreenplayDrafts(
+      lastCommittedRef.current,
+      draftRef.current,
+      sourceDraft,
+    );
+    lastObservedSourceRef.current = sourceDraft;
     setPendingSave(null);
+    if (merge.conflicts.length === 0) {
+      setDraft(merge.merged);
+      draftRef.current = merge.merged;
+      // The incoming CRDT materialization is the new acknowledged base. Any
+      // local portion retained by the merge remains dirty and will be saved as
+      // a delta over that base.
+      lastCommittedRef.current = sourceDraft;
+      setSaveState(screenplayDraftsEqual(merge.merged, sourceDraft) ? "saved" : "idle");
+      return;
+    }
+    setExternalConflict(sourceDraft);
     setSaveState("conflict");
   }, [loadedNodeId, pendingPatch, pendingSave, scriptNode?.id, sourceDraft]);
 
@@ -1018,30 +1099,25 @@ export const WritingPanel: React.FC<Props> = ({
             values={filmstripOrder}
             onReorder={handleFilmstripReorder}
             className="screenplay-page-filmstrip__pages"
+            layoutScroll
           >
           {orderedFilmstripPages.map((node) => {
             const index = displayPages.findIndex((page) => page.id === node.id);
+            const contentPageNumber = contentPages.findIndex((page) => page.id === node.id) + 1;
             const paperDraft = node.id === scriptNode?.id ? draft : readScriptNode(node, knownCharacterIdentities);
             return (
-              <Reorder.Item
+              <FilmstripPageItem
                 key={node.id}
-                value={node.id}
-                className={`${node.id === scriptNode?.id ? "is-active" : ""} ${draggedPageId === node.id ? "is-dragging" : ""}`}
+                nodeId={node.id}
+                title={paperDraft.title}
+                preview={stripFountainMarkup(paperDraft.body).trim().slice(0, 46)}
+                pageNumber={contentPageNumber}
+                isActive={node.id === scriptNode?.id}
+                isDragging={draggedPageId === node.id}
+                onOpen={() => openScriptPage(index)}
                 onDragStart={() => setDraggedPageId(node.id)}
                 onDragEnd={finishFilmstripReorder}
-                whileDrag={{ scale: 1.025, y: -5 }}
-              >
-                <button
-                  type="button"
-                  onClick={() => openScriptPage(index)}
-                  aria-label={`定位到第 ${index + 1} 张稿纸：${paperDraft.title}，可拖动排序`}
-                >
-                  <DotsSixVertical className="screenplay-page-filmstrip__grip" size={13} weight="bold" aria-hidden="true" />
-                  <small>{String(index + 1).padStart(2, "0")}</small>
-                  <strong>{paperDraft.title}</strong>
-                  <span>{stripFountainMarkup(paperDraft.body).trim().slice(0, 46) || "空白稿纸"}</span>
-                </button>
-              </Reorder.Item>
+              />
             );
           })}
           </Reorder.Group>

@@ -2,6 +2,8 @@ import type { ProjectData } from "../../types";
 import type { NodeFlowNode } from "../types";
 import {
   analyzeFountainLines,
+  analyzeScreenplay,
+  createScreenplayPreview,
   getNextScreenplayLineKind,
   SCREENPLAY_PAGE_LINE_COUNT,
   serializeScreenplayLine,
@@ -396,4 +398,330 @@ export const findAutomaticPageBreakLine = (
     used = next;
   }
   return null;
+};
+
+export type ScreenplayReflowPage = {
+  body: string;
+  pinned: boolean;
+};
+
+/**
+ * 行业剧本软件的页语义：内容超出当前页容量时，溢出内容流入下一页；
+ * 前一页未满时**不**自动回填（刻意分页要保持），只有用户在后一页开头
+ * 删除内容（手势合并）才回流。
+ * - 显式分页符（===）与手动分页（pinned）是硬边界，重排不会跨过；
+ * - 空页会被合并，末尾空行不会保留。
+ */
+export const reflowScreenplayPages = (
+  pages: ScreenplayReflowPage[],
+  capacity = DEFAULT_SCREENPLAY_PAGE_CAPACITY
+): ScreenplayReflowPage[] => {
+  type SplitChunk = { lines: ScreenplayLine[]; pinned: boolean };
+
+  const splitByCapacity = (source: ScreenplayLine[]): SplitChunk[] => {
+    const chunks: SplitChunk[] = [];
+    let current: ScreenplayLine[] = [];
+    let currentPinned = false;
+    let used = 0;
+    const flush = () => {
+      if (current.length || currentPinned || !chunks.length) {
+        chunks.push({ lines: current, pinned: currentPinned });
+      }
+      current = [];
+      used = 0;
+      currentPinned = false;
+    };
+    for (const line of source) {
+      if (line.kind === "page_break") {
+        // 显式分页符：结束当前页，后续内容从新页开始（硬边界）。
+        flush();
+        currentPinned = true;
+        continue;
+      }
+      const lineCapacity = getLineCapacity(line);
+      if (used + lineCapacity > capacity && current.length) flush();
+      current.push(line);
+      used += lineCapacity;
+    }
+    flush();
+    return chunks;
+  };
+
+  const result: ScreenplayReflowPage[] = [];
+  let pending: ScreenplayLine[] = [];
+
+  const pushPage = (chunk: SplitChunk) => {
+    const body = chunk.lines
+      .map((line) => line.raw)
+      .join("\n")
+      .replace(/\n+$/, "");
+    if (body || chunk.pinned || !result.length) result.push({ body, pinned: chunk.pinned });
+  };
+
+  const flushPending = () => {
+    if (!pending.length) return;
+    splitByCapacity(pending).forEach(pushPage);
+    pending = [];
+  };
+
+  pages.forEach((page) => {
+    const lines = analyzeFountainLines(page.body);
+    if (page.pinned) {
+      // 硬边界：上一页遗留的溢出先落成独立页，再处理本页。
+      flushPending();
+      const chunks = splitByCapacity(lines);
+      chunks.forEach((chunk, index) => {
+        if (chunk.pinned) pushPage(chunk);
+        else if (index === 0) pushPage({ ...chunk, pinned: true });
+        else pending.push(...chunk.lines);
+      });
+      return;
+    }
+    const combined = [...pending, ...lines];
+    pending = [];
+    const chunks = splitByCapacity(combined);
+    chunks.forEach((chunk, index) => {
+      if (chunk.pinned) pushPage(chunk);
+      else if (index === 0) pushPage(chunk);
+      else pending.push(...chunk.lines);
+    });
+  });
+  flushPending();
+
+  if (!result.length) result.push({ body: "", pinned: false });
+  return result;
+};
+
+export type ScreenplayReflowResult = {
+  projectData: ProjectData;
+  changed: boolean;
+  contentNodeIds: string[];
+  chunkBodies: string[];
+  cursor: { chunkIndex: number; lineIndex: number } | null;
+};
+
+/**
+ * 对连接的稿纸序列做连续流重排：从锚点页（含前一页）开始把正文拼成
+ * 连续流并重新切页，写回节点（必要时增删节点并重建页间链），
+ * 返回光标在重排后所属的页与行，便于编辑器把焦点带到内容真正所在的位置。
+ */
+export const reflowConnectedScriptPages = (
+  projectData: ProjectData,
+  anchorNodeId: string,
+  options?: {
+    bodyOverrides?: Record<string, string>;
+    cursorLine?: number;
+    capacity?: number;
+    /** 手势合并：把该页开头删除后的剩余内容回流到上一页（溶解硬边界）。 */
+    mergeNextPageId?: string;
+  }
+): ScreenplayReflowResult | null => {
+  const flow = projectData.flow;
+  const sequence = getConnectedScriptPageSequence(projectData, anchorNodeId);
+  const contentNodes = sequence.filter((node) => !isScreenplayTitlePageNode(node));
+  if (!contentNodes.length) return null;
+  const anchorIndex = contentNodes.findIndex((node) => node.id === anchorNodeId);
+  const safeAnchorIndex = anchorIndex < 0 ? contentNodes.length - 1 : anchorIndex;
+  const mergeIndex = options?.mergeNextPageId
+    ? contentNodes.findIndex((node) => node.id === options.mergeNextPageId)
+    : -1;
+  const canMerge = mergeIndex >= 1;
+  const startIndex = canMerge
+    ? mergeIndex - 1
+    : Math.max(0, safeAnchorIndex - 1);
+
+  const tailNodes = contentNodes.slice(startIndex);
+  const overrides = options?.bodyOverrides || {};
+  const pages: ScreenplayReflowPage[] = [];
+  let anchorStreamOffset: number | null = null;
+  for (let index = 0; index < tailNodes.length; index += 1) {
+    const node = tailNodes[index];
+    const body =
+      overrides[node.id] ?? String(node.data?.content || node.data?.text || "");
+    if (canMerge && node.id === options?.mergeNextPageId && pages.length > 0) {
+      const previous = pages[pages.length - 1];
+      const previousLineCount = analyzeFountainLines(previous.body).length;
+      const offsetBeforePrevious = pages
+        .slice(0, -1)
+        .reduce((sum, page) => sum + analyzeFountainLines(page.body).length, 0);
+      previous.body = `${previous.body}${previous.body ? "\n" : ""}${body}`;
+      previous.pinned = false;
+      if (node.id === anchorNodeId) anchorStreamOffset = offsetBeforePrevious + previousLineCount;
+      continue;
+    }
+    if (node.id === anchorNodeId) {
+      anchorStreamOffset = pages.reduce(
+        (sum, page) => sum + analyzeFountainLines(page.body).length,
+        0
+      );
+    }
+    pages.push({ body, pinned: node.data?.pinnedBreak === true });
+  }
+  const capacity = options?.capacity || DEFAULT_SCREENPLAY_PAGE_CAPACITY;
+  const reflowed = reflowScreenplayPages(pages, capacity);
+  if (!reflowed.length) return null;
+
+  let cursor: { chunkIndex: number; lineIndex: number } | null = null;
+  if (options?.cursorLine !== undefined && anchorStreamOffset !== null) {
+    const cursorStreamIndex = anchorStreamOffset + Math.max(0, options.cursorLine);
+    let acc = 0;
+    for (let chunkIndex = 0; chunkIndex < reflowed.length; chunkIndex += 1) {
+      const lineCount = analyzeFountainLines(reflowed[chunkIndex].body).length;
+      if (cursorStreamIndex < acc + lineCount) {
+        cursor = {
+          chunkIndex,
+          lineIndex: Math.min(lineCount - 1, Math.max(0, cursorStreamIndex - acc)),
+        };
+        break;
+      }
+      acc += lineCount;
+    }
+    if (!cursor && reflowed.length) {
+      cursor = { chunkIndex: reflowed.length - 1, lineIndex: 0 };
+    }
+  }
+
+  const tailIds = new Set(tailNodes.map((node) => node.id));
+  const keptBefore = contentNodes.slice(0, startIndex);
+  const titlePage = sequence.find(isScreenplayTitlePageNode);
+  const manuscriptId =
+    (typeof tailNodes[0]?.data?.manuscriptId === "string" && tailNodes[0].data.manuscriptId.trim()) ||
+    tailNodes[0]?.id ||
+    "";
+  const now = Date.now();
+  const hasTitle = Boolean(titlePage);
+  const manusFolderId =
+    (flow?.links || []).find(
+      (link) =>
+        link.data?.relation === "folder-membership" &&
+        (link.target === anchorNodeId || (tailNodes.length > 0 && link.target === tailNodes[0].id))
+    )?.source || undefined;
+
+  const newTailNodes: NodeFlowNode[] = [];
+  const createdNodeIds: string[] = [];
+  reflowed.forEach((chunk, index) => {
+    const body = chunk.body;
+    const stats = analyzeScreenplay(body).stats;
+    const existing = tailNodes[index];
+    const pageNumber = hasTitle ? startIndex + index + 2 : startIndex + index + 1;
+    if (existing) {
+      newTailNodes.push({
+        ...existing,
+        data: {
+          ...existing.data,
+          title: existing.data?.title || "未命名剧本",
+          text: body,
+          content: body,
+          documentKind: "script",
+          format: "fountain",
+          preview: createScreenplayPreview(body),
+          screenplayStats: stats,
+          pinnedBreak: chunk.pinned,
+          pageNumber,
+          revision:
+            typeof existing.data?.revision === "number" ? existing.data.revision + 1 : 1,
+          updatedAt: now,
+        },
+      } as NodeFlowNode);
+      return;
+    }
+    const prevNode = newTailNodes[newTailNodes.length - 1] || tailNodes[tailNodes.length - 1];
+    const nodeId = `script-page-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}-${index}`;
+    createdNodeIds.push(nodeId);
+    newTailNodes.push({
+      id: nodeId,
+      type: "scriptPage",
+      position: {
+        x: (prevNode?.position?.x ?? 0) + 380,
+        y: prevNode?.position?.y ?? 0,
+      },
+      style: prevNode?.style,
+      data: {
+        title: "未命名剧本",
+        text: body,
+        content: body,
+        documentId: nodeId,
+        documentKind: "script",
+        format: "fountain",
+        manuscriptId,
+        pageNumber,
+        preview: createScreenplayPreview(body),
+        screenplayStats: stats,
+        pinnedBreak: chunk.pinned,
+        revision: 1,
+        updatedAt: now,
+      },
+    } as NodeFlowNode);
+  });
+
+  const changed =
+    newTailNodes.length !== tailNodes.length ||
+    newTailNodes.some((node, index) => {
+      const previous = tailNodes[index];
+      if (!previous) return true;
+      const previousBody = String(previous.data?.content || previous.data?.text || "");
+      const normalize = (value: string) => value.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+      return (
+        normalize(String(node.data?.content || node.data?.text || "")) !== normalize(previousBody) ||
+        node.data?.pinnedBreak !== (previous.data?.pinnedBreak === true)
+      );
+    });
+
+  const keptIds = new Set([
+    ...(titlePage ? [titlePage.id] : []),
+    ...keptBefore.map((node) => node.id),
+  ]);
+  const flowNodes = [
+    ...(flow?.flowNodes || []).filter((node) => !tailIds.has(node.id)),
+    ...newTailNodes,
+  ];
+
+  const orderedIds = [
+    ...(titlePage ? [titlePage.id] : []),
+    ...keptBefore.map((node) => node.id),
+    ...newTailNodes.map((node) => node.id),
+  ];
+  const orderedIdSet = new Set(orderedIds);
+  const links = (flow?.links || []).filter(
+    (link) =>
+      !(
+        link.data?.relation === SCREENPLAY_PAGE_RELATION &&
+        orderedIdSet.has(link.source) &&
+        orderedIdSet.has(link.target)
+      ) &&
+      !(link.data?.relation === "folder-membership" && tailIds.has(link.target))
+  );
+  for (let index = 0; index < orderedIds.length - 1; index += 1) {
+    const source = orderedIds[index];
+    const target = orderedIds[index + 1];
+    links.push({
+      id: `screenplay-page-${source}-${target}`,
+      source,
+      target,
+      sourceHandle: "text",
+      targetHandle: "text",
+      data: { relation: SCREENPLAY_PAGE_RELATION },
+    });
+  }
+  if (manusFolderId) {
+    createdNodeIds.forEach((nodeId) => {
+      links.push({
+        id: `folder-membership-${manusFolderId}-${nodeId}`,
+        source: manusFolderId,
+        target: nodeId,
+        data: { relation: "folder-membership", folderKind: "manus" },
+      });
+    });
+  }
+
+  return {
+    projectData: {
+      ...projectData,
+      flow: { ...flow, flowNodes, links },
+    },
+    changed,
+    contentNodeIds: newTailNodes.map((node) => node.id),
+    chunkBodies: reflowed.map((chunk) => chunk.body),
+    cursor,
+  };
 };

@@ -47,9 +47,9 @@ import {
   createBlankScreenplayPageBody,
   ensureScreenplayTitlePage,
   ensureScreenplayPageLineGrid,
-  findAutomaticPageBreakLine,
   getConnectedScriptPageSequence,
   isScreenplayTitlePageNode,
+  reflowConnectedScriptPages,
   reorderConnectedScriptPages,
   SCREENPLAY_PAGE_RELATION,
   splitScreenplayDocumentAtLine,
@@ -259,6 +259,19 @@ const stripFountainTitleBlock = (source: string) => {
   return lines.slice(cursor).join("\n");
 };
 
+/**
+ * 判断用户是否在当前页"开头删除"（页首内容被删/清空）：
+ * 这是触发跨页回流的唯一手势。改写字数/替换首行不算。
+ */
+const didDeletePageStart = (oldBody: string, newBody: string) => {
+  const oldLines = oldBody.replace(/\r\n?/g, "\n").split("\n");
+  const newLines = newBody.replace(/\r\n?/g, "\n").split("\n");
+  const oldFirst = (oldLines[0] || "").trim();
+  const newFirst = (newLines[0] || "").trim();
+  if (!oldFirst || oldFirst === newFirst) return false;
+  return newLines.length < oldLines.length || !newFirst;
+};
+
 export const WritingPanel: React.FC<Props> = ({
   projectData,
   setProjectData,
@@ -357,6 +370,8 @@ export const WritingPanel: React.FC<Props> = ({
   const edgeHoverTimerRef = useRef<number | null>(null);
   const fountainImportInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const userEditedRef = useRef(false);
+  const pendingReflowFocusRef = useRef<{ nodeId: string; lineIndex: number } | null>(null);
   const [filmstripScale, setFilmstripScale] = useState(1);
   const [filmstripPaperHeight, setFilmstripPaperHeight] = useState(1056);
 
@@ -527,6 +542,7 @@ export const WritingPanel: React.FC<Props> = ({
     const nextNodeId = scriptNode?.id || null;
     if (nextNodeId === loadedNodeId) return;
     setLoadedNodeId(nextNodeId);
+    userEditedRef.current = false;
     setDraft(sourceDraft);
     draftRef.current = sourceDraft;
     lastCommittedRef.current = sourceDraft;
@@ -534,6 +550,12 @@ export const WritingPanel: React.FC<Props> = ({
     setPendingSave(null);
     setSaveState("saved");
     setActiveLineIndex(0);
+    if (pendingReflowFocusRef.current?.nodeId === nextNodeId) {
+      const focus = pendingReflowFocusRef.current;
+      pendingReflowFocusRef.current = null;
+      setActiveLineIndex(focus.lineIndex);
+      setNavigationRequest({ lineIndex: focus.lineIndex, id: Date.now() });
+    }
     setPendingPatch(null);
     setExternalConflict(null);
     setSelectionCommand(null);
@@ -787,7 +809,7 @@ export const WritingPanel: React.FC<Props> = ({
     else setProjectData((previous) => reorderConnectedScriptPages(previous, orderedNodeIds));
   }, [commitDraft, contentPages, onReorderScriptDocuments, setProjectData, titlePageNode]);
 
-  const createPageFromLine = useCallback((lineIndex: number, activateNewPage = true) => {
+  const createPageFromLine = useCallback((lineIndex: number, activateNewPage = true, pinned = false) => {
     if (!scriptNode?.id || !onSplitScriptDocument || pendingPatch || externalConflict) return null;
     const currentDraft = draftRef.current;
     const { currentBody, nextBody } = splitScreenplayDocumentAtLine(currentDraft.body, lineIndex);
@@ -798,6 +820,7 @@ export const WritingPanel: React.FC<Props> = ({
       title: currentDraft.title,
       sourceContent: retainedBody,
       nextContent: continuedBody,
+      pinned,
     });
     if (!nextNodeId) return null;
     const retainedDraft = { ...currentDraft, body: retainedBody };
@@ -820,6 +843,7 @@ export const WritingPanel: React.FC<Props> = ({
       title: currentDraft.title,
       sourceContent: currentDraft.body,
       nextContent: createBlankScreenplayPageBody(),
+      pinned: true,
     });
     if (!nextNodeId) return;
     draftRef.current = currentDraft;
@@ -832,13 +856,57 @@ export const WritingPanel: React.FC<Props> = ({
     setActiveScriptNodeId(nextNodeId);
   }, [externalConflict, onSplitScriptDocument, pendingPatch, scriptNode?.id]);
 
+  const reflowCurrentPage = useCallback(() => {
+    const anchor = scriptNode?.id || activeScriptNodeId;
+    if (!anchor || !onSplitScriptDocument) return;
+    const anchorBody = draftRef.current.body;
+    // 只有用户在页首删除内容时才触发跨页回流（合并到上一页）；
+    // 其它情况只做“内容超出容量时下推”，绝不自动回填。
+    const startDeletion = didDeletePageStart(lastCommittedRef.current.body, anchorBody);
+    const result = reflowConnectedScriptPages(projectData, anchor, {
+      bodyOverrides: { [anchor]: anchorBody },
+      cursorLine: activeLineIndex,
+      ...(startDeletion ? { mergeNextPageId: anchor } : {}),
+    });
+    if (!result || !result.changed) return;
+    setProjectData(result.projectData);
+    const cursorChunk = result.cursor?.chunkIndex ?? 0;
+    const targetNodeId = result.contentNodeIds[cursorChunk];
+    const targetBody = result.chunkBodies[cursorChunk];
+    const cursorLine = result.cursor?.lineIndex ?? 0;
+    if (!targetNodeId || targetBody === undefined) return;
+    const nextDraft = { title: draftRef.current.title, body: targetBody };
+    if (targetNodeId === anchor) {
+      draftRef.current = nextDraft;
+      lastCommittedRef.current = nextDraft;
+      lastObservedSourceRef.current = nextDraft;
+      setDraft(nextDraft);
+      setActiveLineIndex(cursorLine);
+      setNavigationRequest({ lineIndex: cursorLine, id: Date.now() });
+    } else {
+      pendingReflowFocusRef.current = { nodeId: targetNodeId, lineIndex: cursorLine };
+      setActiveScriptNodeId(targetNodeId);
+    }
+    setPendingSave(null);
+    setSaveState("saved");
+    setSelectionCommand(null);
+    onCommitScriptDocument?.({
+      nodeId: targetNodeId,
+      title: draftRef.current.title,
+      content: targetBody,
+      preview: createScreenplayPreview(targetBody),
+      stats: analyzeScreenplay(targetBody).stats,
+    });
+  }, [activeLineIndex, onCommitScriptDocument, onSplitScriptDocument, projectData, scriptNode?.id]);
+
   useEffect(() => {
     if (isTitlePageActive || !autoPagination || pendingPatch || pendingSave || externalConflict || !onSplitScriptDocument) return;
-    const breakLineIndex = findAutomaticPageBreakLine(draft.body);
-    if (breakLineIndex === null) return;
-    const timer = window.setTimeout(() => createPageFromLine(breakLineIndex, false), 900);
+    // 只对用户编辑过的内容做重排（首次打开/切换页不重排，避免大改已有数据）。
+    if (!userEditedRef.current) return;
+    // 重排早于自动保存（650ms）执行，保证手势检测读到的是编辑前的已提交正文。
+    const timer = window.setTimeout(() => reflowCurrentPage(), 550);
     return () => window.clearTimeout(timer);
-  }, [autoPagination, createPageFromLine, draft.body, externalConflict, isTitlePageActive, onSplitScriptDocument, pendingPatch, pendingSave]);
+  }, [autoPagination, draft.body, externalConflict, isTitlePageActive, onSplitScriptDocument, pendingPatch, pendingSave, reflowCurrentPage]);
 
   const updatePatch = useCallback((updater: (line: ScriptPatchLine) => ScriptPatchLine) => {
     setPendingPatch((current) => {
@@ -1155,7 +1223,6 @@ export const WritingPanel: React.FC<Props> = ({
           openScriptPage(index);
         }}
       >
-        {isActive && !isFocusMode ? screenplayHeader : null}
         <div className="screenplay-document__body">
           {!isFocusMode && !isTitlePage ? (
             <header className="screenplay-document__masthead">
@@ -1216,12 +1283,15 @@ export const WritingPanel: React.FC<Props> = ({
               characterSuggestions={characterSuggestions}
               locationSuggestions={locationSuggestions}
               locationOptionsId={`screenplay-location-options-${node.id}`}
-              onChange={isActive ? (body) => setDraft((current) => ({ ...current, body: ensureScreenplayPageLineGrid(body) })) : () => undefined}
+              onChange={isActive ? (body) => {
+                userEditedRef.current = true;
+                setDraft((current) => ({ ...current, body: ensureScreenplayPageLineGrid(body) }));
+              } : () => undefined}
               onActiveLineChange={isActive ? setActiveLineIndex : () => undefined}
               onSelectionChange={isActive ? (selection) => {
                 setSelectionCommand(selection ? { ...selection, isAsking: false, message: "" } : null);
               } : undefined}
-              onCreatePageFromLine={isActive ? (lineIndex) => createPageFromLine(lineIndex, true) : undefined}
+              onCreatePageFromLine={isActive ? (lineIndex) => createPageFromLine(lineIndex, true, true) : undefined}
             />
           )}
         </div>
@@ -1242,7 +1312,8 @@ export const WritingPanel: React.FC<Props> = ({
         } as React.CSSProperties
       }
     >
-      {isFocusMode ? screenplayHeader : null}
+      {/* 右侧悬浮操作菜单统一锚定视口右上角（自动隐藏），不再基于单张稿纸 */}
+      {screenplayHeader}
       <input
         ref={fountainImportInputRef}
         type="file"
@@ -1325,7 +1396,7 @@ export const WritingPanel: React.FC<Props> = ({
             </button>
           ) : null}
           <Reorder.Group
-            axis="x"
+            axis="y"
             values={filmstripOrder}
             onReorder={handleFilmstripReorder}
             className="screenplay-page-filmstrip__pages"

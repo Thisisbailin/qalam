@@ -44,6 +44,8 @@ export type ScriptPageSplitCommit = {
   title: string;
   sourceContent: string;
   nextContent: string;
+  /** 手动分页（硬边界）：动态重排不会把该页内容流回上一页。 */
+  pinned?: boolean;
 };
 
 export type ScriptPageReorderCommit = {

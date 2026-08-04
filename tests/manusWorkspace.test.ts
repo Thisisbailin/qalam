@@ -72,9 +72,12 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /appearance: none;/);
   assert.match(styles, /\.screenplay-page-filmstrip__pages > li\.is-dragging/);
   assert.match(styles, /\.screenplay-page-filmstrip__drag-handle \{[\s\S]*touch-action: none;/);
-  // 稿纸固定长度（一页约一分钟戏的容量），正文不再被强制填充空白行。
-  assert.match(styles, /\.screenplay-document \{[\s\S]*height: 1056px;/);
+  // 稿纸按容量分页（一页约一分钟戏）：纸张随内容自适应高度，
+  // 正文不再被强制填充空白行，也不做页内滚动或裁剪（内容由重排流向下一页）。
+  assert.match(styles, /\.screenplay-document \{[\s\S]*height: auto;[\s\S]*min-height: 1056px;/);
   assert.match(styles, /\.screenplay-document__body \{/);
+  assert.match(styles, /\.screenplay-document__body \{[\s\S]*overflow: visible;/);
+  assert.match(styles, /\.screenplay-block-editor \{[\s\S]*overflow: visible;/);
   // 胶卷模式：纸张随内容自适应高度并按实际高度缩放，不裁剪。
   assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*height: auto;[\s\S]*--screenplay-filmstrip-scale/);
   assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*--screenplay-filmstrip-paper-height/);
@@ -85,7 +88,14 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(writingPanel, /paper\.offsetHeight \|\| 1056/);
   assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
-  assert.match(styles, /\.screenplay-header \{[\s\S]*right: -54px;/);
+  // 右侧悬浮操作菜单统一锚定视口右上角（自动隐藏），不再基于单张稿纸。
+  assert.match(styles, /\.screenplay-header \{[\s\S]*position: fixed;[\s\S]*right: 16px;/);
+  assert.match(writingPanel, /screenplayHeader\}/);
+  assert.doesNotMatch(writingPanel, /isActive && !isFocusMode \? screenplayHeader/);
+  // 胶卷视图稿纸列表改为左侧竖向居中。
+  assert.match(writingPanel, /axis="y"/);
+  assert.match(styles, /\.screenplay-page-filmstrip \{[\s\S]*left: calc\(var\(--screenplay-agent-inset, 0px\) \+ 16px\);[\s\S]*top: 50%;[\s\S]*flex-direction: column;[\s\S]*translateY\(-50%\)/);
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \{[\s\S]*padding-left: 210px;/);
   assert.match(styles, /\.screenplay-identity-dock__rail \{/);
   assert.match(styles, /\.screenplay-identity-dock__rail > button \{[\s\S]*background:/);
   assert.match(styles, /\.screenplay-identity-dock\.is-open \.screenplay-identity-dock__surface \{[\s\S]*width: 286px;/);

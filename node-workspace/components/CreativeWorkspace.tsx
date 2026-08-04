@@ -627,7 +627,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
   }, [setProjectData]);
 
   const splitScriptDocument = useCallback(
-    ({ sourceNodeId, title, sourceContent, nextContent }: ScriptPageSplitCommit) => {
+    ({ sourceNodeId, title, sourceContent, nextContent, pinned }: ScriptPageSplitCommit) => {
       const now = Date.now();
       const nextNodeId = `script-page-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       setProjectData((previous) => {
@@ -682,6 +682,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
             format: "fountain",
             manuscriptId,
             pageNumber: sourcePageNumber + 1,
+            pinnedBreak: pinned === true,
             preview: createScreenplayPreview(nextContent),
             screenplayStats: nextStats,
             revision: 1,

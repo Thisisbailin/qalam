@@ -48,7 +48,10 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(writingPanel, /parseFountainTitlePage/);
   assert.match(writingPanel, /createBlankScreenplayPageBody/);
   assert.match(writingPanel, /<Reorder\.Group/);
-  assert.match(writingPanel, /onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/);
+  assert.match(writingPanel, /useDragControls/);
+  assert.match(writingPanel, /dragListener=\{false\}/);
+  assert.match(writingPanel, /dragControls\.start\(event\)/);
+  assert.match(writingPanel, /wasDraggedRef/);
   assert.match(writingPanel, /layoutScroll/);
   assert.match(writingPanel, /onReorderScriptDocuments/);
   assert.match(writingPanel, /paperLines[\s\S]*analyzeFountainLines/);
@@ -134,4 +137,36 @@ test("Manus owns screenplay creation and offers continuous paper layouts", async
   assert.match(screenplayStyles, /scroll-snap-type: x mandatory/);
   assert.match(screenplayStyles, /\.screenplay-page-filmstrip/);
   assert.match(nodeflowStyles, /\.script-foundation-node-palette__groups \{[\s\S]*max-height: none;[\s\S]*overflow: visible;/);
+});
+
+test("Manus share button exposes both Fountain import and export routes", async () => {
+  const root = process.cwd();
+  const chrome = await readFile(
+    path.join(root, "node-workspace/components/screenplay/ScreenplayChrome.tsx"),
+    "utf8"
+  );
+  const writingPanel = await readFile(
+    path.join(root, "node-workspace/components/WritingPanel.tsx"),
+    "utf8"
+  );
+  const styles = await readFile(
+    path.join(root, "node-workspace/styles/screenplay.css"),
+    "utf8"
+  );
+
+  assert.match(chrome, /isShareOpen/);
+  assert.match(chrome, /导出 Fountain/);
+  assert.match(chrome, /导入 Fountain/);
+  assert.match(chrome, /onImportFountain\?: \(\) => void/);
+  assert.match(chrome, /<DownloadSimple size=\{14\} weight="bold" \/>/);
+  assert.match(chrome, /<UploadSimple size=\{14\} weight="bold" \/>/);
+  assert.match(styles, /\.screenplay-header__share-menu/);
+
+  assert.match(writingPanel, /fountainImportInputRef/);
+  assert.match(writingPanel, /handleImportFountainFile/);
+  assert.match(writingPanel, /stripFountainTitleBlock/);
+  assert.match(writingPanel, /accept="\.fountain,\.txt,text\/plain"/);
+  assert.match(writingPanel, /normalizeFountainDocument\(raw\)/);
+  assert.match(writingPanel, /onCommitScriptDocument\?\.\(\{ nodeId: anchor\.id/);
+  assert.match(writingPanel, /SCREENPLAY_PAGE_RELATION/);
 });

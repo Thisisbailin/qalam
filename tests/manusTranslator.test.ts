@@ -79,10 +79,13 @@ test("Manus translator service is a single stateless POST with a fixed model", a
 
 test("Manus translator mutual exclusion with adaptive-width factors", async () => {
   const root = process.cwd();
-  const workspace = await readFile(
+  const [workspace, writingPanel] = await Promise.all([
+    readFile(
     path.join(root, "node-workspace/components/CreativeWorkspace.tsx"),
     "utf8"
-  );
+    ),
+    readFile(path.join(root, "node-workspace/components/WritingPanel.tsx"), "utf8"),
+  ]);
 
   assert.match(workspace, /const \[isTranslatorOpen, setIsTranslatorOpen\] = useState\(false\)/);
   assert.match(workspace, /翻译器打开时，agent 面板保持收起/);
@@ -90,5 +93,7 @@ test("Manus translator mutual exclusion with adaptive-width factors", async () =
   assert.match(workspace, /if \(!collapsed\) setIsTranslatorOpen\(false\)/);
   assert.match(workspace, /isTranslatorOpen=\{isTranslatorOpen\}/);
   assert.match(workspace, /onToggleTranslator=\{toggleTranslator\}/);
-  assert.match(workspace, /onCloseTranslator=\{\(\) => setIsTranslatorOpen\(false\)\}/);
+  assert.match(workspace, /const closeTranslator = useCallback\(\(\) => setIsTranslatorOpen\(false\), \[\]\)/);
+  assert.match(workspace, /onCloseTranslator=\{closeTranslator\}/);
+  assert.match(writingPanel, /if \(compactLayout\.matches\) \{/);
 });

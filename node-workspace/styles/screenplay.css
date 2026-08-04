@@ -2914,3 +2914,48 @@
 .translator-dock .is-spinning {
   animation: translator-spin 900ms linear infinite;
 }
+
+/* ============ Screenplay Header Share Menu ============ */
+
+.screenplay-header__share {
+  position: relative;
+}
+
+.screenplay-header__share-menu {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 8px);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 172px;
+  border: 1px solid var(--screenplay-chrome-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--screenplay-chrome-raised) 97%, transparent);
+  padding: 5px;
+  box-shadow:
+    0 18px 38px -28px rgba(24, 24, 23, 0.6),
+    inset 0 1px 0 color-mix(in srgb, var(--app-text-primary) 8%, transparent);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+}
+
+.screenplay-header__share-menu button {
+  display: inline-flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--screenplay-chrome-text);
+}
+
+.screenplay-header__share-menu button:hover {
+  background: color-mix(in srgb, var(--screenplay-accent) 12%, transparent);
+  color: var(--screenplay-chrome-text);
+}

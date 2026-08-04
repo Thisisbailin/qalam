@@ -8,6 +8,7 @@ import {
   Check,
   CheckCircle,
   CircleNotch,
+  DownloadSimple,
   FileDashed,
   FilePlus,
   FilmStrip,
@@ -18,6 +19,7 @@ import {
   MagnifyingGlass,
   ShareNetwork,
   Translate,
+  UploadSimple,
   User,
   WarningCircle,
   X,
@@ -47,6 +49,7 @@ type HeaderProps = {
   autoPagination: boolean;
   isTranslatorOpen?: boolean;
   onToggleTranslator?: () => void;
+  onImportFountain?: () => void;
   onPageArrangementChange: (arrangement: ScreenplayPageArrangement) => void;
   onCreatePage: () => void;
   onToggleAutoPagination: () => void;
@@ -75,11 +78,13 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
   autoPagination,
   isTranslatorOpen = false,
   onToggleTranslator,
+  onImportFountain,
   onPageArrangementChange,
   onCreatePage,
   onToggleAutoPagination,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
   const collapseTimerRef = useRef<number | null>(null);
 
   const cancelCollapse = useCallback(() => {
@@ -159,9 +164,44 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
         >
           <Translate size={18} />
         </button>
-        <button type="button" onClick={onShare} title="分享 Fountain" aria-label="分享 Fountain">
-          <ShareNetwork size={18} />
-        </button>
+        <div className="screenplay-header__share">
+          <button
+            type="button"
+            className={isShareOpen ? "is-active" : ""}
+            onClick={() => setIsShareOpen((open) => !open)}
+            title="Fountain 导入 / 导出"
+            aria-label="Fountain 导入或导出"
+            aria-expanded={isShareOpen}
+          >
+            <ShareNetwork size={18} />
+          </button>
+          {isShareOpen ? (
+            <div className="screenplay-header__share-menu" role="menu" aria-label="Fountain 文件操作">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setIsShareOpen(false);
+                  onShare();
+                }}
+              >
+                <DownloadSimple size={14} weight="bold" />
+                导出 Fountain
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setIsShareOpen(false);
+                  onImportFountain?.();
+                }}
+              >
+                <UploadSimple size={14} weight="bold" />
+                导入 Fountain
+              </button>
+            </div>
+          ) : null}
+        </div>
         <span className="screenplay-header__divider" />
         <button type="button" onClick={onClose} title="退出全屏编辑" aria-label="退出全屏编辑">
           <ArrowsInSimple size={18} />

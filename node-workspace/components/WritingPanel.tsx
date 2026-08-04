@@ -1,5 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Reorder } from "framer-motion";
+import { Reorder, useDragControls } from "framer-motion";
 import {
   ArrowCounterClockwise,
   CaretLeft,
@@ -51,6 +51,7 @@ import {
   getConnectedScriptPageSequence,
   isScreenplayTitlePageNode,
   reorderConnectedScriptPages,
+  SCREENPLAY_PAGE_RELATION,
   splitScreenplayDocumentAtLine,
 } from "../screenplay/manusPages";
 import {
@@ -139,21 +140,35 @@ const FilmstripPageItem: React.FC<FilmstripPageItemProps> = ({
   onDragStart,
   onDragEnd,
 }) => {
+  const dragControls = useDragControls();
+  const wasDraggedRef = useRef(false);
   return (
     <Reorder.Item
       value={nodeId}
+      dragListener={false}
+      dragControls={dragControls}
       dragElastic={0.06}
       dragMomentum={false}
       className={`${isActive ? "is-active" : ""} ${isDragging ? "is-dragging" : ""}`}
-      onDragStart={onDragStart}
+      onDragStart={() => {
+        wasDraggedRef.current = true;
+        onDragStart();
+      }}
       onDragEnd={onDragEnd}
       whileDrag={{ scale: 1.02, y: -3 }}
     >
       <button
         type="button"
         className="screenplay-page-filmstrip__page-button"
-        onClick={onOpen}
-        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => {
+          // 拖动结束后浏览器可能补发一次 click，吞掉它，避免拖动后误打开稿纸。
+          if (wasDraggedRef.current) {
+            wasDraggedRef.current = false;
+            return;
+          }
+          onOpen();
+        }}
+        onPointerDown={(event) => dragControls.start(event)}
         aria-label={`定位到第 ${pageNumber} 张稿纸：${title}`}
       >
         <small>{String(pageNumber).padStart(2, "0")}</small>
@@ -163,6 +178,7 @@ const FilmstripPageItem: React.FC<FilmstripPageItemProps> = ({
       <button
         type="button"
         className="screenplay-page-filmstrip__drag-handle"
+        onPointerDown={(event) => dragControls.start(event)}
         aria-label={`拖动第 ${pageNumber} 张稿纸调整顺序`}
         title="拖动调整顺序"
       >
@@ -222,6 +238,25 @@ const downloadFountain = (filename: string, content: string) => {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+};
+
+const TITLE_BLOCK_KEY = /^(Title|Author|Draft date|Revision|Contact|Credit|Source|Notes?):/i;
+
+/**
+ * Fountain 文件顶部的标题页字段（Title: / Author: 等）不属于正文，
+ * 导入时从正文中剥离，标题单独写入稿纸标题。
+ */
+const stripFountainTitleBlock = (source: string) => {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  let cursor = 0;
+  while (cursor < lines.length) {
+    const trimmed = lines[cursor].trim();
+    if (!trimmed) break;
+    if (!TITLE_BLOCK_KEY.test(trimmed)) break;
+    cursor += 1;
+  }
+  while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
+  return lines.slice(cursor).join("\n");
 };
 
 export const WritingPanel: React.FC<Props> = ({
@@ -320,6 +355,7 @@ export const WritingPanel: React.FC<Props> = ({
   const shouldActivateCreatedTitlePageRef = useRef(false);
   const pageElementRefs = useRef(new Map<string, HTMLElement>());
   const edgeHoverTimerRef = useRef<number | null>(null);
+  const fountainImportInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (draggedPageId) return;
@@ -601,12 +637,16 @@ export const WritingPanel: React.FC<Props> = ({
 
   useEffect(() => {
     const compactLayout = window.matchMedia("(max-width: 1180px)");
-    const collapseSidePanels = (event: MediaQueryListEvent | MediaQueryList) => {
+    const collapseSidePanels = (event: MediaQueryListEvent) => {
       if (!event.matches) return;
       setIsInspectorOpen(false);
       onCloseTranslator?.();
     };
-    collapseSidePanels(compactLayout);
+    // 只在挂载时与断点真实切换时收起，避免父组件重渲染（回调身份变化）导致面板一闪即关。
+    if (compactLayout.matches) {
+      setIsInspectorOpen(false);
+      onCloseTranslator?.();
+    }
     compactLayout.addEventListener("change", collapseSidePanels);
     return () => compactLayout.removeEventListener("change", collapseSidePanels);
   }, [onCloseTranslator]);
@@ -876,6 +916,122 @@ export const WritingPanel: React.FC<Props> = ({
     downloadFountain(filename, content);
   };
 
+  const handleImportFountainFile = useCallback(
+    (file: File) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const raw = typeof reader.result === "string" ? reader.result : "";
+        const normalized = normalizeFountainDocument(raw);
+        if (!normalized.trim()) return;
+        if (pendingPatch || externalConflict) return;
+        const titlePage = parseFountainTitlePage(normalized);
+        const body = ensureScreenplayPageLineGrid(stripFountainTitleBlock(normalized));
+        const title =
+          titlePage.title.trim() ||
+          file.name.replace(/\.[^/.]+$/, "").trim() ||
+          "未命名剧本";
+        const preview = createScreenplayPreview(body);
+        const stats = analyzeScreenplay(body).stats;
+        const sequence = getConnectedScriptPageSequence(
+          projectData,
+          scriptNode?.id || activeScriptNodeId
+        );
+        const titlePageNode = sequence.find(isScreenplayTitlePageNode);
+        const contentPages = sequence.filter((node) => !isScreenplayTitlePageNode(node));
+        const anchor = contentPages[0];
+        if (!anchor) return;
+        const anchorData = anchor.data || {};
+        const sequenceIds = new Set(sequence.map((node) => node.id));
+        const keptIds = new Set<string>([anchor.id]);
+        if (titlePageNode) keptIds.add(titlePageNode.id);
+        const now = Date.now();
+        setProjectData((previous) => {
+          const flow = previous.flow || { links: [] };
+          const flowNodes = (flow.flowNodes || [])
+            .filter((node) => !sequenceIds.has(node.id) || keptIds.has(node.id))
+            .map((node) => {
+              if (node.id === anchor.id) {
+                return {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    title,
+                    text: body,
+                    content: body,
+                    documentKind: "script",
+                    format: "fountain",
+                    preview,
+                    screenplayStats: stats,
+                    revision: typeof anchorData.revision === "number" ? anchorData.revision + 1 : 1,
+                    updatedAt: now,
+                  },
+                } as NodeFlowNode;
+              }
+              if (titlePageNode && node.id === titlePageNode.id) {
+                const titleBody = serializeFountainTitlePage({
+                  ...parseFountainTitlePage(String(node.data?.content || node.data?.text || "")),
+                  title,
+                });
+                return {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    title,
+                    text: titleBody,
+                    content: titleBody,
+                    documentKind: "script",
+                    format: "fountain",
+                    preview: "",
+                    screenplayStats: stats,
+                    revision: typeof node.data?.revision === "number" ? node.data.revision + 1 : 1,
+                    updatedAt: now,
+                  },
+                } as NodeFlowNode;
+              }
+              return node;
+            });
+          const links = (flow.links || []).filter((link) => {
+            if (
+              link.data?.relation === SCREENPLAY_PAGE_RELATION &&
+              sequenceIds.has(link.source) &&
+              sequenceIds.has(link.target)
+            ) {
+              return keptIds.has(link.source) && keptIds.has(link.target);
+            }
+            if (link.data?.relation === "folder-membership" && sequenceIds.has(link.target)) {
+              return keptIds.has(link.target);
+            }
+            return true;
+          });
+          return {
+            ...previous,
+            flow: { ...flow, flowNodes, links },
+          };
+        });
+        const nextDraft = { title, body };
+        draftRef.current = nextDraft;
+        lastCommittedRef.current = nextDraft;
+        lastObservedSourceRef.current = nextDraft;
+        setDraft(nextDraft);
+        setPendingSave(null);
+        setSaveState("saved");
+        setSelectionCommand(null);
+        setActiveScriptNodeId(anchor.id);
+        onCommitScriptDocument?.({ nodeId: anchor.id, title, content: body, preview, stats });
+      };
+      reader.readAsText(file);
+    },
+    [
+      activeScriptNodeId,
+      externalConflict,
+      onCommitScriptDocument,
+      pendingPatch,
+      projectData,
+      scriptNode?.id,
+      setProjectData,
+    ]
+  );
+
   const orderedFilmstripPages = useMemo(() => {
     const pageById = new Map(contentPages.map((node) => [node.id, node]));
     const ordered = filmstripOrder.map((nodeId) => pageById.get(nodeId)).filter(Boolean) as NodeFlowNode[];
@@ -917,6 +1073,7 @@ export const WritingPanel: React.FC<Props> = ({
         if (!isTranslatorOpen) setIsInspectorOpen(false);
         onToggleTranslator?.();
       }}
+      onImportFountain={() => fountainImportInputRef.current?.click()}
       onShare={() => void handleShare()}
       onClose={handleClose}
       pageIndex={pageIndex}
@@ -1051,6 +1208,18 @@ export const WritingPanel: React.FC<Props> = ({
       }
     >
       {isFocusMode ? screenplayHeader : null}
+      <input
+        ref={fountainImportInputRef}
+        type="file"
+        accept=".fountain,.txt,text/plain"
+        className="hidden"
+        aria-label="导入 Fountain 文件"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) handleImportFountainFile(file);
+          event.target.value = "";
+        }}
+      />
       <div className="screenplay-layout">
         <main className={`screenplay-document-viewport ${isFocusMode ? "is-focus" : `is-${pageArrangement}`}`}>
           <div className={`screenplay-document-stage ${isFocusMode ? "is-focus" : `is-${pageArrangement}`}`}>

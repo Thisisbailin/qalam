@@ -448,6 +448,8 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
   const toggleTranslator = useCallback(() => {
     setIsTranslatorOpen((open) => !open);
   }, []);
+  // 稳定回调：避免子组件 effect 因内联函数身份变化而反复触发。
+  const closeTranslator = useCallback(() => setIsTranslatorOpen(false), []);
   const handleAgentScriptEditProposals = useCallback((batch: AgentScriptEditProposalBatch) => {
     setAgentScriptEditProposals((current) => {
       const nextNodeIds = new Set(batch.proposals.map((proposal) => proposal.nodeId));
@@ -1407,15 +1409,18 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
       closeRequest={styloCloseRequest}
       submitRequest={styloSubmitRequest}
       cancelRequest={styloCancelRequest}
-      onCollapsedChange={(collapsed) => {
-        setIsStyloCollapsed(collapsed);
-        if (!collapsed) setIsTranslatorOpen(false);
-        if (collapsed) {
-          if (isStyloFirstMode) {
-            setIsStyloFirstManual(false);
+      onCollapsedChange={useCallback(
+        (collapsed: boolean) => {
+          setIsStyloCollapsed(collapsed);
+          if (!collapsed) setIsTranslatorOpen(false);
+          if (collapsed) {
+            if (isStyloFirstMode) {
+              setIsStyloFirstManual(false);
+            }
           }
-        }
-      }}
+        },
+        [isStyloFirstMode]
+      )}
       onDockFrameChange={({ dockWidth }) => setAgentDockWidth(dockWidth)}
       onSendingChange={setIsStyloSending}
       onScriptEditProposals={handleAgentScriptEditProposals}
@@ -1662,7 +1667,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
           isTranslatorOpen={isTranslatorOpen}
           translatorDockWidth={translatorDockWidth}
           onToggleTranslator={toggleTranslator}
-          onCloseTranslator={() => setIsTranslatorOpen(false)}
+          onCloseTranslator={closeTranslator}
           agentScriptEditProposals={agentScriptEditProposals}
           onResolveAgentScriptEditProposal={resolveAgentScriptEditProposal}
           onCommitScriptDocument={commitScriptDocument}

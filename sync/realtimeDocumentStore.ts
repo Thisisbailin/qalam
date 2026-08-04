@@ -3,10 +3,17 @@ const STORE_NAME = "documents";
 const epochKey = (key: string) => `${key}:epoch`;
 const confirmedKey = (key: string) => `${key}:confirmed`;
 const outboxKey = (key: string) => `${key}:outbox`;
+const rejectedKey = (key: string) => `${key}:rejected`;
 
 export type RealtimeStoredOutboxEntry = {
   opId: string;
   update: Uint8Array;
+};
+
+export type RealtimeStoredRejectedEntry = RealtimeStoredOutboxEntry & {
+  error: string;
+  rejectedAt: number;
+  epoch: number;
 };
 
 const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
@@ -208,6 +215,126 @@ export const writeRealtimeDocumentOutbox = async (
   }
 };
 
+export const readRealtimeRejectedUpdates = async (
+  key: string,
+): Promise<RealtimeStoredRejectedEntry[]> => {
+  if (typeof indexedDB === "undefined") return [];
+  const database = await openDatabase();
+  try {
+    return await new Promise<RealtimeStoredRejectedEntry[]>((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, "readonly");
+      const request = transaction.objectStore(STORE_NAME).get(rejectedKey(key));
+      request.onsuccess = () => {
+        const value = request.result;
+        if (!Array.isArray(value)) {
+          resolve([]);
+          return;
+        }
+        resolve(value.flatMap((entry): RealtimeStoredRejectedEntry[] => {
+          if (!entry || typeof entry !== "object") return [];
+          const candidate = entry as Record<string, unknown>;
+          const update = candidate.update instanceof ArrayBuffer
+            ? new Uint8Array(candidate.update)
+            : candidate.update instanceof Uint8Array
+              ? new Uint8Array(candidate.update)
+              : null;
+          const rejectedAt = Number(candidate.rejectedAt);
+          const epoch = Number(candidate.epoch);
+          return typeof candidate.opId === "string"
+            && candidate.opId.length > 0
+            && typeof candidate.error === "string"
+            && update?.byteLength
+            && Number.isSafeInteger(rejectedAt)
+            && rejectedAt > 0
+            && Number.isSafeInteger(epoch)
+            && epoch >= 0
+            ? [{
+                opId: candidate.opId,
+                update,
+                error: candidate.error,
+                rejectedAt,
+                epoch,
+              }]
+            : [];
+        }));
+      };
+      request.onerror = () => reject(request.error || new Error("Unable to read rejected realtime updates"));
+    });
+  } finally {
+    database.close();
+  }
+};
+
+/**
+ * Commits the crash-recovery boundary in one IndexedDB transaction. The local
+ * checkpoint, cloud-confirmed checkpoint, epoch fence, and durable outbox must
+ * describe the same instant; splitting these writes can resurrect stale state
+ * after a process or power failure.
+ */
+export const writeRealtimeDocumentSessionState = async (
+  key: string,
+  value: Uint8Array,
+  epoch: number,
+  confirmedValue: Uint8Array,
+  entries: RealtimeStoredOutboxEntry[],
+  rejectedEntries: RealtimeStoredRejectedEntry[],
+) => {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      store.put(
+        value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
+        key,
+      );
+      store.put(epoch, epochKey(key));
+      store.put(
+        confirmedValue.buffer.slice(
+          confirmedValue.byteOffset,
+          confirmedValue.byteOffset + confirmedValue.byteLength,
+        ),
+        confirmedKey(key),
+      );
+      if (entries.length === 0) {
+        store.delete(outboxKey(key));
+      } else {
+        store.put(entries.map((entry) => ({
+          opId: entry.opId,
+          update: entry.update.buffer.slice(
+            entry.update.byteOffset,
+            entry.update.byteOffset + entry.update.byteLength,
+          ),
+        })), outboxKey(key));
+      }
+      if (rejectedEntries.length === 0) {
+        store.delete(rejectedKey(key));
+      } else {
+        store.put(rejectedEntries.map((entry) => ({
+          opId: entry.opId,
+          error: entry.error,
+          rejectedAt: entry.rejectedAt,
+          epoch: entry.epoch,
+          update: entry.update.buffer.slice(
+            entry.update.byteOffset,
+            entry.update.byteOffset + entry.update.byteLength,
+          ),
+        })), rejectedKey(key));
+      }
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(
+        transaction.error || new Error("Unable to persist realtime project session state"),
+      );
+      transaction.onabort = () => reject(
+        transaction.error || new Error("Realtime project session persistence aborted"),
+      );
+    });
+  } finally {
+    database.close();
+  }
+};
+
 export const deleteRealtimeDocument = async (key: string) => {
   if (typeof indexedDB === "undefined") return;
   const database = await openDatabase();
@@ -218,6 +345,7 @@ export const deleteRealtimeDocument = async (key: string) => {
       transaction.objectStore(STORE_NAME).delete(epochKey(key));
       transaction.objectStore(STORE_NAME).delete(confirmedKey(key));
       transaction.objectStore(STORE_NAME).delete(outboxKey(key));
+      transaction.objectStore(STORE_NAME).delete(rejectedKey(key));
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error || new Error("Unable to clear realtime project"));
     });

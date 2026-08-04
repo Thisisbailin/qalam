@@ -50,7 +50,9 @@ test("the realtime room durably appends only incremental edits before ACK", () =
   assert.match(worker, /ON CONFLICT\(user_id, project_id\) DO UPDATE/);
   assert.doesNotMatch(worker, /SELECT server_seq FROM user_project_updates/);
   assert.doesNotMatch(worker, /INSERT INTO user_project_updates/);
-  assert.match(worker, /candidateBytes > MAX_PROJECT_BYTES/);
+  assert.match(worker, /this\.inspectCandidate\(candidate, attachedIdentity\.projectId\)/);
+  assert.match(worker, /validateRealtimeProjectSnapshot/);
+  assert.match(worker, /socket\.close\(1012, "Realtime stream interrupted; reconnect required"\)/);
   assert.match(worker, /raw\.length > MAX_REALTIME_MESSAGE_CHARS/);
   assert.match(worker, /SOCKET_RATE_MAX_MESSAGES/);
   assert.match(worker, /SOCKET_RATE_MAX_CHARS/);
@@ -107,7 +109,9 @@ test("project reset clears the active room before durable rows can be replayed",
   const engine = read("sync/realtimeProjectSyncEngine.ts");
 
   assert.match(worker, /private async resetProject/);
-  assert.match(worker, /this\.doc = new Y\.Doc\(\)/);
+  assert.match(worker, /const replacement = new Y\.Doc\(\)/);
+  assert.match(worker, /this\.doc = replacement/);
+  assert.match(worker, /projected_seq, pending_bytes[\s\S]*VALUES \(1, \?1, \?2, 0, 0, \?3, -1/);
   assert.match(worker, /previousEpoch \+ 1/);
   assert.match(worker, /DELETE FROM room_updates/);
   assert.match(worker, /DELETE FROM room_operations/);
@@ -229,6 +233,10 @@ test("local project changes enter Yjs immediately while network writes are coale
   assert.match(store, /outboxKey/);
   assert.match(store, /readRealtimeDocumentOutbox/);
   assert.match(store, /writeRealtimeDocumentOutbox/);
+  assert.match(store, /writeRealtimeDocumentSessionState/);
+  assert.match(store, /readRealtimeRejectedUpdates/);
+  assert.match(engine, /queueMicrotask/);
+  assert.match(engine, /handleSequenceGap/);
   assert.doesNotMatch(engine, /setInterval|\.refresh\(/);
   assert.doesNotMatch(hook, /refreshKey|forceCloudPull/);
 });

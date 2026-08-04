@@ -336,7 +336,7 @@ const ScreenplayBlockRow = memo(({
               <input
                 ref={(element) => registerEditor(line.index, element)}
                 value={scene.location}
-                style={{ width: `${Math.max(6, Math.min(24, Array.from(scene.location || "地点").length + 2))}ch` }}
+                style={{ width: `${Math.max(6, Array.from(scene.location || "地点").length + 2)}ch` }}
                 list={locationOptionsId}
                 onFocus={() => onActive(line.index)}
                 onChange={(event) => onReplaceLine(line.index, serializeSceneHeading({ ...scene, location: event.target.value }))}

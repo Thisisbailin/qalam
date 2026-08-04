@@ -343,6 +343,19 @@ test("format conversion preserves visible content and permits an empty role cue"
   assert.equal(analyzeFountainLines(serializeScreenplayLine("", "dialogue"))[0].kind, "dialogue");
 });
 
+test("format cycling does not promote format scaffolding into screenplay content", () => {
+  const scene = analyzeFountainLines(".INT. LOCATION - DAY")[0];
+  assert.equal(convertScreenplayLineKind(scene, "character"), "@");
+  assert.equal(convertScreenplayLineKind(scene, "dialogue"), "【对白】");
+  assert.equal(convertScreenplayLineKind(scene, "action"), "");
+
+  const parenthetical = analyzeFountainLines("(beat)")[0];
+  assert.equal(convertScreenplayLineKind(parenthetical, "action"), "");
+
+  const transition = analyzeFountainLines("> CUT TO:")[0];
+  assert.equal(convertScreenplayLineKind(transition, "action"), "");
+});
+
 test("autosave coordinator ignores stale echoes and adopts real external changes", () => {
   const source = { title: "第一场", body: "!旧稿" };
   const submitted = { title: "第一场", body: "!新稿" };

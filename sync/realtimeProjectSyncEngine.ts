@@ -18,11 +18,14 @@ import {
   readRealtimeDocument,
   readRealtimeDocumentEpoch,
   readRealtimeDocumentOutbox,
+  readRealtimeRejectedUpdates,
   writeRealtimeDocument,
   writeRealtimeDocumentEpoch,
   writeRealtimeDocumentOutbox,
+  writeRealtimeDocumentSessionState,
   writeRealtimeDocumentState,
   type RealtimeStoredOutboxEntry,
+  type RealtimeStoredRejectedEntry,
 } from "./realtimeDocumentStore";
 import { mergeProjectSnapshotsAcrossEpoch } from "./projectThreeWayMerge";
 import type { ProjectNodeGeometryPatch } from "./projectMutationBus";
@@ -46,6 +49,7 @@ type ServerMessage = {
   update?: string;
   stateVector?: string;
   error?: string;
+  code?: string;
   mode?: "reset" | "delete";
   epoch?: number;
   epochReason?: "rebase" | "reset";
@@ -65,8 +69,17 @@ type RealtimeDocumentStore = {
   readEpoch?(key: string): Promise<number>;
   readConfirmed?(key: string): Promise<Uint8Array | null>;
   readOutbox?(key: string): Promise<RealtimeStoredOutboxEntry[]>;
+  readRejected?(key: string): Promise<RealtimeStoredRejectedEntry[]>;
   writeEpoch?(key: string, epoch: number): Promise<void>;
   writeOutbox?(key: string, entries: RealtimeStoredOutboxEntry[]): Promise<void>;
+  writeSessionState?(
+    key: string,
+    value: Uint8Array,
+    epoch: number,
+    confirmedValue: Uint8Array,
+    entries: RealtimeStoredOutboxEntry[],
+    rejectedEntries: RealtimeStoredRejectedEntry[],
+  ): Promise<void>;
   writeState?(
     key: string,
     value: Uint8Array,
@@ -148,10 +161,11 @@ export class RealtimeProjectSyncEngine {
   private pendingOfflineUpdate: Uint8Array | null = null;
   private pendingOfflineOpId: string | null = null;
   private pendingAcks = new Map<string, PendingAck>();
+  private rejectedUpdates: RealtimeStoredRejectedEntry[] = [];
   private persistDirty = false;
   private confirmedPersistDirty = false;
   private persistInFlight: Promise<void> | null = null;
-  private outboxPersistTimer: ReturnType<typeof setTimeout> | null = null;
+  private outboxPersistScheduled = false;
   private outboxPersistDirty = false;
   private outboxPersistInFlight: Promise<void> | null = null;
   private lastLocalSend: Promise<number> | null = null;
@@ -168,8 +182,10 @@ export class RealtimeProjectSyncEngine {
       readEpoch: readRealtimeDocumentEpoch,
       readConfirmed: readRealtimeConfirmedDocument,
       readOutbox: readRealtimeDocumentOutbox,
+      readRejected: readRealtimeRejectedUpdates,
       writeEpoch: writeRealtimeDocumentEpoch,
       writeOutbox: writeRealtimeDocumentOutbox,
+      writeSessionState: writeRealtimeDocumentSessionState,
       writeState: writeRealtimeDocumentState,
     };
     this.doc.on("update", this.handleDocumentUpdate);
@@ -187,12 +203,14 @@ export class RealtimeProjectSyncEngine {
     this.latestLocal = initialLocal;
     this.latestLocalFingerprint = initialFingerprint;
     this.latestLocalByteLength = initialByteLength;
-    const [persisted, persistedEpoch, confirmed, recoveredOutbox] = await Promise.all([
+    const [persisted, persistedEpoch, confirmed, recoveredOutbox, recoveredRejected] = await Promise.all([
       this.documentStore.read(this.storageKey).catch(() => null),
       this.documentStore.readEpoch?.(this.storageKey).catch(() => 0) ?? Promise.resolve(0),
       this.documentStore.readConfirmed?.(this.storageKey).catch(() => null) ?? Promise.resolve(null),
       this.documentStore.readOutbox?.(this.storageKey).catch(() => []) ?? Promise.resolve([]),
+      this.documentStore.readRejected?.(this.storageKey).catch(() => []) ?? Promise.resolve([]),
     ]);
+    this.rejectedUpdates = recoveredRejected;
     this.epoch = Number.isSafeInteger(persistedEpoch) && persistedEpoch >= 0 ? persistedEpoch : 0;
     if (persisted?.byteLength) Y.applyUpdate(this.doc, persisted, PERSISTED_ORIGIN);
     if (confirmed?.byteLength) {
@@ -396,11 +414,10 @@ export class RealtimeProjectSyncEngine {
     this.ready = false;
     if (this.drainTimer) clearTimeout(this.drainTimer);
     if (this.persistTimer) clearTimeout(this.persistTimer);
-    if (this.outboxPersistTimer) clearTimeout(this.outboxPersistTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.drainTimer = null;
     this.persistTimer = null;
-    this.outboxPersistTimer = null;
+    this.outboxPersistScheduled = false;
     this.reconnectTimer = null;
     if (this.persistDirty) void this.flushDocumentPersistence();
     if (this.outboxPersistDirty) void this.flushOutboxPersistence();
@@ -507,6 +524,30 @@ export class RealtimeProjectSyncEngine {
       message = JSON.parse(event.data) as ServerMessage;
     } catch {
       return;
+    }
+    if (message.type === "update") {
+      const incomingSeq = Number(message.serverSeq);
+      const incomingEpoch = Number(message.epoch);
+      if (
+        !Number.isSafeInteger(incomingSeq)
+        || incomingSeq < 0
+        || !Number.isSafeInteger(incomingEpoch)
+        || incomingEpoch !== this.epoch
+      ) {
+        this.handleProtocolError(
+          "云端实时更新缺少有效的序号或同步世代，已拒绝应用。",
+          new Error("Invalid realtime update sequence fence"),
+        );
+        return;
+      }
+      if (incomingSeq <= this.serverSeq) {
+        // Full sync or a prior ACK already covered this idempotent event.
+        return;
+      }
+      if (incomingSeq !== this.serverSeq + 1) {
+        this.handleSequenceGap(incomingSeq);
+        return;
+      }
     }
     if ((message.type === "sync" || message.type === "update") && typeof message.update === "string") {
       // React has committed the visible edit and stage() has captured it, but
@@ -687,6 +728,7 @@ export class RealtimeProjectSyncEngine {
       this.discardPendingAcks(new Error("项目已在另一台设备重置。"));
       this.pendingOfflineUpdate = null;
       this.pendingOfflineOpId = null;
+      this.rejectedUpdates = [];
       this.scheduleOutboxPersistence();
       this.replaceDocument(new Uint8Array());
       this.replaceConfirmedDocument(new Uint8Array());
@@ -707,13 +749,25 @@ export class RealtimeProjectSyncEngine {
     if (message.type === "ack" && message.opId) {
       const pending = this.pendingAcks.get(message.opId);
       if (!pending) return;
+      const acknowledgedSeq = Number(message.serverSeq);
+      if (!Number.isSafeInteger(acknowledgedSeq) || acknowledgedSeq < 0) {
+        this.handleProtocolError(
+          "云端返回了无效的写入确认序号。",
+          new Error("Invalid realtime acknowledgement sequence"),
+        );
+        return;
+      }
+      if (acknowledgedSeq > this.serverSeq + 1) {
+        this.handleSequenceGap(acknowledgedSeq);
+        return;
+      }
       this.pendingAcks.delete(message.opId);
       clearTimeout(pending.timeout);
       Y.applyUpdate(this.confirmedDoc, pending.update, REMOTE_ORIGIN);
       this.confirmedPersistDirty = true;
       this.scheduleDocumentPersistence();
       this.scheduleOutboxPersistence();
-      this.serverSeq = Math.max(this.serverSeq, Number(message.serverSeq) || 0);
+      this.serverSeq = Math.max(this.serverSeq, acknowledgedSeq);
       pending.resolve(this.serverSeq);
       if (this.pendingOfflineUpdate && !this.stageTimer) {
         this.lastLocalSend = this.flushPendingUpdate();
@@ -749,7 +803,31 @@ export class RealtimeProjectSyncEngine {
         if (pending) {
           clearTimeout(pending.timeout);
           this.pendingAcks.delete(message.opId);
-          this.queueUpdate(pending.update, message.opId);
+          if (message.code === "INVALID_PROJECT_STATE") {
+            // The server has permanently rejected this materialized branch.
+            // Preserve the entire unconfirmed branch for recovery tooling, but
+            // never poison the automatic retry loop or cloud authority with it.
+            const rejectedBranch = Y.encodeStateAsUpdate(
+              this.doc,
+              Y.encodeStateVector(this.confirmedDoc),
+            );
+            if (rejectedBranch.byteLength > 2) {
+              this.rejectedUpdates.push({
+                opId: message.opId,
+                update: rejectedBranch,
+                error: error.message,
+                rejectedAt: Date.now(),
+                epoch: this.epoch,
+              });
+            }
+            this.pendingOfflineUpdate = null;
+            this.pendingOfflineOpId = null;
+            const confirmedCheckpoint = Y.encodeStateAsUpdate(this.confirmedDoc);
+            this.replaceDocument(confirmedCheckpoint);
+            this.scheduleOutboxPersistence();
+          } else {
+            this.queueUpdate(pending.update, message.opId);
+          }
           pending.reject(error);
         }
       }
@@ -776,6 +854,20 @@ export class RealtimeProjectSyncEngine {
     this.options.onError?.(error);
     this.ready = false;
     this.socket?.close(1002, "Invalid realtime protocol payload");
+  }
+
+  private handleSequenceGap(incomingSeq: number) {
+    const error = new Error(
+      `实时更新序号出现缺口（本地 ${this.serverSeq}，收到 ${incomingSeq}），正在重新获取权威快照。`,
+    );
+    this.options.onStatusChange?.("offline", {
+      error: error.message,
+      pendingOps: this.pendingOperationCount(),
+      retryCount: this.reconnectAttempt,
+    });
+    this.options.onError?.(error);
+    this.ready = false;
+    this.socket?.close(1012, "Realtime sequence gap; reconnect required");
   }
 
   private readonly handleVisibilityChange = () => {
@@ -980,33 +1072,54 @@ export class RealtimeProjectSyncEngine {
   }
 
   private scheduleOutboxPersistence() {
-    if (!this.documentStore.writeOutbox) return;
+    if (!this.documentStore.writeOutbox && !this.documentStore.writeSessionState) return;
     this.outboxPersistDirty = true;
-    if (this.outboxPersistTimer) return;
-    this.outboxPersistTimer = setTimeout(() => {
-      this.outboxPersistTimer = null;
+    if (this.outboxPersistScheduled) return;
+    this.outboxPersistScheduled = true;
+    queueMicrotask(() => {
+      this.outboxPersistScheduled = false;
       void this.flushOutboxPersistence().catch((error) => {
         this.options.onError?.(error);
       });
-    }, 32);
+    });
   }
 
   private async flushOutboxPersistence(): Promise<void> {
-    if (!this.documentStore.writeOutbox) return;
-    if (this.outboxPersistTimer) {
-      clearTimeout(this.outboxPersistTimer);
-      this.outboxPersistTimer = null;
-    }
+    if (!this.documentStore.writeOutbox && !this.documentStore.writeSessionState) return;
+    this.outboxPersistScheduled = false;
+    if (this.persistInFlight) await this.persistInFlight;
     if (this.outboxPersistInFlight) await this.outboxPersistInFlight;
     while (this.outboxPersistDirty) {
       this.outboxPersistDirty = false;
       const entries = this.currentOutboxEntries();
-      const task = this.documentStore.writeOutbox(this.storageKey, entries);
+      const persistWholeSession = Boolean(this.documentStore.writeSessionState);
+      const checkpoint = persistWholeSession ? Y.encodeStateAsUpdate(this.doc) : null;
+      const confirmedCheckpoint = persistWholeSession
+        ? Y.encodeStateAsUpdate(this.confirmedDoc)
+        : null;
+      if (persistWholeSession) {
+        this.persistDirty = false;
+        this.confirmedPersistDirty = false;
+      }
+      const task = persistWholeSession
+        ? this.documentStore.writeSessionState!(
+          this.storageKey,
+          checkpoint!,
+          this.epoch,
+          confirmedCheckpoint!,
+          entries,
+          this.rejectedUpdates,
+        )
+        : this.documentStore.writeOutbox!(this.storageKey, entries);
       this.outboxPersistInFlight = task;
       try {
         await task;
       } catch (cause) {
         this.outboxPersistDirty = true;
+        if (persistWholeSession) {
+          this.persistDirty = true;
+          this.confirmedPersistDirty = true;
+        }
         const error = cause instanceof Error
           ? new Error("无法持久化实时项目待发更改，已暂停网络发送。", { cause })
           : new Error("无法持久化实时项目待发更改，已暂停网络发送。");
@@ -1071,6 +1184,9 @@ export class RealtimeProjectSyncEngine {
   }
 
   private flushDocumentPersistence(): Promise<void> {
+    if (this.outboxPersistInFlight) {
+      return this.outboxPersistInFlight.then(() => this.flushDocumentPersistence());
+    }
     if (this.persistInFlight) return this.persistInFlight;
     if (!this.persistDirty) return Promise.resolve();
     this.persistDirty = false;

@@ -465,13 +465,28 @@ export const getNextScreenplayLineKind = (kind: ScreenplayLineKind): ScreenplayL
   return "action";
 };
 
+const getConvertibleScreenplayContent = (line: ScreenplayLine) => {
+  if (line.kind === "page_break") return "";
+
+  if (line.kind === "scene_heading") {
+    const heading = parseSceneHeading(line.raw);
+    return heading.location === PLACEHOLDER_LOCATION ? "" : heading.location;
+  }
+
+  // These values are editor scaffolding, not user-authored content. Do not
+  // carry them into the next format when the user cycles with Tab.
+  if (line.kind === "parenthetical" && /^\s*[（(]beat[)）]\s*$/.test(line.raw)) return "";
+  if (line.kind === "transition" && /^\s*>\s*CUT TO:\s*$/i.test(line.raw)) return "";
+
+  return line.content;
+};
+
 export const convertScreenplayLineKind = (line: ScreenplayLine, kind: ScreenplayLineKind) => {
   if (line.kind === kind) return line.raw;
+  const content = getConvertibleScreenplayContent(line);
   if (kind === "scene_heading") {
-    const location = line.kind === "page_break" ? "" : line.content;
-    return serializeSceneHeading({ boundary: "INT.", location: location || PLACEHOLDER_LOCATION, time: "DAY" });
+    return serializeSceneHeading({ boundary: "INT.", location: content || PLACEHOLDER_LOCATION, time: "DAY" });
   }
-  const content = line.kind === "page_break" ? "" : line.content;
   return serializeScreenplayLine(content, kind);
 };
 

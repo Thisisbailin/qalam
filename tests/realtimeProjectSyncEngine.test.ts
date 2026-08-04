@@ -99,6 +99,8 @@ const serverSyncFromDocument = (doc: Y.Doc, serverSeq = 0) => {
   return {
     type: "sync",
     serverSeq,
+    epoch: 0,
+    epochReason: "rebase",
     update: encodeUpdateBase64(Y.encodeStateAsUpdate(doc)),
     stateVector: encodeUpdateBase64(Y.encodeStateVector(doc)),
   };
@@ -567,7 +569,7 @@ test("a malformed remote update is contained and reconnects without mutating the
   });
   await engine.start(initial);
   socket.emit(serverSync(initial));
-  socket.emit({ type: "update", serverSeq: 2, update: "%%%not-base64%%%" });
+  socket.emit({ type: "update", serverSeq: 1, epoch: 0, update: "%%%not-base64%%%" });
   await wait();
 
   const snapshot = readProjectSnapshot<ProjectData & Record<string, unknown>>(
@@ -578,6 +580,58 @@ test("a malformed remote update is contained and reconnects without mutating the
   assert.equal(errors.length, 1);
   assert.equal(socket.readyState, WebSocket.CLOSED);
   engine.dispose();
+});
+
+test("a missing realtime sequence forces a checkpoint reconnect before later data is applied", async () => {
+  const socket = new FakeSocket();
+  const errors: unknown[] = [];
+  const initial = project(1, 10);
+  const authority = new Y.Doc();
+  applyProjectSnapshot(authority, initial as unknown as Record<string, unknown>, "base");
+  const changed = project(2, 84);
+  const changedDoc = new Y.Doc();
+  Y.applyUpdate(changedDoc, Y.encodeStateAsUpdate(authority));
+  applyProjectSnapshot(changedDoc, changed as unknown as Record<string, unknown>, "remote");
+  const delta = Y.encodeStateAsUpdate(changedDoc, Y.encodeStateVector(authority));
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    onError: (error) => errors.push(error),
+    documentStore: {
+      read: async () => null,
+      write: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+  await engine.start(initial);
+  socket.emit(serverSync(initial));
+  socket.emit({
+    type: "update",
+    serverSeq: 2,
+    epoch: 0,
+    update: encodeUpdateBase64(delta),
+  });
+  await wait();
+
+  assert.equal(socket.readyState, WebSocket.CLOSED);
+  assert.equal(errors.length, 1);
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>((engine as any).doc)
+      .flow?.flowNodes?.[0]?.position.x,
+    10,
+  );
+  engine.dispose();
+  authority.destroy();
+  changedDoc.destroy();
 });
 
 test("a legacy worker heartbeat validation response cannot enter an error loop", async () => {
@@ -708,6 +762,7 @@ test("a remote event flushes the just-committed local edit before projecting to 
   socket.emit({
     type: "update",
     serverSeq: 1,
+    epoch: 0,
     update: encodeUpdateBase64(remoteDelta),
   });
   await wait();
@@ -779,6 +834,122 @@ test("a recovered durable outbox is persisted before it is resent", async () => 
   engine.dispose();
   baseDoc.destroy();
   localDoc.destroy();
+});
+
+test("a local edit persists checkpoint, epoch, confirmed base, and outbox as one session boundary", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  const sessions: Array<{
+    checkpoint: Uint8Array;
+    epoch: number;
+    confirmed: Uint8Array;
+    entries: Array<{ opId: string; update: Uint8Array }>;
+  }> = [];
+  socket.beforeSend = (message) => {
+    if (message.type !== "update") return;
+    const persisted = sessions.at(-1);
+    assert.ok(persisted);
+    assert.equal(persisted.entries.some((entry) => entry.opId === message.opId), true);
+    const checkpoint = new Y.Doc();
+    Y.applyUpdate(checkpoint, persisted.checkpoint);
+    assert.equal(
+      readProjectSnapshot<ProjectData & Record<string, unknown>>(checkpoint)
+        .flow?.flowNodes?.[0]?.position.x,
+      84,
+    );
+    checkpoint.destroy();
+  };
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 10_000,
+    onApplyRemote: () => undefined,
+    documentStore: {
+      read: async () => null,
+      write: async () => undefined,
+      delete: async () => undefined,
+      writeOutbox: async () => undefined,
+      writeSessionState: async (_key, checkpoint, epoch, confirmed, entries) => {
+        sessions.push({
+          checkpoint: new Uint8Array(checkpoint),
+          epoch,
+          confirmed: new Uint8Array(confirmed),
+          entries: entries.map((entry) => ({
+            opId: entry.opId,
+            update: new Uint8Array(entry.update),
+          })),
+        });
+      },
+    },
+  });
+
+  await engine.start(initial);
+  socket.emit(serverSync(initial));
+  engine.stage(project(2, 84));
+  assert.equal(await waitFor(() => socket.sent.some((message) => message.type === "update")), true);
+  assert.equal(sessions.at(-1)?.epoch, 0);
+  assert.ok(sessions.at(-1)?.confirmed.byteLength);
+  engine.dispose();
+});
+
+test("a permanently rejected branch is quarantined instead of retried or discarded", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  let rejectedCount = 0;
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    onError: () => undefined,
+    documentStore: {
+      read: async () => null,
+      write: async () => undefined,
+      delete: async () => undefined,
+      writeOutbox: async () => undefined,
+      writeSessionState: async (_key, _checkpoint, _epoch, _confirmed, _entries, rejected) => {
+        rejectedCount = rejected.length;
+      },
+    },
+  });
+
+  await engine.start(initial);
+  socket.emit(serverSync(initial));
+  engine.stage(project(2, 84));
+  assert.equal(await waitFor(() => socket.sent.some((message) => message.type === "update")), true);
+  const outbound = socket.sent.find((message) => message.type === "update")!;
+  socket.emit({
+    type: "error",
+    opId: outbound.opId,
+    code: "INVALID_PROJECT_STATE",
+    error: "candidate graph is invalid",
+  });
+  await wait(10);
+
+  assert.equal(rejectedCount, 1);
+  assert.equal((engine as any).pendingOfflineUpdate, null);
+  assert.equal((engine as any).pendingAcks.size, 0);
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>((engine as any).doc)
+      .flow?.flowNodes?.[0]?.position.x,
+    10,
+  );
+  assert.equal(socket.readyState, WebSocket.CLOSED);
+  engine.dispose();
 });
 
 test("a superseded socket closing cannot demote the active replacement connection", async () => {

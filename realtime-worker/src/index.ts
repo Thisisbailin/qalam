@@ -11,6 +11,7 @@ import {
   REALTIME_PROJECT_MAX_BYTES,
   REALTIME_UPDATE_MAX_BYTES,
 } from "../../collaboration/realtimeLimits";
+import { validateRealtimeProjectSnapshot } from "../../collaboration/realtimeProjectValidation";
 
 type RoomEnv = { DB: D1Database };
 type RoomIdentity = { userId: string; projectId: string };
@@ -173,6 +174,11 @@ export class AccountCatalogRoom {
         event: "account_catalog_socket_send_failed",
         error: error instanceof Error ? error.message : String(error),
       }));
+      try {
+        socket.close(1012, "Account catalog stream interrupted; reconnect required");
+      } catch {
+        // The transport is already gone.
+      }
     }
   }
 
@@ -401,8 +407,30 @@ export class ProjectRealtimeRoom {
       return true;
     } catch (error) {
       this.logError("realtime_socket_send_failed", error);
+      // A peer that missed one ordered update cannot safely remain in the
+      // room: a later successful send would leave it permanently behind while
+      // still appearing online. Force a full checkpoint handshake instead.
+      try {
+        socket.close(1012, "Realtime stream interrupted; reconnect required");
+      } catch {
+        // The transport is already gone.
+      }
       return false;
     }
+  }
+
+  private inspectCandidate(candidate: Y.Doc, projectId: string) {
+    const materialized = readProjectSnapshot<Record<string, unknown>>(candidate);
+    const validation = validateRealtimeProjectSnapshot(materialized, projectId);
+    if (!validation.ok) {
+      throw new Error(`Realtime project failed business validation: ${validation.error}`);
+    }
+    const serialized = JSON.stringify(materialized);
+    const materialBytes = new TextEncoder().encode(serialized).byteLength;
+    if (materialBytes > MAX_PROJECT_BYTES) {
+      throw new Error("Realtime project exceeds the maximum projected size");
+    }
+    return { materialized, serialized, materialBytes };
   }
 
   private readRoomMeta() {
@@ -577,12 +605,10 @@ export class ProjectRealtimeRoom {
     if (!meta || Number(meta.projected_seq) >= this.serverSeq) return this.serverSeq;
 
     const projectionSeq = this.serverSeq;
-    const materialized = readProjectSnapshot<Record<string, unknown>>(this.doc);
-    const serialized = JSON.stringify(materialized);
-    const materialBytes = new TextEncoder().encode(serialized).byteLength;
-    if (materialBytes > MAX_PROJECT_BYTES) {
-      throw new Error("Realtime project exceeds the maximum projected size");
-    }
+    const { materialized, serialized, materialBytes } = this.inspectCandidate(
+      this.doc,
+      this.identity.projectId,
+    );
     const checkpoint = Y.encodeStateAsUpdate(this.doc);
     const now = Date.now();
     const activeProject = Array.isArray(materialized.flowProjects)
@@ -594,8 +620,12 @@ export class ProjectRealtimeRoom {
     const descriptor = activeProject && typeof activeProject === "object"
       ? activeProject as Record<string, unknown>
       : {};
-    await this.env.DB.batch([
-      this.env.DB.prepare(
+    const projectionQueries = Object.keys(materialized).length === 0
+      ? [this.env.DB.prepare(
+          `DELETE FROM user_project_documents
+           WHERE user_id = ?1 AND project_id = ?2`,
+        ).bind(this.identity.userId, this.identity.projectId)]
+      : [this.env.DB.prepare(
         `INSERT INTO user_project_documents
          (user_id, project_id, y_state, project_data, server_seq, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -612,8 +642,7 @@ export class ProjectRealtimeRoom {
         serialized,
         projectionSeq,
         now,
-      ),
-      this.env.DB.prepare(
+      ), this.env.DB.prepare(
         `INSERT INTO user_project_catalog
            (user_id, project_id, title, color, duration_min, root_node_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -636,8 +665,8 @@ export class ProjectRealtimeRoom {
           : `project-root-${this.identity.projectId}`,
         Number(descriptor.createdAt) || now,
         now,
-      ),
-    ]);
+      )];
+    await this.env.DB.batch(projectionQueries);
 
     this.state.storage.transactionSync(() => {
       this.writeCheckpointChunks(checkpoint, projectionSeq);
@@ -750,33 +779,42 @@ export class ProjectRealtimeRoom {
       await this.ensureLoaded(identity);
       if (this.flushPromise) await this.flushPromise.catch(() => undefined);
       const previousEpoch = Number(this.readRoomMeta()?.epoch) || 0;
-      this.doc.destroy();
-      this.doc = new Y.Doc();
-      const checkpoint = Y.encodeStateAsUpdate(this.doc);
-      this.state.storage.transactionSync(() => {
-        this.state.storage.sql.exec("DELETE FROM room_update_chunks");
-        this.state.storage.sql.exec("DELETE FROM room_updates");
-        this.state.storage.sql.exec("DELETE FROM room_operations");
-        this.state.storage.sql.exec("DELETE FROM room_checkpoint_chunks");
-        this.state.storage.sql.exec("DELETE FROM room_meta");
-        this.state.storage.sql.exec(
-          `INSERT INTO room_meta
-             (singleton, user_id, project_id, server_seq, checkpoint_seq,
-              checkpoint, projected_seq, pending_bytes, epoch, epoch_reason, material_bytes)
-           VALUES (1, ?1, ?2, 0, 0, ?3, 0, 0, ?4, 'reset', 0)`,
-          identity.userId,
-          identity.projectId,
-          toArrayBuffer(new Uint8Array()),
-          previousEpoch + 1,
-        );
-        this.writeCheckpointChunks(checkpoint, 0);
-      });
+      const replacement = new Y.Doc();
+      const checkpoint = Y.encodeStateAsUpdate(replacement);
+      try {
+        this.state.storage.transactionSync(() => {
+          this.state.storage.sql.exec("DELETE FROM room_update_chunks");
+          this.state.storage.sql.exec("DELETE FROM room_updates");
+          this.state.storage.sql.exec("DELETE FROM room_operations");
+          this.state.storage.sql.exec("DELETE FROM room_checkpoint_chunks");
+          this.state.storage.sql.exec("DELETE FROM room_meta");
+          this.state.storage.sql.exec(
+            `INSERT INTO room_meta
+               (singleton, user_id, project_id, server_seq, checkpoint_seq,
+                checkpoint, projected_seq, pending_bytes, epoch, epoch_reason, material_bytes)
+             VALUES (1, ?1, ?2, 0, 0, ?3, -1, 0, ?4, 'reset', 0)`,
+            identity.userId,
+            identity.projectId,
+            toArrayBuffer(new Uint8Array()),
+            previousEpoch + 1,
+          );
+          this.writeCheckpointChunks(checkpoint, 0);
+        });
+      } catch (error) {
+        replacement.destroy();
+        throw error;
+      }
+      const previousDoc = this.doc;
+      this.doc = replacement;
+      previousDoc.destroy();
       this.serverSeq = 0;
       await this.state.storage.deleteAlarm();
-      await this.env.DB.prepare(
-        `DELETE FROM user_project_documents
-         WHERE user_id = ?1 AND project_id = ?2`,
-      ).bind(identity.userId, identity.projectId).run();
+      try {
+        await this.flushProjection(0);
+      } catch (error) {
+        this.logError("realtime_reset_projection_delete_failed", error);
+        await this.scheduleProjection(2_000);
+      }
     } finally {
       this.resetting = false;
     }
@@ -820,9 +858,30 @@ export class ProjectRealtimeRoom {
     ) {
       return Response.json({ error: "Invalid realtime Agent mutation" }, { status: 400 });
     }
+    const inputValidation = validateRealtimeProjectSnapshot(input.projectData, identity.projectId);
+    if (!inputValidation.ok) {
+      return Response.json({
+        error: `Realtime Agent project failed business validation: ${inputValidation.error}`,
+        code: "INVALID_PROJECT_STATE",
+      }, { status: 400 });
+    }
 
     const current = readProjectSnapshot<Record<string, unknown>>(this.doc);
     const currentRevision = readProjectRevision(current, identity.projectId);
+    // Idempotency must be evaluated before optimistic concurrency. A caller may
+    // lose the HTTP response after the commit; retrying the same operation must
+    // report the original success instead of a misleading revision conflict.
+    const duplicate = (this.state.storage.sql.exec(
+      "SELECT server_seq FROM room_operations WHERE op_id = ?1",
+      operationId,
+    ).toArray() as Array<{ server_seq: number }>)[0];
+    if (duplicate) {
+      return Response.json({
+        revision: currentRevision,
+        serverSeq: Number(duplicate.server_seq) || this.serverSeq,
+        duplicate: true,
+      });
+    }
     if (currentRevision !== expectedRevision || this.serverSeq !== expectedServerSeq) {
       return Response.json({
         error: "The Stylo project changed before this operation could be committed. Re-read the target and retry.",
@@ -846,66 +905,68 @@ export class ProjectRealtimeRoom {
       return Response.json({ error: "Realtime project exceeds the maximum projected size" }, { status: 413 });
     }
 
-    const duplicate = (this.state.storage.sql.exec(
-      "SELECT server_seq FROM room_operations WHERE op_id = ?1",
-      operationId,
-    ).toArray() as Array<{ server_seq: number }>)[0];
-    if (duplicate) {
-      return Response.json({
-        revision: currentRevision,
-        serverSeq: Number(duplicate.server_seq) || this.serverSeq,
-        duplicate: true,
-      });
-    }
-
     const candidate = new Y.Doc();
     let update: Uint8Array;
     try {
       Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.doc), "agent-base");
       applyProjectSnapshot(candidate, input.projectData, `agent:${actorId}`);
+      this.inspectCandidate(candidate, identity.projectId);
       update = Y.encodeStateAsUpdate(candidate, Y.encodeStateVector(this.doc));
-    } finally {
+    } catch (error) {
       candidate.destroy();
+      return Response.json({
+        error: error instanceof Error ? error.message : "Invalid realtime Agent project state",
+        code: "INVALID_PROJECT_STATE",
+      }, { status: 400 });
     }
     if (update.byteLength === 0 || update.byteLength > MAX_UPDATE_BYTES) {
+      candidate.destroy();
       return Response.json({ error: "Realtime Agent update is empty or too large" }, { status: 413 });
     }
     const meta = this.readRoomMeta();
     const pendingBytes = Number(meta?.pending_bytes) || 0;
     if (pendingBytes + update.byteLength > MAX_PENDING_BYTES) {
+      candidate.destroy();
       this.projectInBackground(this.serverSeq);
       return Response.json({ error: "Realtime room is compacting; retry the operation" }, { status: 503 });
     }
 
     const serverSeq = this.serverSeq + 1;
     const now = Date.now();
-    this.state.storage.transactionSync(() => {
-      this.state.storage.sql.exec(
-        `INSERT INTO room_operations (op_id, server_seq, created_at)
-         VALUES (?1, ?2, ?3)`,
-        operationId,
-        serverSeq,
-        now,
-      );
-      this.state.storage.sql.exec(
-        `INSERT INTO room_updates
-           (server_seq, actor_id, op_id, update_blob, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)`,
-        serverSeq,
-        actorId,
-        operationId,
-        this.writeRoomUpdate(serverSeq, update),
-        now,
-      );
-      this.state.storage.sql.exec(
-        `UPDATE room_meta
-         SET server_seq = ?1, pending_bytes = pending_bytes + ?2
-         WHERE singleton = 1`,
-        serverSeq,
-        update.byteLength,
-      );
-    });
-    Y.applyUpdate(this.doc, update, `actor:${actorId}`);
+    try {
+      this.state.storage.transactionSync(() => {
+        this.state.storage.sql.exec(
+          `INSERT INTO room_operations (op_id, server_seq, created_at)
+           VALUES (?1, ?2, ?3)`,
+          operationId,
+          serverSeq,
+          now,
+        );
+        this.state.storage.sql.exec(
+          `INSERT INTO room_updates
+             (server_seq, actor_id, op_id, update_blob, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)`,
+          serverSeq,
+          actorId,
+          operationId,
+          this.writeRoomUpdate(serverSeq, update),
+          now,
+        );
+        this.state.storage.sql.exec(
+          `UPDATE room_meta
+           SET server_seq = ?1, pending_bytes = pending_bytes + ?2
+           WHERE singleton = 1`,
+          serverSeq,
+          update.byteLength,
+        );
+      });
+    } catch (error) {
+      candidate.destroy();
+      throw error;
+    }
+    const previousDoc = this.doc;
+    this.doc = candidate;
+    previousDoc.destroy();
     this.serverSeq = serverSeq;
     const roomEpoch = Number(this.readRoomMeta()?.epoch) || 0;
     const broadcast = JSON.stringify({
@@ -1118,30 +1179,6 @@ export class ProjectRealtimeRoom {
 
       const meta = this.readRoomMeta();
       const pendingBytes = Number(meta?.pending_bytes) || 0;
-      const materialBytes = Number(meta?.material_bytes) || 0;
-      if (
-        materialBytes <= 0
-        || materialBytes + ((pendingBytes + update.byteLength) * 8) > MAX_PROJECT_BYTES
-      ) {
-        const candidate = new Y.Doc();
-        try {
-          Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.doc), "size-base");
-          Y.applyUpdate(candidate, update, "size-candidate");
-          const candidateBytes = new TextEncoder().encode(
-            JSON.stringify(readProjectSnapshot<Record<string, unknown>>(candidate)),
-          ).byteLength;
-          if (candidateBytes > MAX_PROJECT_BYTES) {
-            this.sendSocketMessage(socket, JSON.stringify({
-              type: "error",
-              opId,
-              error: "Realtime project exceeds the maximum projected size",
-            }));
-            return;
-          }
-        } finally {
-          candidate.destroy();
-        }
-      }
       if (pendingBytes + update.byteLength > MAX_PENDING_BYTES) {
         this.projectInBackground(this.serverSeq);
         this.sendSocketMessage(socket, JSON.stringify({
@@ -1152,35 +1189,61 @@ export class ProjectRealtimeRoom {
         return;
       }
 
+      // Opaque Yjs v1 updates are accepted only after their complete materialized
+      // result passes the business schema. This keeps malformed or cross-project
+      // state out of the durable log and guarantees ACK means "safe authority".
+      const candidate = new Y.Doc();
+      try {
+        Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.doc), "candidate-base");
+        Y.applyUpdate(candidate, update, "candidate-update");
+        this.inspectCandidate(candidate, attachedIdentity.projectId);
+      } catch (error) {
+        candidate.destroy();
+        this.sendSocketMessage(socket, JSON.stringify({
+          type: "error",
+          opId,
+          code: "INVALID_PROJECT_STATE",
+          error: error instanceof Error ? error.message : "Invalid realtime project state",
+        }));
+        return;
+      }
+
       const serverSeq = this.serverSeq + 1;
       const now = Date.now();
-      this.state.storage.transactionSync(() => {
-        this.state.storage.sql.exec(
-          `INSERT INTO room_operations (op_id, server_seq, created_at)
-           VALUES (?1, ?2, ?3)`,
-          opId,
-          serverSeq,
-          now,
-        );
-        this.state.storage.sql.exec(
-          `INSERT INTO room_updates
-             (server_seq, actor_id, op_id, update_blob, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5)`,
-          serverSeq,
-          actorId,
-          opId,
-          this.writeRoomUpdate(serverSeq, update),
-          now,
-        );
-        this.state.storage.sql.exec(
-          `UPDATE room_meta
-           SET server_seq = ?1, pending_bytes = pending_bytes + ?2
-           WHERE singleton = 1`,
-          serverSeq,
-          update.byteLength,
-        );
-      });
-      Y.applyUpdate(this.doc, update, `actor:${actorId}`);
+      try {
+        this.state.storage.transactionSync(() => {
+          this.state.storage.sql.exec(
+            `INSERT INTO room_operations (op_id, server_seq, created_at)
+             VALUES (?1, ?2, ?3)`,
+            opId,
+            serverSeq,
+            now,
+          );
+          this.state.storage.sql.exec(
+            `INSERT INTO room_updates
+               (server_seq, actor_id, op_id, update_blob, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)`,
+            serverSeq,
+            actorId,
+            opId,
+            this.writeRoomUpdate(serverSeq, update),
+            now,
+          );
+          this.state.storage.sql.exec(
+            `UPDATE room_meta
+             SET server_seq = ?1, pending_bytes = pending_bytes + ?2
+             WHERE singleton = 1`,
+            serverSeq,
+            update.byteLength,
+          );
+        });
+      } catch (error) {
+        candidate.destroy();
+        throw error;
+      }
+      const previousDoc = this.doc;
+      this.doc = candidate;
+      previousDoc.destroy();
       this.serverSeq = serverSeq;
       if (pendingBytes + update.byteLength >= PROJECTION_BYTE_THRESHOLD) {
         this.projectInBackground(serverSeq);

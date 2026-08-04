@@ -25,6 +25,8 @@
 8. 删除 tombstone 和 reset epoch 高于旧客户端内容；旧设备不得复活项目或旧世代。
 9. `synced` 只能表示 outbox 与 pending ACK 均为空，并且最后写入已获得服务端回执。
 10. 所有恢复流程必须收敛、幂等，并在任意一步崩溃后可继续。
+11. `serverSeq` 在线传输必须连续；发现缺口不能继续应用后续更新，必须重连获取完整 checkpoint。
+12. 永久非法的本地分支不能无限重试，也不能静默丢弃；应移入本地隔离区并恢复 confirmed 主线。
 
 ## 二、各种设备时序应如何处理
 
@@ -96,12 +98,18 @@
 3. **跨 epoch 同文本覆盖**：原三方合并在双方修改同一字符串时整段选择 local。现在从共同文本基线重建两个稳定 Y.Text 分支，保留双方字符操作。
 4. **本地回显误吞远端文本**：编辑器原先用一个布尔值忽略下一次属性更新。现在记录精确的本地文本回显队列，只有内容完全相同才忽略，合并后的远端投影必须采用。
 5. **剧本草稿过度冲突**：本地未保存草稿与远端修改只要同时存在就要求二选一。现在不同文本区段自动三方合并，真正重叠替换仍保留显式冲突。
+6. **ACK 前缺少业务状态验证**：协议 v1 的 opaque Yjs update 现在先应用到隔离候选文档，完整检查房间项目作用域、JSON 深度/复杂度、有限数值、节点/连线配额、引用完整性、重复 ID 和父级环；只有候选状态与容量均合法才进入 SQLite 事务和 ACK。Agent 全快照走同一门槛。
+7. **事务后内存 apply 裂缝**：服务端不再先提交更新、再冒险向当前内存文档 apply；事务成功后直接切换到已经验证过的候选 Y.Doc，事务失败则销毁候选且不改变内存权威。
+8. **单条广播丢失后假在线**：任何项目或目录 WebSocket send 异常都会关闭该 peer；客户端同时校验 `epoch + serverSeq` 连续性，遇到缺序不应用后续包，而是重连获取完整权威 checkpoint。
+9. **客户端恢复边界分裂**：本地 checkpoint、confirmed checkpoint、epoch、outbox 和 rejected quarantine 现在可在同一个 IndexedDB 事务写入；待发编辑使用微任务立即启动落盘，网络发送仍严格等待 durable outbox。
+10. **永久拒绝导致重试风暴**：服务端以 `INVALID_PROJECT_STATE` 区分永久业务拒绝；客户端把整个未确认分支持久化到 rejected quarantine，从自动 outbox 移除，并恢复 confirmed 基线后重连，不再形成崩溃循环。
+11. **重置中途失败可破坏内存权威**：空文档先在独立候选中建立，Durable Object 重置事务成功后才切换内存；D1 删除以 `projected_seq = -1` 形成可重试投影屏障，短暂失败由 alarm 和 strong-reader flush 继续完成。
 
 ### 仍需继续演进的风险
 
-#### P0：服务端只验证 Yjs 编码，不验证业务 mutation
+#### 已封堵的 P0 与后续协议优化：typed mutation
 
-当前 owner 可以发送合法 Yjs 二进制但构造无效项目形状。服务端会检查 epoch、大小、速率和编码，但完整 schema 校验发生在投影阶段。生产方案应逐步引入 typed mutation envelope：
+兼容协议 v1 已通过“完整候选状态 ACK 前校验”封堵非法状态进入权威日志的问题。它以安全优先，但每个 opaque 更新需要克隆和物化项目，CPU 成本仍是 O(项目总大小)。下一阶段应逐步引入 typed mutation envelope：
 
 ```ts
 type ProjectMutation =
@@ -113,7 +121,7 @@ type ProjectMutation =
   | { kind: "link.delete"; linkId: string };
 ```
 
-服务端在事务前验证权限、引用完整性、字段白名单和资源配额，再转换为 Yjs 更新。迁移期可同时接受旧 opaque update，但只对受信版本开放，并在投影失败时隔离 generation，而不是持续 ACK 后让读模型永久失败。
+服务端在事务前验证权限、引用完整性、字段白名单和资源配额，再转换为 Yjs 更新。迁移期继续接受经过完整候选校验的 v1 opaque update；新协议覆盖充分后，v1 owner 写入降级为只读/迁移通道。typed mutation 不能建立第二套权威，最终仍必须转换为同一 Yjs 操作并写入同一房间 WAL。
 
 #### P1：客户端远端应用仍是 O(项目总大小)
 

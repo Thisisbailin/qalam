@@ -859,7 +859,7 @@
 }
 
 .screenplay-block-editor {
-  padding: 24px 96px 44px 106px;
+  padding: 28px 92px 52px 102px;
 }
 
 .screenplay-block {
@@ -901,8 +901,12 @@
 }
 
 .screenplay-block--scene_heading {
-  margin-top: 22px;
-  margin-bottom: 12px;
+  margin-top: 26px;
+  margin-bottom: 16px;
+}
+
+.screenplay-block--action + .screenplay-block--action {
+  margin-top: 8px;
 }
 
 .screenplay-block--character,
@@ -1043,7 +1047,7 @@
 .screenplay-block__content {
   position: relative;
   min-width: 0;
-  padding: 3px 12px 3px 4px;
+  padding: 5px 12px 5px 4px;
 }
 
 .screenplay-block textarea {
@@ -1055,9 +1059,9 @@
   background: transparent;
   padding: 0 6px;
   color: var(--screenplay-ink);
-  font-family: "Courier Prime", "Courier New", ui-monospace, monospace;
-  font-size: 16px;
-  line-height: 1;
+  font-family: "Courier Prime", "Courier New", "PingFang SC", "Hiragino Sans GB", ui-monospace, monospace;
+  font-size: 17px;
+  line-height: 1.38;
   outline: none;
 }
 
@@ -1089,7 +1093,7 @@
 
 .screenplay-block--section textarea {
   font-family: "Geist", system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 760;
 }
 
@@ -1097,7 +1101,7 @@
 .screenplay-block--note textarea,
 .screenplay-block--boneyard textarea {
   color: var(--screenplay-muted);
-  font-size: 13px;
+  font-size: 14px;
   font-style: italic;
 }
 
@@ -1260,7 +1264,12 @@
 }
 
 .screenplay-scene-heading .is-location {
-  max-width: min(44vw, 28ch);
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.screenplay-scene-heading .is-location input {
+  max-width: 100%;
 }
 
 .screenplay-page-break {
@@ -2138,7 +2147,8 @@
   }
 
   .screenplay-block textarea {
-    font-size: 14px;
+    font-size: 15px;
+    line-height: 1.42;
   }
 }
 

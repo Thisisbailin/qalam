@@ -89,6 +89,8 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(blockEditor, /mergeScreenplayLineWithPrevious/);
   assert.match(blockEditor, /event\.key !== "Tab"/);
   assert.doesNotMatch(blockEditor, /\^\[1-6\]\$/);
+  assert.match(blockEditor, /measureLocationVisualWidth/);
+  assert.doesNotMatch(blockEditor, /Array\.from\(scene\.location \|\| "地点"\)\.length \+ 2\)\}ch/);
 });
 
 test("Manus owns screenplay creation and offers continuous paper layouts", async () => {

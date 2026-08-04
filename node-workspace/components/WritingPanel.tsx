@@ -67,6 +67,7 @@ import {
   type ScreenplayPageArrangement,
   type SaveState,
 } from "./screenplay/ScreenplayChrome";
+import { TranslatorDock } from "./TranslatorDock";
 import type {
   AgentScriptEditProposalBatch,
   ScriptDocumentCommit,
@@ -82,6 +83,10 @@ type Props = {
   initialScriptNodeId?: string | null;
   isStyloOpen?: boolean;
   agentDockWidth?: number;
+  isTranslatorOpen?: boolean;
+  translatorDockWidth?: number;
+  onToggleTranslator?: () => void;
+  onCloseTranslator?: () => void;
   agentScriptEditProposals?: AgentScriptEditProposalBatch | null;
   onResolveAgentScriptEditProposal?: (proposalId: string) => void;
   onCommitScriptDocument?: (commit: ScriptDocumentCommit) => void;
@@ -226,6 +231,10 @@ export const WritingPanel: React.FC<Props> = ({
   initialScriptNodeId,
   isStyloOpen = false,
   agentDockWidth = 0,
+  isTranslatorOpen = false,
+  translatorDockWidth = 0,
+  onToggleTranslator,
+  onCloseTranslator,
   agentScriptEditProposals = null,
   onResolveAgentScriptEditProposal,
   onCommitScriptDocument,
@@ -595,11 +604,12 @@ export const WritingPanel: React.FC<Props> = ({
     const collapseSidePanels = (event: MediaQueryListEvent | MediaQueryList) => {
       if (!event.matches) return;
       setIsInspectorOpen(false);
+      onCloseTranslator?.();
     };
     collapseSidePanels(compactLayout);
     compactLayout.addEventListener("change", collapseSidePanels);
     return () => compactLayout.removeEventListener("change", collapseSidePanels);
-  }, []);
+  }, [onCloseTranslator]);
 
   useEffect(() => {
     if (!scriptNode?.id || !agentScriptEditProposals) return;
@@ -895,9 +905,18 @@ export const WritingPanel: React.FC<Props> = ({
           commitDraft(draftRef.current, true);
           setActiveScriptNodeId(contentPages[0].id);
         }
+        if (!isFocusMode) onCloseTranslator?.();
         setIsFocusMode((active) => !active);
       }}
-      onToggleInspector={() => setIsInspectorOpen((open) => !open)}
+      onToggleInspector={() => {
+        if (!isInspectorOpen) onCloseTranslator?.();
+        setIsInspectorOpen((open) => !open);
+      }}
+      isTranslatorOpen={isTranslatorOpen}
+      onToggleTranslator={() => {
+        if (!isTranslatorOpen) setIsInspectorOpen(false);
+        onToggleTranslator?.();
+      }}
       onShare={() => void handleShare()}
       onClose={handleClose}
       pageIndex={pageIndex}
@@ -1023,8 +1042,13 @@ export const WritingPanel: React.FC<Props> = ({
 
   return (
     <div
-      className={`screenplay-workspace ${isFocusMode ? "is-focus-mode" : ""} ${isInspectorOpen ? "is-inspector-open" : ""} ${agentDockWidth > 0 ? "is-agent-open" : ""}`}
-      style={{ "--screenplay-agent-inset": `${Math.max(0, agentDockWidth)}px` } as React.CSSProperties}
+      className={`screenplay-workspace ${isFocusMode ? "is-focus-mode" : ""} ${isInspectorOpen ? "is-inspector-open" : ""} ${agentDockWidth > 0 ? "is-agent-open" : ""} ${isTranslatorOpen && !isFocusMode ? "is-translator-open" : ""}`}
+      style={
+        {
+          "--screenplay-agent-inset": `${Math.max(0, agentDockWidth)}px`,
+          "--screenplay-translator-inset": `${Math.max(0, translatorDockWidth)}px`,
+        } as React.CSSProperties
+      }
     >
       {isFocusMode ? screenplayHeader : null}
       <div className="screenplay-layout">
@@ -1079,6 +1103,8 @@ export const WritingPanel: React.FC<Props> = ({
           />
         ) : null}
       </div>
+
+      {isTranslatorOpen && !isFocusMode ? <TranslatorDock onClose={onCloseTranslator} /> : null}
 
       {!isFocusMode && pageArrangement === "filmstrip" && displayPages.length > 0 ? (
         <nav className="screenplay-page-filmstrip" aria-label="稿纸缩略队列">

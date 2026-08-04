@@ -69,6 +69,18 @@ type Props = {
   locationOptionsId?: string;
 };
 
+/**
+ * 场景地点输入框按 `ch` 单位计算宽度。等宽字体下中文字形通常占 2 个
+ * `ch`（全角），直接用字符数会低估一半导致中文场景名显示不完整，
+ * 因此按视觉宽度计：CJK 计 2、其余计 1。
+ */
+const measureLocationVisualWidth = (value: string) =>
+  Array.from(value || "地点").reduce(
+    (width, char) =>
+      width + (/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]/.test(char) ? 2 : 1),
+    0
+  );
+
 const KIND_ICONS: Record<ScreenplayLineKind, React.ComponentType<{ size?: number; weight?: "regular" | "bold" }>> = {
   action: TextT,
   scene_heading: FilmSlate,
@@ -336,7 +348,7 @@ const ScreenplayBlockRow = memo(({
               <input
                 ref={(element) => registerEditor(line.index, element)}
                 value={scene.location}
-                style={{ width: `${Math.max(6, Array.from(scene.location || "地点").length + 2)}ch` }}
+                style={{ width: `${Math.max(6, Math.min(48, measureLocationVisualWidth(scene.location) + 2))}ch` }}
                 list={locationOptionsId}
                 onFocus={() => onActive(line.index)}
                 onChange={(event) => onReplaceLine(line.index, serializeSceneHeading({ ...scene, location: event.target.value }))}

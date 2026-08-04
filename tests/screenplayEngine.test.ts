@@ -48,6 +48,11 @@ test("screenplay engine normalizes Chinese and standard scene headings into cano
     location: "旧码头",
     time: "DAWN",
   });
+  assert.deepEqual(parseSceneHeading("【场景】一个嘎查咖啡馆 - 日"), {
+    boundary: "INT.",
+    location: "一个嘎查咖啡馆",
+    time: "DAY",
+  });
   assert.equal(
     serializeSceneHeading({ boundary: "EXT.", location: "RIVER BANK", time: "NIGHT" }),
     ".EXT. RIVER BANK - NIGHT"
@@ -333,6 +338,15 @@ test("scene parsing removes duplicate localized time suffixes", () => {
     location: "古宅门前",
     time: "DAY",
   });
+  assert.deepEqual(parseSceneHeading("INT.一个嘎查咖啡馆 - 日"), {
+    boundary: "INT.",
+    location: "一个嘎查咖啡馆",
+    time: "DAY",
+  });
+  assert.equal(
+    serializeSceneHeading(parseSceneHeading("INT.一个嘎查咖啡馆 - 日")),
+    ".INT. 一个嘎查咖啡馆 - DAY"
+  );
 });
 
 test("format conversion preserves visible content and permits an empty role cue", () => {

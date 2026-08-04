@@ -380,7 +380,9 @@ export const parseSceneHeading = (value: string): SceneHeading => {
       time: "DAY",
     };
   }
-  const boundaryMatch = clean.match(/^(INT\.\/EXT\.?|INT\/EXT\.?|INT\.|EXT\.|EST\.|I\/E)(?:\s+|$)/i);
+  // Fountain 允许场景前缀直接粘连地点（如 INT.咖啡馆、EXT.ROOM），
+  // 不要求前缀后必须有空白；否则前缀会被误并入地点名。
+  const boundaryMatch = clean.match(/^(INT\.\/EXT\.?|INT\/EXT\.?|INT\.|EXT\.|EST\.|I\/E)/i);
   const boundary = normalizeBoundary(boundaryMatch?.[1] || "INT.");
   const remainder = boundaryMatch ? clean.slice(boundaryMatch[0].length).trim() : clean;
   const chunks = remainder.split(/\s+-\s+/).map((item) => item.trim()).filter(Boolean);

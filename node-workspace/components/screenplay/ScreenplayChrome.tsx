@@ -17,6 +17,7 @@ import {
   MapPin,
   MagnifyingGlass,
   ShareNetwork,
+  Translate,
   User,
   WarningCircle,
   X,
@@ -44,6 +45,8 @@ type HeaderProps = {
   isCoverPage?: boolean;
   pageArrangement: ScreenplayPageArrangement;
   autoPagination: boolean;
+  isTranslatorOpen?: boolean;
+  onToggleTranslator?: () => void;
   onPageArrangementChange: (arrangement: ScreenplayPageArrangement) => void;
   onCreatePage: () => void;
   onToggleAutoPagination: () => void;
@@ -70,6 +73,8 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
   isCoverPage = false,
   pageArrangement,
   autoPagination,
+  isTranslatorOpen = false,
+  onToggleTranslator,
   onPageArrangementChange,
   onCreatePage,
   onToggleAutoPagination,
@@ -144,6 +149,15 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
         </button>
         <button type="button" className={isInspectorOpen ? "is-active" : ""} onClick={onToggleInspector} title="Manus 信息" aria-label="打开 Manus 信息">
           <Info size={18} />
+        </button>
+        <button
+          type="button"
+          className={isTranslatorOpen ? "is-active" : ""}
+          onClick={onToggleTranslator}
+          title="翻译器"
+          aria-label="打开翻译器"
+        >
+          <Translate size={18} />
         </button>
         <button type="button" onClick={onShare} title="分享 Fountain" aria-label="分享 Fountain">
           <ShareNetwork size={18} />

@@ -24,6 +24,7 @@ import { CanvasContentLocator } from "./CanvasContentLocator";
 import { EdgeAlignmentGuides } from "./EdgeAlignmentGuides";
 import { ViewportControls } from "./ViewportControls";
 import { ManusPanel } from "./ManusPanel";
+import { TRANSLATOR_DOCK_WIDTH } from "./TranslatorDock";
 import { PinoardPanel } from "./PinoardPanel";
 import { LookbookStudioPanel } from "./lookbook/LookbookStudioPanel";
 import { AccountWorkspace, type AccountWorkspaceView } from "./AccountWorkspace";
@@ -379,6 +380,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
   const [projectSettingsPanel, setProjectSettingsPanel] = useState<ProjectSettingsPanelKey>("provider");
   const [projectSettingsAssetsSection, setProjectSettingsAssetsSection] = useState<MaterialsSectionKey | undefined>();
   const [agentDockWidth, setAgentDockWidth] = useState(0);
+  const [isTranslatorOpen, setIsTranslatorOpen] = useState(false);
   const [isStyloCollapsed, setIsStyloCollapsed] = useState(true);
   const [isStyloSending, setIsStyloSending] = useState(false);
   const [styloOpenRequest, setStyloOpenRequest] = useState(0);
@@ -388,6 +390,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
   const [styloCancelRequest, setStyloCancelRequest] = useState(0);
   const [isStyloFirstManual, setIsStyloFirstManual] = useState(false);
   const [composerInput, setComposerInput] = useState("");
+  const translatorDockWidth = isTranslatorOpen ? TRANSLATOR_DOCK_WIDTH + 16 * 2 : 0;
   const isStyloFirstMode = isStyloFirstManual;
   const handleOpenScriptDocument = useCallback((nodeId: string) => {
     setActivePinoard(null);
@@ -418,6 +421,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     setAgentScriptEditProposals(null);
     setComposerInput("");
     setIsStyloSending(false);
+    setIsTranslatorOpen(false);
   }, [styloProjectId]);
   useEffect(() => {
     if (projectResetToken <= 0) return;
@@ -426,7 +430,24 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
     setAgentScriptEditProposals(null);
     setComposerInput("");
     setIsStyloSending(false);
+    setIsTranslatorOpen(false);
   }, [projectResetToken]);
+  const styloOpenRequestRef = useRef(styloOpenRequest);
+  useEffect(() => {
+    if (styloOpenRequest === styloOpenRequestRef.current) return;
+    styloOpenRequestRef.current = styloOpenRequest;
+    // agent 面板被唤起（自适应宽度因素出现）时，翻译器自动收起。
+    setIsTranslatorOpen(false);
+  }, [styloOpenRequest]);
+  useEffect(() => {
+    if (!isTranslatorOpen) return;
+    // 翻译器打开时，agent 面板保持收起，保证两侧布局互斥。
+    setIsStyloCollapsed(true);
+    setStyloCloseRequest((count) => count + 1);
+  }, [isTranslatorOpen]);
+  const toggleTranslator = useCallback(() => {
+    setIsTranslatorOpen((open) => !open);
+  }, []);
   const handleAgentScriptEditProposals = useCallback((batch: AgentScriptEditProposalBatch) => {
     setAgentScriptEditProposals((current) => {
       const nextNodeIds = new Set(batch.proposals.map((proposal) => proposal.nodeId));
@@ -1388,6 +1409,7 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
       cancelRequest={styloCancelRequest}
       onCollapsedChange={(collapsed) => {
         setIsStyloCollapsed(collapsed);
+        if (!collapsed) setIsTranslatorOpen(false);
         if (collapsed) {
           if (isStyloFirstMode) {
             setIsStyloFirstManual(false);
@@ -1637,6 +1659,10 @@ const CreativeWorkspaceInner: React.FC<CreativeWorkspaceProps> = ({
           initialScriptNodeId={editingScriptNodeId}
           isStyloOpen={!isStyloCollapsed}
           agentDockWidth={effectiveAgentDockWidth}
+          isTranslatorOpen={isTranslatorOpen}
+          translatorDockWidth={translatorDockWidth}
+          onToggleTranslator={toggleTranslator}
+          onCloseTranslator={() => setIsTranslatorOpen(false)}
           agentScriptEditProposals={agentScriptEditProposals}
           onResolveAgentScriptEditProposal={resolveAgentScriptEditProposal}
           onCommitScriptDocument={commitScriptDocument}

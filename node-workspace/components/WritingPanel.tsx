@@ -358,21 +358,36 @@ export const WritingPanel: React.FC<Props> = ({
   const fountainImportInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [filmstripScale, setFilmstripScale] = useState(1);
+  const [filmstripPaperHeight, setFilmstripPaperHeight] = useState(1056);
 
   useEffect(() => {
     const node = workspaceRef.current;
     if (!node) return;
     const update = () => {
+      // 胶卷模式：纸张高度随内容自适应（min-height 1056px），
+      // 再按实际高度整体缩放，让整张稿纸完整适配窗口高度。
+      const paper = node.querySelector<HTMLElement>(
+        ".screenplay-document-stage.is-filmstrip .screenplay-document"
+      );
+      if (!paper) {
+        setFilmstripScale(1);
+        setFilmstripPaperHeight(1056);
+        return;
+      }
+      const paperHeight = Math.max(1056, paper.offsetHeight || 1056);
       const available = node.clientHeight - 192;
-      const next = Math.min(1, Math.max(0.42, available / 1056));
+      const next = Math.min(1, Math.max(0.42, available / paperHeight));
       setFilmstripScale((current) => (Math.abs(current - next) < 0.01 ? current : next));
+      setFilmstripPaperHeight((current) =>
+        Math.abs(current - paperHeight) < 1 ? current : paperHeight
+      );
     };
     update();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(update);
     observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [activeScriptNodeId, contentPages.length, draft.body, pageArrangement]);
 
   useEffect(() => {
     if (draggedPageId) return;
@@ -1223,6 +1238,7 @@ export const WritingPanel: React.FC<Props> = ({
           "--screenplay-agent-inset": `${Math.max(0, agentDockWidth)}px`,
           "--screenplay-translator-inset": `${Math.max(0, translatorDockWidth)}px`,
           "--screenplay-filmstrip-scale": String(filmstripScale),
+          "--screenplay-filmstrip-paper-height": `${filmstripPaperHeight}px`,
         } as React.CSSProperties
       }
     >

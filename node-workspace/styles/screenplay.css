@@ -463,17 +463,21 @@
   padding-bottom: 96px;
 }
 
-/* 胶卷视图：整张稿纸缩放完整显示，让用户看到页面的全貌 */
+/* 胶卷视图：纸张高度随内容自适应（不裁剪），整体缩放完整适配窗口高度 */
 .screenplay-document-stage.is-filmstrip .screenplay-document {
+  height: auto;
+  min-height: 1056px;
   transform-origin: top center;
   transform: scale(var(--screenplay-filmstrip-scale, 1));
   margin-top: 16px;
-  margin-bottom: calc(1056px * var(--screenplay-filmstrip-scale, 1) - 976px);
+  margin-bottom: calc(
+    80px - var(--screenplay-filmstrip-paper-height, 1056px) * (1 - var(--screenplay-filmstrip-scale, 1))
+  );
 }
 
 .screenplay-document-stage.is-filmstrip .screenplay-block-editor,
 .screenplay-document-stage.is-filmstrip .screenplay-document__preview {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .screenplay-document {

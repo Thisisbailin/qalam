@@ -75,9 +75,14 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   // 稿纸固定长度（一页约一分钟戏的容量），正文不再被强制填充空白行。
   assert.match(styles, /\.screenplay-document \{[\s\S]*height: 1056px;/);
   assert.match(styles, /\.screenplay-document__body \{/);
-  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*--screenplay-filmstrip-scale/);
+  // 胶卷模式：纸张随内容自适应高度并按实际高度缩放，不裁剪。
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*height: auto;[\s\S]*--screenplay-filmstrip-scale/);
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*--screenplay-filmstrip-paper-height/);
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-block-editor[\s\S]{0,120}overflow: visible;/);
   assert.match(writingPanel, /const \[autoPagination, setAutoPagination\] = useState\(true\)/);
   assert.match(writingPanel, /--screenplay-filmstrip-scale/);
+  assert.match(writingPanel, /--screenplay-filmstrip-paper-height/);
+  assert.match(writingPanel, /paper\.offsetHeight \|\| 1056/);
   assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-header \{[\s\S]*right: -54px;/);

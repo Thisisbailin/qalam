@@ -85,6 +85,8 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*--screenplay-filmstrip-paper-height/);
   assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-block-editor[\s\S]{0,120}overflow: visible;/);
   assert.match(writingPanel, /const \[autoPagination, setAutoPagination\] = useState\(true\)/);
+  assert.match(writingPanel, /setProjectData\(\(previous\) => \{[\s\S]*reflowConnectedScriptPages\(previous/);
+  assert.doesNotMatch(writingPanel, /setProjectData\(result\.projectData\)/);
   assert.match(writingPanel, /--screenplay-filmstrip-scale/);
   assert.match(writingPanel, /--screenplay-filmstrip-paper-height/);
   assert.match(writingPanel, /paper\.offsetHeight \|\| 1056/);

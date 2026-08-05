@@ -46,9 +46,9 @@ const hasCanonicalPageNumbers = (nodes: NodeFlowNode[]) =>
   nodes.every((node, index) => readPageNumber(node) === index + 1);
 
 const compareNodes = (left: NodeFlowNode, right: NodeFlowNode) =>
-  readPageNumber(left) - readPageNumber(right) ||
   left.position.y - right.position.y ||
   left.position.x - right.position.x ||
+  readPageNumber(left) - readPageNumber(right) ||
   left.id.localeCompare(right.id);
 
 const readManuscriptId = (node?: NodeFlowNode | null) => {
@@ -413,10 +413,10 @@ export type ScreenplayReflowPage = {
 
 /**
  * 行业剧本软件的页语义：内容超出当前页容量时，溢出内容流入下一页；
- * 前一页未满时**不**自动回填（刻意分页要保持），只有用户在后一页开头
- * 删除内容（手势合并）才回流。
+ * 前一页未满时**不**自动回填（刻意分页要保持）。普通的自动重排只改变
+ * 内容分布，绝不删除既有稿纸；跨页合并必须由调用方显式请求。
  * - 显式分页符（===）与手动分页（pinned）是硬边界，重排不会跨过；
- * - 空页会被合并，末尾空行不会保留。
+ * - 空稿纸仍是用户资产，必须保留；末尾空行不会保留。
  */
 export const reflowScreenplayPages = (
   pages: ScreenplayReflowPage[],
@@ -461,7 +461,9 @@ export const reflowScreenplayPages = (
       .map((line) => line.raw)
       .join("\n")
       .replace(/\n+$/, "");
-    if (body || chunk.pinned || !result.length) result.push({ body, pinned: chunk.pinned });
+    // 不能因为正文暂时为空而吞掉一张稿纸。页节点的删除只能来自
+    // 明确的“合并稿纸/删除稿纸”操作，而不是自动分页。
+    result.push({ body, pinned: chunk.pinned });
   };
 
   const flushPending = () => {
@@ -518,7 +520,7 @@ export const reflowConnectedScriptPages = (
     bodyOverrides?: Record<string, string>;
     cursorLine?: number;
     capacity?: number;
-    /** 手势合并：把该页开头删除后的剩余内容回流到上一页（溶解硬边界）。 */
+    /** 明确合并操作：把该页正文并入上一页（溶解硬边界）。 */
     mergeNextPageId?: string;
   }
 ): ScreenplayReflowResult | null => {
@@ -673,10 +675,6 @@ export const reflowConnectedScriptPages = (
       );
     });
 
-  const keptIds = new Set([
-    ...(titlePage ? [titlePage.id] : []),
-    ...keptBefore.map((node) => node.id),
-  ]);
   const flowNodes = [
     ...(flow?.flowNodes || []).filter((node) => !tailIds.has(node.id)),
     ...newTailNodes,
@@ -688,6 +686,7 @@ export const reflowConnectedScriptPages = (
     ...newTailNodes.map((node) => node.id),
   ];
   const orderedIdSet = new Set(orderedIds);
+  const newTailIdSet = new Set(newTailNodes.map((node) => node.id));
   const links = (flow?.links || []).filter(
     (link) =>
       !(
@@ -695,7 +694,9 @@ export const reflowConnectedScriptPages = (
         orderedIdSet.has(link.source) &&
         orderedIdSet.has(link.target)
       ) &&
-      !(link.data?.relation === "folder-membership" && tailIds.has(link.target))
+      // 复用的稿纸必须保留原 Manus 归属；只有真正被显式合并删除的
+      // 节点才移除 membership。新建的稿纸会在下方补上 membership。
+      !(link.data?.relation === "folder-membership" && tailIds.has(link.target) && !newTailIdSet.has(link.target))
   );
   for (let index = 0; index < orderedIds.length - 1; index += 1) {
     const source = orderedIds[index];

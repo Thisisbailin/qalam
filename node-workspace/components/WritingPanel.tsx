@@ -263,19 +263,6 @@ const stripFountainTitleBlock = (source: string) => {
   return lines.slice(cursor).join("\n");
 };
 
-/**
- * 判断用户是否在当前页"开头删除"（页首内容被删/清空）：
- * 这是触发跨页回流的唯一手势。改写字数/替换首行不算。
- */
-const didDeletePageStart = (oldBody: string, newBody: string) => {
-  const oldLines = oldBody.replace(/\r\n?/g, "\n").split("\n");
-  const newLines = newBody.replace(/\r\n?/g, "\n").split("\n");
-  const oldFirst = (oldLines[0] || "").trim();
-  const newFirst = (newLines[0] || "").trim();
-  if (!oldFirst || oldFirst === newFirst) return false;
-  return newLines.length < oldLines.length || !newFirst;
-};
-
 export const WritingPanel: React.FC<Props> = ({
   projectData,
   setProjectData,
@@ -868,16 +855,21 @@ export const WritingPanel: React.FC<Props> = ({
     const anchor = scriptNode?.id || activeScriptNodeId;
     if (!anchor || !onSplitScriptDocument) return;
     const anchorBody = draftRef.current.body;
-    // 只有用户在页首删除内容时才触发跨页回流（合并到上一页）；
-    // 其它情况只做“内容超出容量时下推”，绝不自动回填。
-    const startDeletion = didDeletePageStart(lastCommittedRef.current.body, anchorBody);
-    const result = reflowConnectedScriptPages(projectData, anchor, {
+    // 先用当前渲染快照确定焦点。实际写入必须在 setProjectData 的函数式
+    // 更新中，针对最新项目状态重算，不能把同步期间过期的整份快照写回。
+    const preview = reflowConnectedScriptPages(projectData, anchor, {
       bodyOverrides: { [anchor]: anchorBody },
       cursorLine: activeLineIndex,
-      ...(startDeletion ? { mergeNextPageId: anchor } : {}),
     });
-    if (!result || !result.changed) return;
-    setProjectData(result.projectData);
+    if (!preview || !preview.changed) return;
+    setProjectData((previous) => {
+      const result = reflowConnectedScriptPages(previous, anchor, {
+        bodyOverrides: { [anchor]: anchorBody },
+        cursorLine: activeLineIndex,
+      });
+      return result?.changed ? result.projectData : previous;
+    });
+    const result = preview;
     const cursorChunk = result.cursor?.chunkIndex ?? 0;
     const targetNodeId = result.contentNodeIds[cursorChunk];
     const targetBody = result.chunkBodies[cursorChunk];

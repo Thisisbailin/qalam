@@ -38,6 +38,7 @@ import {
   splitScreenplayDocumentAtLine,
   splitScreenplayLineAtSelection,
 } from "../node-workspace/screenplay/manusPages";
+import { normalizeManusFolderStructure } from "../node-workspace/manus/folder";
 import {
   parseFountainTitlePage,
   serializeFountainTitlePage,
@@ -226,7 +227,7 @@ test("reflow pushes overflow down but never auto-fills an under-filled page", ()
   assert.equal(kept[1].body, "!二\n!三");
 });
 
-test("reflow respects explicit page breaks and merges empty pages", () => {
+test("reflow respects explicit page breaks and preserves empty pages", () => {
   // === 显式分页符：后续内容形成硬边界页。
   const withBreak = reflowScreenplayPages([
     { body: "!一\n===\n!二", pinned: false },
@@ -245,15 +246,91 @@ test("reflow respects explicit page breaks and merges empty pages", () => {
   assert.equal(pinned[1].pinned, true);
   assert.equal(pinned[1].body, "!二\n!三");
 
-  // 空页被合并，不产生多余页。
-  const merged = reflowScreenplayPages([
+  // 空稿纸是用户创建的结构，自动分页不得将它吞掉。
+  const preservedEmptyPage = reflowScreenplayPages([
     { body: "!一", pinned: false },
     { body: "", pinned: false },
     { body: "!二", pinned: false },
   ], 10);
-  assert.equal(merged.length, 2);
-  assert.equal(merged[0].body, "!一");
-  assert.equal(merged[1].body, "!二");
+  assert.equal(preservedEmptyPage.length, 3);
+  assert.equal(preservedEmptyPage[0].body, "!一");
+  assert.equal(preservedEmptyPage[1].body, "");
+  assert.equal(preservedEmptyPage[2].body, "!二");
+});
+
+test("automatic reflow preserves existing manuscript pages and memberships", () => {
+  const page = (id: string, body: string, x: number) => ({
+    id,
+    type: "scriptPage" as const,
+    position: { x, y: 0 },
+    data: {
+      manuscriptId: "manuscript-preserve",
+      text: body,
+      content: body,
+      documentKind: "script" as const,
+      format: "fountain" as const,
+    },
+  });
+  const base = {
+    flow: {
+      flowNodes: [
+        { id: "manus", type: "folder", position: { x: 0, y: 0 }, data: { folderKind: "manus", manuscriptId: "manuscript-preserve" } },
+        page("page-a", "!前页", 380),
+        page("page-b", "!将被清空", 760),
+        { id: "unrelated", type: "text", position: { x: 1200, y: 0 }, data: { text: "不属于本稿件" } },
+      ],
+      links: [
+        { id: "page-a-b", source: "page-a", target: "page-b", data: { relation: "screenplay-page" as const } },
+        { id: "manus-a", source: "manus", target: "page-a", data: { relation: "folder-membership", folderKind: "manus" } },
+        { id: "manus-b", source: "manus", target: "page-b", data: { relation: "folder-membership", folderKind: "manus" } },
+      ],
+    },
+  } as unknown as ProjectData;
+
+  const result = reflowConnectedScriptPages(base, "page-b", {
+    bodyOverrides: { "page-b": "" },
+    cursorLine: 0,
+  });
+
+  assert.ok(result?.changed);
+  assert.deepEqual(result?.contentNodeIds, ["page-a", "page-b"]);
+  const flowNodes = result?.projectData.flow?.flowNodes || [];
+  assert.ok(flowNodes.some((node) => node.id === "page-b"));
+  assert.ok(flowNodes.some((node) => node.id === "unrelated"));
+  const memberships = result?.projectData.flow?.links.filter((link) => link.data?.relation === "folder-membership") || [];
+  assert.deepEqual(memberships.map((link) => link.target).sort(), ["page-a", "page-b"]);
+});
+
+test("Manus normalization keeps the cover first and derives page numbers from its page chain", () => {
+  const page = (id: string, x: number, data: Record<string, unknown>) => ({
+    id,
+    type: "scriptPage" as const,
+    position: { x, y: 0 },
+    data: { manuscriptId: "manuscript-cover", ...data },
+  });
+  const title = page("cover", 0, { pageRole: "title", pageNumber: 3, content: "" });
+  const first = page("page-a", 380, { pageNumber: 1, content: "!第一页" });
+  const second = page("page-b", 760, { pageNumber: 2, content: "!第二页" });
+  const normalized = normalizeManusFolderStructure(
+    [
+      { id: "manus", type: "folder", position: { x: -300, y: 0 }, data: { folderKind: "manus", manuscriptId: "manuscript-cover" } },
+      title,
+      first,
+      second,
+    ] as any,
+    [
+      { id: "a-b", source: "page-a", target: "page-b", data: { relation: "screenplay-page" } },
+      { id: "b-cover", source: "page-b", target: "cover", data: { relation: "screenplay-page" } },
+    ] as any,
+  );
+  const pageNodes = normalized.nodes.filter((node) => node.type === "scriptPage");
+  const pageLinks = normalized.links.filter((link) => link.data?.relation === "screenplay-page");
+
+  assert.deepEqual(pageLinks.map((link) => [link.source, link.target]), [["cover", "page-a"], ["page-a", "page-b"]]);
+  assert.deepEqual(
+    ["cover", "page-a", "page-b"].map((id) => pageNodes.find((node) => node.id === id)?.data?.pageNumber),
+    [1, 2, 3],
+  );
 });
 
 test("reflowConnectedScriptPages rewrites the sequence and supports gesture merge", () => {

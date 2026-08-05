@@ -1,6 +1,6 @@
 import type { FlowLink } from "../../types";
 import type { FolderNodeData, NodeFlowLink, NodeFlowNode } from "../types";
-import { SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
+import { isScreenplayTitlePageNode, SCREENPLAY_PAGE_RELATION } from "../screenplay/manusPages";
 
 export const FOLDER_MEMBERSHIP_RELATION = "folder-membership" as const;
 export const MANUS_FOLDER_KIND = "manus" as const;
@@ -56,7 +56,10 @@ const orderPages = (pages: NodeFlowNode[], links: NodeFlowLink[]) => {
     .sort(compareNodes)
     .forEach((page) => visit(page.id));
   [...pages].sort(compareNodes).forEach((page) => visit(page.id));
-  return ordered;
+  const titlePage = ordered.find(isScreenplayTitlePageNode);
+  return titlePage
+    ? [titlePage, ...ordered.filter((page) => page.id !== titlePage.id)]
+    : ordered;
 };
 
 export const isManusFolderNode = (node?: NodeFlowNode | null) =>
@@ -288,13 +291,45 @@ export function normalizeManusFolderStructure(
       : { ...node, data: nextData };
   });
 
-  const nonFolderLinks = inputLinks.filter((link) => !isFolderMembershipLink(link));
+  const scriptPageIds = new Set(scriptPages.map((page) => page.id));
+  // `screenplay-page` 是稿纸顺序的唯一权威。规范化时把每组的链完整
+  // 重建，确保封面始终连接到第一页正文，而 pageNumber 仅为显示结果。
+  const nonStructuralLinks = inputLinks.filter((link) => !(
+    isFolderMembershipLink(link) ||
+    (
+      link.data?.relation === SCREENPLAY_PAGE_RELATION &&
+      scriptPageIds.has(link.source) &&
+      scriptPageIds.has(link.target)
+    )
+  ));
+  const existingPageLinks = new Map(
+    inputLinks
+      .filter((link) => (
+        link.data?.relation === SCREENPLAY_PAGE_RELATION &&
+        scriptPageIds.has(link.source) &&
+        scriptPageIds.has(link.target)
+      ))
+      .map((link) => [`${link.source}\u0000${link.target}`, link])
+  );
+  const pageLinks = Array.from(groups.values()).flatMap((pages) =>
+    pages.slice(0, -1).map((page, index) => {
+      const target = pages[index + 1];
+      return existingPageLinks.get(`${page.id}\u0000${target.id}`) || {
+        id: `screenplay-page-${page.id}-${target.id}`,
+        source: page.id,
+        target: target.id,
+        sourceHandle: "text",
+        targetHandle: "text",
+        data: { relation: SCREENPLAY_PAGE_RELATION },
+      };
+    })
+  );
   const nextMemberships = Array.from(groups.entries()).flatMap(([groupId, pages]) => {
     const folder = selectedFolderByGroup.get(groupId);
     if (!folder) return [];
     return pages.map((page) => createManusMembershipLink(folder.id, page.id));
   });
-  const nextLinks = [...nonFolderLinks, ...nextMemberships];
+  const nextLinks = [...nonStructuralLinks, ...pageLinks, ...nextMemberships];
   const allNodes = [...nextNodes, ...createdFolders];
   const changed =
     createdFolders.length > 0 ||

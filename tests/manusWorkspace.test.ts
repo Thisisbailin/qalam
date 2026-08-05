@@ -92,6 +92,8 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   // 右侧悬浮操作菜单统一锚定视口右上角（自动隐藏），不再基于单张稿纸。
   assert.match(styles, /\.screenplay-header \{[\s\S]*position: fixed;[\s\S]*right: 16px;/);
+  // 旧版"基于稿纸"的 right:-54px 覆盖必须清除，否则页眉会被推到屏幕外。
+  assert.doesNotMatch(styles, /\.screenplay-header \{[\s\S]{0,100}right: -54px;/);
   assert.doesNotMatch(styles, /\.screenplay-header__actions \{[\s\S]{0,800}opacity: 0;/);
   assert.match(writingPanel, /screenplayHeader\}/);
   assert.doesNotMatch(writingPanel, /isActive && !isFocusMode \? screenplayHeader/);

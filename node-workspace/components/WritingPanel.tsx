@@ -117,6 +117,10 @@ type SelectionCommand = {
 
 type ReviewedSnapshot = WritingDraft;
 
+// 胶卷视图上下安全间距：稿纸整体缩放后仍保留呼吸空间，且不产生滚动余量。
+const FILMSTRIP_SAFE_TOP = 44;
+const FILMSTRIP_SAFE_BOTTOM = 44;
+
 type FilmstripPageItemProps = {
   nodeId: string;
   title: string;
@@ -380,7 +384,7 @@ export const WritingPanel: React.FC<Props> = ({
     if (!node) return;
     const update = () => {
       // 胶卷模式：纸张高度随内容自适应（min-height 1056px），
-      // 再按实际高度整体缩放，让整张稿纸完整适配窗口高度。
+      // 再按“窗口高度 - 上下安全间距”整体缩放，让整张稿纸占满窗口且不产生滚动。
       const paper = node.querySelector<HTMLElement>(
         ".screenplay-document-stage.is-filmstrip .screenplay-document"
       );
@@ -390,7 +394,7 @@ export const WritingPanel: React.FC<Props> = ({
         return;
       }
       const paperHeight = Math.max(1056, paper.offsetHeight || 1056);
-      const available = node.clientHeight - 192;
+      const available = node.clientHeight - FILMSTRIP_SAFE_TOP - FILMSTRIP_SAFE_BOTTOM;
       const next = Math.min(1, Math.max(0.42, available / paperHeight));
       setFilmstripScale((current) => (Math.abs(current - next) < 0.01 ? current : next));
       setFilmstripPaperHeight((current) =>
@@ -402,7 +406,7 @@ export const WritingPanel: React.FC<Props> = ({
     const observer = new ResizeObserver(update);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [activeScriptNodeId, contentPages.length, draft.body, pageArrangement]);
+  }, [activeScriptNodeId, agentDockWidth, contentPages.length, draft.body, pageArrangement, translatorDockWidth]);
 
   useEffect(() => {
     if (draggedPageId) return;
@@ -1307,8 +1311,14 @@ export const WritingPanel: React.FC<Props> = ({
         {
           "--screenplay-agent-inset": `${Math.max(0, agentDockWidth)}px`,
           "--screenplay-translator-inset": `${Math.max(0, translatorDockWidth)}px`,
+          "--screenplay-film-safe-top": `${FILMSTRIP_SAFE_TOP}px`,
+          "--screenplay-film-safe-bottom": `${FILMSTRIP_SAFE_BOTTOM}px`,
           "--screenplay-filmstrip-scale": String(filmstripScale),
           "--screenplay-filmstrip-paper-height": `${filmstripPaperHeight}px`,
+          "--screenplay-filmstrip-margin-bottom": `${Math.max(
+            -9999,
+            FILMSTRIP_SAFE_BOTTOM - filmstripPaperHeight * (1 - filmstripScale)
+          )}px`,
         } as React.CSSProperties
       }
     >

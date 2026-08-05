@@ -110,7 +110,7 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
           <button type="button" className={pageArrangement === "horizontal" ? "is-active" : ""} onClick={() => onPageArrangementChange("horizontal")} title="横向稿纸队列" aria-label="横向稿纸队列">
             <ArrowsLeftRight size={16} />
           </button>
-          <button type="button" className={pageArrangement === "filmstrip" ? "is-active" : ""} onClick={() => onPageArrangementChange("filmstrip")} title="底部缩略队列" aria-label="底部缩略队列">
+          <button type="button" className={pageArrangement === "filmstrip" ? "is-active" : ""} onClick={() => onPageArrangementChange("filmstrip")} title="左侧缩略队列" aria-label="左侧缩略队列">
             <FilmStrip size={16} />
           </button>
         </div>

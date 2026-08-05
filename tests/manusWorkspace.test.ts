@@ -88,6 +88,8 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.match(writingPanel, /--screenplay-filmstrip-scale/);
   assert.match(writingPanel, /--screenplay-filmstrip-paper-height/);
   assert.match(writingPanel, /paper\.offsetHeight \|\| 1056/);
+  assert.match(writingPanel, /FILMSTRIP_SAFE_TOP/);
+  assert.match(writingPanel, /--screenplay-filmstrip-margin-bottom/);
   assert.match(styles, /\.screenplay-workspace \{[\s\S]*background: transparent;/);
   assert.match(styles, /\.screenplay-document-viewport \{[\s\S]*background: transparent;/);
   // 右侧悬浮操作菜单统一锚定视口右上角（自动隐藏），不再基于单张稿纸。
@@ -97,10 +99,17 @@ test("Manus presents hidden floating tools, connected pages, and a LookBook iden
   assert.doesNotMatch(styles, /\.screenplay-header__actions \{[\s\S]{0,800}opacity: 0;/);
   assert.match(writingPanel, /screenplayHeader\}/);
   assert.doesNotMatch(writingPanel, /isActive && !isFocusMode \? screenplayHeader/);
-  // 胶卷视图稿纸列表改为左侧竖向居中。
+  // 胶卷视图稿纸列表改为左侧竖向居中，卡片为竖向迷你稿纸。
   assert.match(writingPanel, /axis="y"/);
   assert.match(styles, /\.screenplay-page-filmstrip \{[\s\S]*left: calc\(var\(--screenplay-agent-inset, 0px\) \+ 16px\);[\s\S]*top: 50%;[\s\S]*flex-direction: column;[\s\S]*translateY\(-50%\)/);
-  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \{[\s\S]*padding-left: 210px;/);
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \{[\s\S]*padding-left: 144px;/);
+  // 胶卷稿纸占满窗口高度且无滚动余量；每张卡片改为竖向迷你稿纸。
+  assert.match(styles, /\.screenplay-document-viewport\.is-filmstrip \{[\s\S]*overflow: hidden;/);
+  assert.match(styles, /\.screenplay-document-stage\.is-filmstrip \.screenplay-document \{[\s\S]*margin-top: var\(--screenplay-film-safe-top/);
+  assert.match(styles, /\.screenplay-page-filmstrip__page-button[\s\S]*flex-direction: column;/);
+  // Agent 面板唤起后，稿纸缩略队列自动收起为纵向圆点。
+  assert.match(styles, /\.screenplay-workspace\.is-agent-open \.screenplay-page-filmstrip \{[\s\S]*width: 34px;/);
+  assert.match(styles, /\.screenplay-workspace\.is-agent-open \.screenplay-page-filmstrip__pages > li[\s\S]*border-radius: 999px;/);
   assert.match(styles, /\.screenplay-identity-dock__rail \{/);
   assert.match(styles, /\.screenplay-identity-dock__rail > button \{[\s\S]*background:/);
   assert.match(styles, /\.screenplay-identity-dock\.is-open \.screenplay-identity-dock__surface \{[\s\S]*width: 286px;/);

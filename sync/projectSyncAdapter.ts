@@ -6,6 +6,10 @@ import { buildStyloScopedProjectData } from "../agents/runtime/projectScope";
 import { validateProjectData } from "../utils/validation";
 import type { SyncCodec } from "./realtimeSyncTypes";
 import type { ProjectNodeGeometryPatch } from "./projectMutationBus";
+import type {
+  ProjectNodeTextDerivedField,
+  ProjectNodeTextMutation,
+} from "./projectMutationBus";
 
 const hashString = (value: string) => {
   let left = 2166136261;
@@ -86,6 +90,22 @@ const sameShallowValuesExcept = (
       && leftValue.length === rightValue.length
       && leftValue.every((entry, index) => Object.is(entry, rightValue[index]))
     ) continue;
+    // Snapshot normalization and the active-project mirror may clone an
+    // otherwise unchanged position/data container. Semantic equality is safe
+    // here because this function only classifies a narrow typed fast path; any
+    // real value difference still forces the generic CRDT delta path.
+    if (
+      leftValue
+      && rightValue
+      && typeof leftValue === "object"
+      && typeof rightValue === "object"
+    ) {
+      try {
+        if (JSON.stringify(leftValue) === JSON.stringify(rightValue)) continue;
+      } catch {
+        // Non-serializable values are never eligible for a typed mutation.
+      }
+    }
     return false;
   }
   return true;
@@ -176,6 +196,130 @@ export const patchProjectSyncSnapshotGeometry = (
     flow: patchFlow(snapshot.flow),
     flowProjects: snapshot.flowProjects?.map((project) => project.id === projectId
       ? { ...project, updatedAt: nextProject.updatedAt, flow: patchFlow(project.flow)! }
+      : project),
+  };
+};
+
+const isFlowNodeTextOnlyChange = (
+  previous: NonNullable<ProjectData["flow"]>,
+  next: NonNullable<ProjectData["flow"]>,
+  intents: ProjectNodeTextMutation[],
+) => {
+  if (!sameShallowValuesExcept(
+    previous as unknown as Record<string, unknown>,
+    next as unknown as Record<string, unknown>,
+    new Set(["flowNodes", "revision"]),
+  )) return false;
+  const beforeNodes = previous.flowNodes || [];
+  const afterNodes = next.flowNodes || [];
+  if (beforeNodes.length !== afterNodes.length) return false;
+  const intentsById = new Map(intents.map((intent) => [intent.nodeId, intent]));
+  const seen = new Set<string>();
+  for (let index = 0; index < beforeNodes.length; index += 1) {
+    const beforeNode = beforeNodes[index];
+    const afterNode = afterNodes[index];
+    if (beforeNode.id !== afterNode.id) return false;
+    const intent = intentsById.get(beforeNode.id);
+    if (!intent) {
+      if (!sameShallowValuesExcept(
+        beforeNode as unknown as Record<string, unknown>,
+        afterNode as unknown as Record<string, unknown>,
+        new Set(),
+      )) return false;
+      continue;
+    }
+    seen.add(intent.nodeId);
+    if (!sameShallowValuesExcept(
+      beforeNode as unknown as Record<string, unknown>,
+      afterNode as unknown as Record<string, unknown>,
+      new Set(["data"]),
+    )) return false;
+    const ignoredDataFields = new Set<string>(["text", ...intent.derivedFields]);
+    if (!sameShallowValuesExcept(
+      (beforeNode.data || {}) as unknown as Record<string, unknown>,
+      (afterNode.data || {}) as unknown as Record<string, unknown>,
+      ignoredDataFields,
+    )) return false;
+    if (beforeNode.data?.text !== intent.previousText || afterNode.data?.text !== intent.nextText) return false;
+  }
+  return seen.size === intentsById.size;
+};
+
+export const isNodeTextOnlyProjectChange = (
+  previous: ProjectData,
+  next: ProjectData,
+  projectId: string,
+  intents: ProjectNodeTextMutation[],
+) => {
+  if (!intents.length || intents.some((intent) => intent.projectId !== projectId)) return false;
+  if (!sameShallowValuesExcept(
+    previous as unknown as Record<string, unknown>,
+    next as unknown as Record<string, unknown>,
+    new Set(["flow", "flowProjects"]),
+  )) return false;
+  if (!previous.flow || !next.flow || !isFlowNodeTextOnlyChange(previous.flow, next.flow, intents)) return false;
+  const previousProjects = previous.flowProjects || [];
+  const nextProjects = next.flowProjects || [];
+  if (previousProjects.length !== nextProjects.length) return false;
+  let foundProject = false;
+  for (let index = 0; index < previousProjects.length; index += 1) {
+    const before = previousProjects[index];
+    const after = nextProjects[index];
+    if (before.id !== after.id) return false;
+    if (before.id !== projectId) {
+      if (before !== after) return false;
+      continue;
+    }
+    foundProject = true;
+    if (!sameShallowValuesExcept(
+      before as unknown as Record<string, unknown>,
+      after as unknown as Record<string, unknown>,
+      new Set(["flow", "updatedAt"]),
+    )) return false;
+    if (!isFlowNodeTextOnlyChange(before.flow, after.flow, intents)) return false;
+  }
+  return foundProject;
+};
+
+export const patchProjectSyncSnapshotText = (
+  snapshot: ProjectData,
+  nextInput: ProjectData,
+  projectId: string,
+  intents: ProjectNodeTextMutation[],
+) => {
+  const intentsById = new Map(intents.map((intent) => [intent.nodeId, intent]));
+  const nextProject = nextInput.flowProjects?.find((project) => project.id === projectId);
+  if (!nextProject) return snapshot;
+  const patchFlow = (
+    flow: ProjectData["flow"],
+    source: ProjectData["flow"],
+  ) => flow && source
+    ? {
+        ...flow,
+        revision: source.revision,
+        flowNodes: (flow.flowNodes || []).map((node) => {
+          const intent = intentsById.get(node.id);
+          if (!intent) return node;
+          const sourceNode = source.flowNodes?.find((candidate) => candidate.id === node.id);
+          if (!sourceNode) return node;
+          const data = { ...(node.data || {}), text: sourceNode.data?.text } as Record<string, unknown>;
+          intent.derivedFields.forEach((field: ProjectNodeTextDerivedField) => {
+            if (Object.hasOwn(sourceNode.data || {}, field)) data[field] = sourceNode.data?.[field];
+            else delete data[field];
+          });
+          return { ...node, data: data as typeof node.data };
+        }),
+      }
+    : flow;
+  return {
+    ...snapshot,
+    flow: patchFlow(snapshot.flow, nextInput.flow),
+    flowProjects: snapshot.flowProjects?.map((project) => project.id === projectId
+      ? {
+          ...project,
+          updatedAt: nextProject.updatedAt,
+          flow: patchFlow(project.flow, nextProject.flow)!,
+        }
       : project),
   };
 };

@@ -338,6 +338,12 @@ export type ProjectNodeGeometryPatch = {
   measured?: { width?: number; height?: number };
 };
 
+export type ProjectNodeTextPatch = {
+  nodeId: string;
+  text: string;
+  derived?: Partial<Record<"atMentions" | "entityBindings", unknown>>;
+};
+
 export const applyProjectNodeGeometryPatches = (
   doc: Y.Doc,
   projectId: string,
@@ -370,6 +376,54 @@ export const applyProjectNodeGeometryPatches = (
     if (applied) syncMapValue(project, "updatedAt", updatedAt);
   }, origin);
   return applied;
+};
+
+export const applyProjectNodeTextPatches = (
+  doc: Y.Doc,
+  projectId: string,
+  patches: ProjectNodeTextPatch[],
+  updatedAt: number,
+  revision: number,
+  origin: unknown,
+) => {
+  const projects = doc.getMap("project").get("flowProjects");
+  if (!(projects instanceof Y.Map) || projects.get(KIND_KEY) !== ID_ARRAY_KIND) return false;
+  const projectItems = projects.get(ITEMS_KEY);
+  if (!(projectItems instanceof Y.Map)) return false;
+  const project = projectItems.get(projectId);
+  if (!(project instanceof Y.Map)) return false;
+  const flow = project.get("flow");
+  if (!(flow instanceof Y.Map)) return false;
+  const nodes = flow.get("flowNodes");
+  if (!(nodes instanceof Y.Map) || nodes.get(KIND_KEY) !== ID_ARRAY_KIND) return false;
+  const nodeItems = nodes.get(ITEMS_KEY);
+  if (!(nodeItems instanceof Y.Map)) return false;
+
+  const targets = patches.map((patch) => {
+    const node = nodeItems.get(patch.nodeId);
+    const data = node instanceof Y.Map ? node.get("data") : null;
+    return data instanceof Y.Map ? { patch, data } : null;
+  });
+  // Typed application is all-or-nothing. A stale intent must fall back to the
+  // generic snapshot delta rather than partially applying a multi-node edit.
+  if (!targets.length || targets.some((target) => !target)) return false;
+
+  doc.transact(() => {
+    targets.forEach((target) => {
+      if (!target) return;
+      syncMapValue(target.data, "text", target.patch.text);
+      if (target.patch.derived) {
+        (["atMentions", "entityBindings"] as const).forEach((field) => {
+          if (Object.hasOwn(target.patch.derived!, field)) {
+            syncMapValue(target.data, field, target.patch.derived![field]);
+          }
+        });
+      }
+    });
+    syncMapValue(flow, "revision", revision);
+    syncMapValue(project, "updatedAt", updatedAt);
+  }, origin);
+  return true;
 };
 
 export const readProjectSnapshot = <T extends Record<string, unknown>>(doc: Y.Doc): T =>

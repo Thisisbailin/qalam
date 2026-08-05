@@ -3,11 +3,9 @@ import type { AgentHttpRunRequest } from "../../agents/runtime/httpProtocol";
 import { resolveAgentProvider, resolveBaseUrl, resolveProviderModel } from "../../agents/runtime/providerConfig";
 import { resolveActivatedSkills, StaticSkillLoader } from "../../agents/runtime/skills";
 import { buildDisabledTools } from "../../agents/runtime/toolPolicy";
-import { validateProjectData } from "../../utils/validation";
-import type { ProjectData } from "../../types";
 import { createAgentSessionKey, D1EdgeSession, migrateLegacyD1AgentSession, StyloResponsesCompactionSession, readD1SessionMessages } from "./_agentSessions";
 import { ensureStyloTraceProcessor, forceFlushAgentTracing, persistBufferedTrace } from "./_agentTracing";
-import { parseNodeFlowFile } from "../../node-workspace/nodeflow/schema";
+import { AGENT_PROTOCOL_VERSION, AGENT_TRANSPORT_LIMITS, createAbortError } from "../../agents/runtime/limits";
 import {
   assertStyloProjectScope,
   isStyloSessionInProject,
@@ -16,24 +14,24 @@ import { getUserId } from "./_auth";
 import { enforceRateLimit } from "./_rateLimit";
 import { readJsonRequest } from "./_request";
 import type { D1DatabaseLike, PagesContext } from "./_types";
-import { buildAgentProjectStateFromRealtimeDocument, loadAgentProjectState } from "./_agentProjectState";
+import { loadAgentProjectState } from "./_agentProjectState";
 import {
   flushRealtimeProjectProjection,
   type RealtimeProjectionEnv,
 } from "./_realtimeProjection";
 import {
   createAgentProjectData,
-  createAgentProjectPatch,
   createNodeFlowBridgeState,
-  hasMeaningfulProjectPatch,
 } from "./_agentBridgeState";
+import { commitAgentBridgeResult } from "./_agentProjectCommit";
 import {
   CORS_HEADERS,
+  AgentEventStreamWriter,
   createSseResponse,
-  emitError,
-  emitEvent,
   withCorsHeaders,
 } from "./_agentStream";
+import { hasProjectCatalogEntry } from "./_projectCatalog";
+import { acquireAgentTurnLease, releaseAgentTurnLease } from "./_agentTurnCoordinator";
 
 type AgentEnv = Record<string, unknown> & RealtimeProjectionEnv & {
   DB: D1DatabaseLike;
@@ -42,32 +40,13 @@ type AgentEnv = Record<string, unknown> & RealtimeProjectionEnv & {
 };
 
 const EDGE_AGENT_MAX_TURNS = 20;
-// Agent 请求现在携带本地项目快照，容量上限按项目规模放宽。
-const MAX_AGENT_REQUEST_BYTES = 4 * 1024 * 1024;
+const MAX_AGENT_REQUEST_BYTES = AGENT_TRANSPORT_LIMITS.requestBytes;
 const MAX_AGENT_TEXT_LENGTH = 20_000;
+const SERVER_EXTERNAL_TOOLS = ["search_web", "access_github_repository"] as const;
 
-const normalizeLocalProjectSnapshot = (
-  value: unknown,
-): { ok: true; value: ProjectData } | { ok: false; error: string } => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { ok: false, error: "本地项目快照必须是对象。" };
-  }
-  const record = value as Record<string, unknown>;
-  const snapshot = {
-    ...record,
-    episodes: Array.isArray(record.episodes) ? record.episodes : [],
-    roles: Array.isArray(record.roles) ? record.roles : [],
-    designAssets: Array.isArray(record.designAssets) ? record.designAssets : [],
-    flow: record.flow && typeof record.flow === "object"
-      ? record.flow
-      : { flowNodes: [], links: [] },
-    flowProjects: Array.isArray(record.flowProjects) ? record.flowProjects : [],
-  } as unknown as ProjectData;
-  const validation = validateProjectData(snapshot);
-  if (!validation.ok) {
-    return { ok: false, error: `本地项目快照未通过校验：${validation.error}` };
-  }
-  return { ok: true, value: snapshot };
+const serverDisabledTools = (env: Record<string, unknown>) => {
+  const value = env.AGENT_EXTERNAL_TOOLS_ENABLED;
+  return value === "0" || value === "false" ? [...SERVER_EXTERNAL_TOOLS] : [];
 };
 
 const resolveApiKey = (env: Record<string, unknown>, provider: "qwen" | "openrouter" | "ark" | "deepseek") => {
@@ -124,6 +103,9 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
     throw error;
   }
   if (
+    body?.protocolVersion !== AGENT_PROTOCOL_VERSION ||
+    !body?.turnId ||
+    !body?.idempotencyKey ||
     !body?.run?.projectId ||
     !body?.run?.sessionId ||
     !body?.run?.userText ||
@@ -139,21 +121,9 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
       },
     });
   }
-  let localSnapshot: ProjectData | null = null;
-  if (body?.project?.localSnapshot !== undefined) {
-    const candidate = normalizeLocalProjectSnapshot(body.project.localSnapshot);
-    if (!candidate.ok) {
-      return new Response(JSON.stringify({ error: candidate.error }), {
-        status: 400,
-        headers: {
-          ...CORS_HEADERS,
-          "Content-Type": "application/json; charset=utf-8",
-        },
-      });
-    }
-    localSnapshot = candidate.value;
-  }
   if (
+    body.turnId.length > 256 ||
+    body.idempotencyKey.length > 256 ||
     body.run.projectId.length > 256 ||
     body.run.sessionId.length > 256 ||
     body.run.userText.length > MAX_AGENT_TEXT_LENGTH ||
@@ -185,9 +155,36 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
 
   const provider = resolveAgentProvider(body.runtime.provider);
   const sessionKey = createAgentSessionKey(body.run.projectId, body.run.sessionId, sessionOwner);
+  if (!await hasProjectCatalogEntry(context.env.DB, sessionOwner, body.run.projectId)) {
+    return new Response(JSON.stringify({ error: "Project not found" }), {
+      status: 404,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json; charset=utf-8" },
+    });
+  }
+  const leaseAcquired = await acquireAgentTurnLease({
+    db: context.env.DB,
+    sessionKey,
+    turnId: body.turnId,
+    idempotencyKey: body.idempotencyKey,
+    userId: sessionOwner,
+    projectId: body.run.projectId,
+  });
+  if (!leaseAcquired) {
+    return new Response(JSON.stringify({
+      error: "该 Agent 会话已有正在执行的任务，请等待其完成或取消后重试。",
+      code: "AGENT_TURN_IN_PROGRESS",
+    }), {
+      status: 409,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json; charset=utf-8" },
+    });
+  }
 
+  let streamWriter: AgentEventStreamWriter | null = null;
+  const executionAbortController = new AbortController();
   const stream = new ReadableStream<Uint8Array>({
     start: async (controller) => {
+      const writer = new AgentEventStreamWriter(controller);
+      streamWriter = writer;
       const debugEnabled = isDebugEnabled(context.env || {});
       ensureStyloTraceProcessor();
       const tracingEnabled = true;
@@ -197,7 +194,11 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
       let wrapperFailure: string | null = null;
       let coreOwnsTerminalEvent = false;
       const skillLoader = new StaticSkillLoader();
-      const requestAbortSignal = context.request.signal;
+      const incomingRequestSignal = context.request.signal;
+      const forwardIncomingAbort = () => executionAbortController.abort(incomingRequestSignal.reason);
+      if (incomingRequestSignal.aborted) forwardIncomingAbort();
+      else incomingRequestSignal.addEventListener("abort", forwardIncomingAbort, { once: true });
+      const requestAbortSignal = executionAbortController.signal;
       const emitWrapperTrace = (
         stage: "runtime" | "session" | "model" | "tool" | "result",
         status: "info" | "running" | "success" | "error",
@@ -223,33 +224,20 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           body.run.sessionId,
           sessionOwner
         ).catch(() => false);
-        let projectState: Awaited<ReturnType<typeof loadAgentProjectState>>;
-        if (localSnapshot) {
-          // Agent 已与云同步解耦：直接基于客户端本地快照构建工作区，
-          // 不读取 D1 投影、不做云端修订校验。云端数据随后由同步引擎
-          // 在后台自行追赶，不再阻塞 Agent 运行。
-          projectState = buildAgentProjectStateFromRealtimeDocument(
-            body.run.projectId,
-            localSnapshot,
-            Date.now(),
-            0,
+        await flushRealtimeProjectProjection(
+          context.env,
+          sessionOwner,
+          body.run.projectId,
+        );
+        const projectState = await loadAgentProjectState(
+          context.env.DB,
+          sessionOwner,
+          body.run.projectId
+        );
+        if (projectState.nodeFlow.revision !== body.project.expectedRevision) {
+          throw new Error(
+            `云端 Flow 修订为 ${projectState.nodeFlow.revision}，本地请求修订为 ${body.project.expectedRevision}。请等待项目同步完成后重试。`
           );
-        } else {
-          await flushRealtimeProjectProjection(
-            context.env,
-            sessionOwner,
-            body.run.projectId,
-          );
-          projectState = await loadAgentProjectState(
-            context.env.DB,
-            sessionOwner,
-            body.run.projectId
-          );
-          if (projectState.nodeFlow.revision !== body.project.expectedRevision) {
-            throw new Error(
-              `云端 Flow 修订为 ${projectState.nodeFlow.revision}，本地请求修订为 ${body.project.expectedRevision}。请等待项目同步完成后重试。`
-            );
-          }
         }
         const agentProjectData = createAgentProjectData(
           projectState.projectData,
@@ -282,9 +270,9 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           loader: skillLoader,
         });
         const legacyToolSettings = (body.runtime as unknown as Record<string, unknown>)["qalamTools"];
-        const disabledTools = buildDisabledTools({
+        const disabledTools = Array.from(new Set([...buildDisabledTools({
           styloTools: body.runtime.styloTools || legacyToolSettings as AgentHttpRunRequest["runtime"]["styloTools"],
-        }, enabledSkills as Array<{ disabledTools?: string[] }>);
+        }, enabledSkills as Array<{ disabledTools?: string[] }>), ...serverDisabledTools(context.env)]));
         debugLog(debugEnabled, traceId, "provider resolved", {
           provider,
           model: effectiveModel,
@@ -339,7 +327,7 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           disabledTools,
           maxTurns: EDGE_AGENT_MAX_TURNS,
           signal: context.request.signal,
-          onEvent: (event) => emitEvent(controller, event),
+          onEvent: (event) => writer.emit(event),
           onDebug: (label, payload) => debugLog(debugEnabled, traceId, label, payload),
           traceId,
           groupId,
@@ -358,24 +346,23 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           },
           tracingDisabled: false,
           traceIncludeSensitiveData: false,
-          getExtraResult: () => ({
-            updatedProjectPatch: bridgeState.hasUpdatedProjectData()
-              ? (() => {
-                  const patch = createAgentProjectPatch(bridgeState.getProjectData(), body.run.projectId);
-                  return hasMeaningfulProjectPatch(patch) ? patch : undefined;
-                })()
-              : undefined,
-            updatedNodeFlow: bridgeState.hasUpdatedNodeFlow()
-              ? parseNodeFlowFile(bridgeState.getNodeFlow())
-              : undefined,
-            updatedExecutionApprovals: bridgeState.hasUpdatedExecutionApprovals()
-              ? bridgeState.getExecutionApprovals()
-              : undefined,
-            tracing: {
-              enabled: tracingEnabled,
-              traceId,
-            },
-          }),
+          getExtraResult: async () => {
+            const committedProjectResult = await commitAgentBridgeResult({
+              env: context.env,
+              userId: sessionOwner,
+              projectId: body.run.projectId,
+              idempotencyKey: body.idempotencyKey,
+              projectState,
+              bridgeState,
+            });
+            return {
+              ...committedProjectResult,
+              updatedExecutionApprovals: bridgeState.hasUpdatedExecutionApprovals()
+                ? bridgeState.getExecutionApprovals()
+                : undefined,
+              tracing: { enabled: tracingEnabled, traceId },
+            };
+          },
           runStartedMeta: {
             traceId,
             tracingEnabled,
@@ -388,10 +375,14 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
         debugLog(debugEnabled, traceId, "run error", message);
         if (!coreOwnsTerminalEvent) {
           emitWrapperTrace("result", "error", "Agent 初始化失败", message);
-          const emitted = emitError(controller, message);
-          debugLog(debugEnabled, traceId, "emit error packet", { emitted, message });
+          writer.emitError(message);
+          debugLog(debugEnabled, traceId, "emit error packet", { emitted: true, message });
         }
       } finally {
+        await releaseAgentTurnLease(context.env.DB, sessionKey, body.turnId).catch(() => undefined);
+        await writer.drain(requestAbortSignal).catch((error) => {
+          debugLog(debugEnabled, traceId, "stream drain failed", String(error));
+        });
         try {
           controller.close();
         } catch (error: any) {
@@ -400,6 +391,9 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           }
         } finally {
           requestAbortSignal?.removeEventListener("abort", onAbort);
+          incomingRequestSignal.removeEventListener("abort", forwardIncomingAbort);
+          writer.dispose();
+          if (streamWriter === writer) streamWriter = null;
         }
         const persistTracePromise = (async () => {
           try {
@@ -436,6 +430,15 @@ export const onRequestPost = async (context: PagesContext<AgentEnv>) => {
           void persistTracePromise;
         }
       }
+    },
+    pull: () => streamWriter?.pull(),
+    cancel: (reason) => {
+      executionAbortController.abort(
+        reason instanceof Error
+          ? reason
+          : createAbortError(String(reason || "Agent response stream cancelled"))
+      );
+      streamWriter?.dispose();
     },
   });
 

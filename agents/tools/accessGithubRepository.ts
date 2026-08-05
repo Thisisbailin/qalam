@@ -1,4 +1,5 @@
 import type { StyloAgentBridge } from "../bridge/styloBridge";
+import { readBoundedResponseText } from "./httpSafety";
 
 const GITHUB_OWNER = "Thisisbailin";
 const GITHUB_REPO = "stylo";
@@ -80,11 +81,11 @@ const githubRepositoryParameters = {
 
 const trim = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
-const toPositiveInteger = (value: unknown, fallback: number) => {
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+const toPositiveInteger = (value: unknown, fallback: number, maximum: number) => {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return Math.min(value, maximum);
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
-    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    if (Number.isInteger(parsed) && parsed > 0) return Math.min(parsed, maximum);
   }
   return fallback;
 };
@@ -104,29 +105,31 @@ const parseArgs = (input: unknown) => {
     query: trim(raw.query) || undefined,
     ref: trim(raw.ref) || undefined,
     includeContent: raw.include_content === true || raw.includeContent === true,
-    maxChars: toPositiveInteger(raw.max_chars ?? raw.maxChars, DEFAULT_MAX_CHARS),
-    maxItems: toPositiveInteger(raw.max_items ?? raw.maxItems, DEFAULT_MAX_ITEMS),
+    maxChars: toPositiveInteger(raw.max_chars ?? raw.maxChars, DEFAULT_MAX_CHARS, 32_000),
+    maxItems: toPositiveInteger(raw.max_items ?? raw.maxItems, DEFAULT_MAX_ITEMS, 200),
   };
 };
 
-const fetchJson = async <T>(url: string): Promise<T> => {
+const fetchJson = async <T>(url: string, signal?: AbortSignal): Promise<T> => {
   const response = await fetch(url, {
     headers: {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     },
+    signal,
   });
   if (!response.ok) {
     throw new Error(`GitHub request failed: ${response.status} ${response.statusText}`);
   }
-  return response.json() as Promise<T>;
+  return JSON.parse(await readBoundedResponseText(response, { signal })) as T;
 };
 
-const fetchRepoStatus = async () => {
-  const repo = await fetchJson<GithubRepositoryResponse>(GITHUB_API_BASE);
+const fetchRepoStatus = async (signal?: AbortSignal) => {
+  const repo = await fetchJson<GithubRepositoryResponse>(GITHUB_API_BASE, signal);
   const branch = repo.default_branch || "main";
   const branchInfo = await fetchJson<GithubBranchResponse>(
-    `${GITHUB_API_BASE}/branches/${encodeURIComponent(branch)}`
+    `${GITHUB_API_BASE}/branches/${encodeURIComponent(branch)}`,
+    signal,
   );
   return {
     repository: repo.html_url || `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`,
@@ -139,13 +142,14 @@ const fetchRepoStatus = async () => {
   };
 };
 
-const resolveRef = async (requestedRef?: string) =>
-  requestedRef || (await fetchRepoStatus()).default_branch;
+const resolveRef = async (requestedRef?: string, signal?: AbortSignal) =>
+  requestedRef || (await fetchRepoStatus(signal)).default_branch;
 
-const fetchTree = async (ref?: string) => {
-  const resolvedRef = await resolveRef(ref);
+const fetchTree = async (ref?: string, signal?: AbortSignal) => {
+  const resolvedRef = await resolveRef(ref, signal);
   const tree = await fetchJson<GithubTreeResponse>(
-    `${GITHUB_API_BASE}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`
+    `${GITHUB_API_BASE}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`,
+    signal,
   );
   return {
     ref: resolvedRef,
@@ -161,19 +165,19 @@ const isProbablyTextPath = (path: string) =>
 const clipText = (value: string, maxChars: number) =>
   value.length <= maxChars ? value : `${value.slice(0, maxChars)}...`;
 
-const readFile = async (path: string, ref?: string, maxChars = DEFAULT_MAX_CHARS) => {
+const readFile = async (path: string, ref?: string, maxChars = DEFAULT_MAX_CHARS, signal?: AbortSignal) => {
   if (!path) throw new Error("action=read 需要 path。");
-  const resolvedRef = await resolveRef(ref);
+  const resolvedRef = await resolveRef(ref, signal);
   const url = `${GITHUB_RAW_BASE}/${encodeURIComponent(resolvedRef)}/${path
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/")}`;
-  const response = await fetch(url);
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`GitHub raw file request failed: ${response.status} ${response.statusText}`);
   }
   const contentType = response.headers.get("content-type") || "";
-  const text = await response.text();
+  const text = await readBoundedResponseText(response, { signal });
   return {
     ref: resolvedRef,
     path,
@@ -184,8 +188,8 @@ const readFile = async (path: string, ref?: string, maxChars = DEFAULT_MAX_CHARS
   };
 };
 
-const listTree = async (pathPrefix: string | undefined, ref: string | undefined, maxItems: number) => {
-  const tree = await fetchTree(ref);
+const listTree = async (pathPrefix: string | undefined, ref: string | undefined, maxItems: number, signal?: AbortSignal) => {
+  const tree = await fetchTree(ref, signal);
   const prefix = (pathPrefix || "").replace(/^\/+|\/+$/g, "");
   const items = tree.items
     .filter(hasTreePath)
@@ -214,10 +218,11 @@ const searchRepository = async (input: {
   includeContent: boolean;
   maxItems: number;
   maxChars: number;
+  signal?: AbortSignal;
 }) => {
   if (!input.query) throw new Error("action=search 需要 query。");
   const normalizedQuery = input.query.toLowerCase();
-  const tree = await fetchTree(input.ref);
+  const tree = await fetchTree(input.ref, input.signal);
   const prefix = (input.path || "").replace(/^\/+|\/+$/g, "");
   const pathMatches = tree.items
     .filter(hasTreePath)
@@ -236,7 +241,7 @@ const searchRepository = async (input: {
     for (const item of candidates) {
       if (contentMatches.length >= input.maxItems) break;
       try {
-        const file = await readFile(item.path, tree.ref, Math.min(input.maxChars, 5000));
+        const file = await readFile(item.path, tree.ref, Math.min(input.maxChars, 5000), input.signal);
         const index = file.content.toLowerCase().indexOf(normalizedQuery);
         if (index < 0) continue;
         const start = Math.max(0, index - 220);
@@ -272,27 +277,27 @@ export const accessGithubRepositoryToolDef = {
   description:
     "Read the live Stylo GitHub repository with broad read-only access: latest default-branch status, recursive file tree, arbitrary file contents, and repository search.",
   parameters: githubRepositoryParameters,
-  execute: async (input: unknown, _bridge: StyloAgentBridge) => {
+  execute: async (input: unknown, _bridge: StyloAgentBridge, options?: { signal?: AbortSignal }) => {
     const args = parseArgs(input);
     if (args.action === "status") {
       return {
         target: "github_repository",
         action: "status",
-        item: await fetchRepoStatus(),
+        item: await fetchRepoStatus(options?.signal),
       };
     }
     if (args.action === "tree") {
       return {
         target: "github_repository",
         action: "tree",
-        item: await listTree(args.path, args.ref, args.maxItems),
+        item: await listTree(args.path, args.ref, args.maxItems, options?.signal),
       };
     }
     if (args.action === "read") {
       return {
         target: "github_repository",
         action: "read",
-        item: await readFile(args.path || "", args.ref, args.maxChars),
+        item: await readFile(args.path || "", args.ref, args.maxChars, options?.signal),
       };
     }
     return {
@@ -305,6 +310,7 @@ export const accessGithubRepositoryToolDef = {
         includeContent: args.includeContent,
         maxItems: args.maxItems,
         maxChars: args.maxChars,
+        signal: options?.signal,
       }),
     };
   },

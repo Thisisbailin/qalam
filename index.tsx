@@ -24,11 +24,17 @@ document.documentElement.classList.remove(isDesktop ? 'stylo-web-runtime' : 'sty
 document.documentElement.classList.add(isDesktop ? 'stylo-desktop-runtime' : 'stylo-web-runtime');
 
 const renderWorkspaceApp = () => {
-  Promise.all([import('./App'), import('./lib/auth')]).then(([{ default: App }, { AuthProvider }]) => {
+  Promise.all([import('./App'), import('./lib/auth'), import('./components/AppErrorBoundary')]).then(([
+    { default: App },
+    { AuthProvider },
+    { AppErrorBoundary },
+  ]) => {
     root.render(
       <React.StrictMode>
         <AuthProvider>
-          <App />
+          <AppErrorBoundary>
+            <App />
+          </AppErrorBoundary>
         </AuthProvider>
       </React.StrictMode>
     );

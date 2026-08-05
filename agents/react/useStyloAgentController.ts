@@ -14,8 +14,12 @@ type Options = {
   runtime: StyloAgentRuntime;
   projectId: string;
   sessionId: string;
+  conversationId: string;
   activityStorageKey?: string;
-  setMessages: (updater: Message[] | ((previous: Message[]) => Message[])) => Message[];
+  setConversationMessages: (
+    conversationId: string,
+    updater: Message[] | ((previous: Message[]) => Message[]),
+  ) => Message[];
 };
 
 type DisplayAwareError = Error & { styloAlreadyDisplayed?: boolean };
@@ -26,8 +30,9 @@ export const useStyloAgentController = ({
   runtime,
   projectId,
   sessionId,
+  conversationId,
   activityStorageKey,
-  setMessages,
+  setConversationMessages,
 }: Options) => {
   const [isRunning, setIsRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -36,12 +41,13 @@ export const useStyloAgentController = ({
   const displayedErrorRef = useRef<string | null>(null);
   const streamEventQueueRef = useRef(new AgentStreamEventBuffer());
   const streamFrameRef = useRef<number | null>(null);
+  const runConversationIdRef = useRef(conversationId);
 
   const projectEvents = useCallback((events: AgentRuntimeEvent[]) => {
     if (!events.length || !mountedRef.current) return;
     let abortReason: string | undefined;
     let displayedError: string | undefined;
-    setMessages((previous) => {
+    setConversationMessages(runConversationIdRef.current, (previous) => {
       let next = previous;
       events.forEach((event) => {
         const projected = projectionRef.current.apply(next, event);
@@ -55,7 +61,7 @@ export const useStyloAgentController = ({
     if (abortReason && abortRef.current && !abortRef.current.signal.aborted) {
       abortRef.current.abort(abortReason);
     }
-  }, [setMessages]);
+  }, [setConversationMessages]);
 
   const flushStreamEvents = useCallback(() => {
     if (streamFrameRef.current != null) {
@@ -106,19 +112,23 @@ export const useStyloAgentController = ({
   }, [activityStorageKey, flushStreamEvents, projectEvents]);
 
   const sendMessage = useCallback(async (
-    input: Omit<StyloRunInput, "projectId" | "sessionId">
+    input: Omit<StyloRunInput, "projectId" | "sessionId">,
+    runScope?: { conversationId: string; sessionId: string },
   ): Promise<StyloRunResult> => {
     if (abortRef.current) throw new Error("Agent 已有正在执行的任务。");
     const controller = new AbortController();
     abortRef.current = controller;
     displayedErrorRef.current = null;
+    const runConversationId = runScope?.conversationId || conversationId;
+    const runSessionId = runScope?.sessionId || sessionId;
+    runConversationIdRef.current = runConversationId;
     flushStreamEvents();
     const preflightId = createId("preflight");
-    setMessages((previous) => projectionRef.current.createPreflight(previous, preflightId));
+    setConversationMessages(runConversationId, (previous) => projectionRef.current.createPreflight(previous, preflightId));
     setIsRunning(true);
     try {
       const result = await runtime.run(
-        { ...input, projectId, sessionId },
+        { ...input, projectId, sessionId: runSessionId },
         { signal: controller.signal, onEvent: handleEvent }
       );
       if (result.projectId !== projectId) {
@@ -131,7 +141,7 @@ export const useStyloAgentController = ({
         (error as DisplayAwareError).styloAlreadyDisplayed = true;
       }
       if (projectionRef.current.preflightStatusId) {
-        setMessages((previous) => projectionRef.current.failPreflight(previous, message));
+        setConversationMessages(runConversationId, (previous) => projectionRef.current.failPreflight(previous, message));
         if (error instanceof Error) {
           (error as DisplayAwareError).styloAlreadyDisplayed = true;
         }
@@ -142,9 +152,9 @@ export const useStyloAgentController = ({
       flushStreamEvents();
       abortRef.current = null;
       setIsRunning(false);
-      browserAgentDebug("useStyloAgentController settled", { projectId, sessionId });
+      browserAgentDebug("useStyloAgentController settled", { projectId, sessionId: runSessionId });
     }
-  }, [flushStreamEvents, handleEvent, projectId, runtime, sessionId, setMessages]);
+  }, [conversationId, flushStreamEvents, handleEvent, projectId, runtime, sessionId, setConversationMessages]);
 
   const cancel = useCallback(() => abortRef.current?.abort("用户已停止当前 Agent 任务。"), []);
 

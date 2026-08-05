@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { useAsyncPersistedState } from "../../hooks/useAsyncPersistedState";
 import { AppConfig, ProjectData, SyncState } from "../../types";
-import type { NodeFlowFile, NodeFlowNode } from "../types";
+import type { NodeFlowFile } from "../types";
 import { createStableId } from "../../utils/id";
 import { buildApiUrl } from "../../utils/api";
-import { restoreLocalNodeMedia, toCloudProjectData } from "../../utils/cloudProjectData";
 import { resolveProviderModel, type StyloAgentProvider } from "../../agents/runtime/providerConfig";
 import {
   GLASS_DIFFUSION_PRESETS,
@@ -15,30 +15,25 @@ import {
   STYLO_GLASS_LAB_SHADOW,
 } from "./GlassDiffusionField";
 import { StyloChatContent } from "./stylo/StyloChatContent";
-import type { ApprovalChoice, ApprovalMessage, ApprovalStatus, ChatMessage, Message } from "./stylo/types";
+import type { ApprovalChoice, ApprovalMessage, ApprovalStatus, Message } from "./stylo/types";
+import {
+  createConversationRecord,
+  updateConversationMessages,
+  type ConversationState,
+} from "./stylo/conversationState";
 import { useNodeFlowStore } from "../store/nodeFlowStore";
 import { createHttpStyloAgentRuntime } from "../../agents/runtime/httpClient";
 import { useStyloAgent } from "../../agents/react/useStyloAgent";
 import { useNodeFlowExecutor } from "../store/useNodeFlowExecutor";
 import type { NodeFlowExecutionApprovalProposal } from "../nodeflow/approvals";
-import { parseNodeFlowFile } from "../nodeflow/schema";
 import { projectRolesToCharacters, projectRolesToLocations } from "../../utils/projectRoles";
 import type { AgentUiContext } from "../../agents/runtime/types";
-import {
-  buildAgentRevisionConflictMessage,
-  reconcileStaleAgentMessages,
-  shouldRejectStaleAgentResult,
-} from "./stylo/agentResultReconciliation";
 import {
   buildStyloAccountSessionId,
   buildStyloAccountStorageKeys,
   resolveStyloProjectId,
 } from "../../agents/runtime/projectScope";
-import type {
-  AgentScriptEditProposal,
-  AgentScriptEditProposalBatch,
-  StyloSubmitRequest,
-} from "./stylo/interactionTypes";
+import type { AgentScriptEditProposalBatch, StyloSubmitRequest } from "./stylo/interactionTypes";
 import type { EnsureProjectSynced, ProjectSyncLease } from "../../hooks/useCloudSync";
 
 type Props = {
@@ -125,65 +120,6 @@ const buildNodeFlowFileFromProjectData = (
   };
 };
 
-const readScriptDocument = (node: NodeFlowNode) => {
-  const data = (node.data || {}) as Record<string, unknown>;
-  const text = typeof data.content === "string" ? data.content : typeof data.text === "string" ? data.text : "";
-  return {
-    title: typeof data.title === "string" && data.title.trim() ? data.title : "剧本文档",
-    content: text,
-    documentId: typeof data.documentId === "string" && data.documentId.trim() ? data.documentId : undefined,
-  };
-};
-
-const collectScriptEditProposals = (
-  currentNodes: NodeFlowNode[],
-  candidateNodes: NodeFlowNode[]
-): AgentScriptEditProposal[] => {
-  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
-  const receivedAt = Date.now();
-  return candidateNodes.flatMap((candidate, index) => {
-    if (candidate.type !== "scriptPage") return [];
-    const current = currentById.get(candidate.id);
-    if (!current || current.type !== "scriptPage") return [];
-    const previousDocument = readScriptDocument(current);
-    const nextDocument = readScriptDocument(candidate);
-    if (previousDocument.content === nextDocument.content) return [];
-    return [{
-      id: `agent-script-edit-${receivedAt.toString(36)}-${index}`,
-      nodeId: candidate.id,
-      documentId: nextDocument.documentId || previousDocument.documentId,
-      title: nextDocument.title,
-      content: nextDocument.content,
-      receivedAt,
-    }];
-  });
-};
-
-const preserveProposedScriptEdits = (
-  candidate: NodeFlowFile,
-  currentNodes: NodeFlowNode[],
-  proposals: AgentScriptEditProposal[]
-): NodeFlowFile => {
-  if (!proposals.length) return candidate;
-  const proposalNodeIds = new Set(proposals.map((proposal) => proposal.nodeId));
-  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
-  return {
-    ...candidate,
-    nodes: candidate.nodes.map((node) => {
-      if (!proposalNodeIds.has(node.id)) return node;
-      const current = currentById.get(node.id);
-      if (!current) return node;
-      const currentData = (current.data || {}) as Record<string, unknown>;
-      const nextData = { ...((node.data || {}) as Record<string, unknown>) };
-      ["title", "text", "content", "preview", "updatedAt"].forEach((key) => {
-        if (key in currentData) nextData[key] = currentData[key];
-        else delete nextData[key];
-      });
-      return { ...node, data: nextData as NodeFlowNode["data"] };
-    }),
-  };
-};
-
 const mergeNodeFlowIntoProjectData = (base: ProjectData, nodeFlow: NodeFlowFile): ProjectData => {
   const nextFlow = {
     ...(base.flow || { links: [] }),
@@ -206,60 +142,6 @@ const mergeNodeFlowIntoProjectData = (base: ProjectData, nodeFlow: NodeFlowFile)
             flow: nextFlow,
             roles: base.roles || [],
             designAssets: base.designAssets || [],
-            updatedAt: Date.now(),
-          }
-        : project
-    ),
-  };
-};
-
-type AgentProjectPatch = Partial<Pick<ProjectData, "activeFlowProjectId" | "roles" | "designAssets" | "flow" | "flowProjects">>;
-
-const normalizeAgentProjectPatch = (
-  patch: AgentProjectPatch | ProjectData | undefined,
-  projectId: string
-): AgentProjectPatch | null => {
-  if (!patch || typeof patch !== "object") return null;
-  if (typeof patch.activeFlowProjectId === "string" && patch.activeFlowProjectId.trim() && patch.activeFlowProjectId !== projectId) {
-    return null;
-  }
-  const activeProjectPatch = Array.isArray(patch.flowProjects)
-    ? patch.flowProjects.find((project) => project.id === projectId)
-    : undefined;
-  return {
-    activeFlowProjectId: projectId,
-    roles: Array.isArray(patch.roles) ? patch.roles : undefined,
-    designAssets: Array.isArray(patch.designAssets) ? patch.designAssets : undefined,
-    flow: patch.flow || activeProjectPatch?.flow,
-    flowProjects: activeProjectPatch ? [activeProjectPatch] : undefined,
-  };
-};
-
-const applyAgentProjectPatch = (
-  base: ProjectData,
-  patch: AgentProjectPatch | null,
-  projectId: string
-): ProjectData => {
-  if (!patch) return base;
-  const activeProjectPatch = patch.flowProjects?.find((project) => project.id === projectId);
-  const nextFlow = patch.flow || activeProjectPatch?.flow || base.flow;
-  const nextRoles = Array.isArray(patch.roles) ? patch.roles : base.roles;
-  const nextDesignAssets = Array.isArray(patch.designAssets) ? patch.designAssets : base.designAssets;
-  return {
-    ...base,
-    activeFlowProjectId: projectId,
-    roles: nextRoles,
-    designAssets: nextDesignAssets,
-    flow: nextFlow,
-    flowProjects: base.flowProjects?.map((project) =>
-      project.id === projectId
-        ? {
-            ...project,
-            ...(activeProjectPatch || {}),
-            id: project.id,
-            flow: nextFlow || project.flow,
-            roles: nextRoles,
-            designAssets: nextDesignAssets,
             updatedAt: Date.now(),
           }
         : project
@@ -291,19 +173,6 @@ const detectWorkIntent = (text: string, hasAttachments: boolean) => {
   if (hasAttachments) return true;
   if (hasEpisodeSceneRef(text)) return true;
   return WORK_HINT_KEYWORDS.some((kw) => lowered.includes(kw.toLowerCase()));
-};
-
-type ConversationRecord = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: Message[];
-};
-
-type ConversationState = {
-  activeId: string;
-  items: ConversationRecord[];
 };
 
 type ApprovalPreferenceState = Partial<Record<"image_generation" | "video_generation", true>>;
@@ -451,25 +320,6 @@ const summarizeApprovedExecutionResult = (
   };
 };
 
-const buildConversationTitle = (messages: Message[]) => {
-  const firstUser = messages.find((m) => m.role === "user" && (m as ChatMessage).text?.trim()) as ChatMessage | undefined;
-  if (!firstUser) return "新对话";
-  const text = firstUser.text.trim();
-  return text.length > 20 ? `${text.slice(0, 20)}...` : text;
-};
-
-const createConversationRecord = (messages: Message[] = []): ConversationRecord => {
-  const now = Date.now();
-  const title = buildConversationTitle(messages);
-  return {
-    id: createStableId("chat"),
-    title,
-    createdAt: now,
-    updatedAt: now,
-    messages,
-  };
-};
-
 export const StyloAgent: React.FC<Props> = ({
   accountScope,
   projectId,
@@ -477,6 +327,7 @@ export const StyloAgent: React.FC<Props> = ({
   config,
   setProjectData,
   getAuthToken,
+  syncState,
   ensureProjectSynced,
   onOpenStats,
   settingsOpen = false,
@@ -504,29 +355,18 @@ export const StyloAgent: React.FC<Props> = ({
   const approvalPreferenceStorageKey = accountScope === "guest"
     ? "stylo_execution_approval_prefs_v1"
     : `stylo_execution_approval_prefs_v1:${encodeURIComponent(accountScope)}`;
-  const importNodeFlow = useNodeFlowStore((state) => state.importNodeFlow);
   const setExecutionApprovals = useNodeFlowStore((state) => state.setExecutionApprovals);
   const pendingExecutionApprovals = useNodeFlowStore((state) => state.pendingExecutionApprovals);
-  const nodes = useNodeFlowStore((state) => state.nodes);
-  const links = useNodeFlowStore((state) => state.links);
-  const graphLinks = useNodeFlowStore((state) => state.graphLinks);
-  const revision = useNodeFlowStore((state) => state.revision);
-  const linkStyle = useNodeFlowStore((state) => state.linkStyle);
-  const globalAssetHistory = useNodeFlowStore((state) => state.globalAssetHistory);
-  const nodeFlowContext = useNodeFlowStore((state) => state.nodeFlowContext);
-  const activeView = useNodeFlowStore((state) => state.activeView);
   const projectDataRef = useRef(projectData);
   projectDataRef.current = projectData;
-  const viewport = useNodeFlowStore((state) => state.viewport);
   const [collapsed, setCollapsed] = useState(true);
   const [isRevealing, setIsRevealing] = useState(false);
   const [panelPhase, setPanelPhase] = useState<"collapsed" | "opening" | "open" | "closing">("collapsed");
-  const [conversationState, setConversationState] = usePersistedState<ConversationState>({
+  const [conversationState, setConversationState] = useAsyncPersistedState<ConversationState>({
     key: effectiveConversationStorageKey,
     initialValue: { activeId: "", items: [] },
-    debounceMs: 180,
-    serialize: (value) => JSON.stringify(value),
-    deserialize: (value) => {
+    debounceMs: 600,
+    deserializeLegacy: (value) => {
       try {
         const parsed = JSON.parse(value);
         if (parsed && typeof parsed === "object" && Array.isArray(parsed.items)) {
@@ -567,43 +407,33 @@ export const StyloAgent: React.FC<Props> = ({
     );
   }, [conversationState.items, conversationState.activeId]);
   const messages = activeConversation?.messages || [];
-  const setMessages = useCallback(
-    (updater: Message[] | ((prev: Message[]) => Message[])) => {
-      const previous = conversationStateRef.current;
-      let items = [...previous.items];
-      let activeId = previous.activeId;
-      if (!items.length) {
-        const created = createConversationRecord();
-        items = [created];
-        activeId = created.id;
-      }
-      if (!activeId && items.length) activeId = items[0].id;
-      let idx = items.findIndex((item) => item.id === activeId);
-      if (idx < 0) {
-        const created = createConversationRecord();
-        items = [created, ...items];
-        activeId = created.id;
-        idx = 0;
-      }
-      const current = items[idx];
-      const currentMessages = Array.isArray(current.messages) ? current.messages : [];
-      const nextMessages =
-        typeof updater === "function" ? (updater as (p: Message[]) => Message[])(currentMessages) : updater;
-      const clamped = clampMessages(nextMessages);
-      const nextTitle = current.title && current.title !== "新对话" ? current.title : buildConversationTitle(clamped);
-      items[idx] = {
-        ...current,
-        title: nextTitle,
-        messages: clamped,
-        updatedAt: Date.now(),
-      };
-      const nextState = { ...previous, activeId, items };
-      conversationStateRef.current = nextState;
-      setConversationState(nextState);
-      return clamped;
-    },
-    [setConversationState, clampMessages]
-  );
+  const setConversationMessages = useCallback((
+    conversationId: string,
+    updater: Message[] | ((previous: Message[]) => Message[]),
+  ) => {
+    const previous = conversationStateRef.current;
+    const result = updateConversationMessages(previous, conversationId, updater, 120);
+    if (result.state !== previous) {
+      conversationStateRef.current = result.state;
+      setConversationState(result.state);
+    }
+    return result.messages;
+  }, [setConversationState]);
+  const ensureActiveConversationId = useCallback(() => {
+    let previous = conversationStateRef.current;
+    let activeId = previous.activeId;
+    if (!previous.items.length || !previous.items.some((item) => item.id === activeId)) {
+      const created = createConversationRecord();
+      activeId = created.id;
+      previous = { activeId, items: [created, ...previous.items] };
+      conversationStateRef.current = previous;
+      setConversationState(previous);
+    }
+    return activeId;
+  }, [setConversationState]);
+  const setMessages = useCallback((updater: Message[] | ((previous: Message[]) => Message[])) => {
+    return setConversationMessages(ensureActiveConversationId(), updater);
+  }, [ensureActiveConversationId, setConversationMessages]);
   const [isSending, setIsSending] = useState(false);
   const submittingRef = useRef(false);
   const [viewportSize, setViewportSize] = useState(
@@ -622,6 +452,26 @@ export const StyloAgent: React.FC<Props> = ({
   const [glassAnchorFrame, setGlassAnchorFrame] = useState({ left: 0, top: 0 });
   const effectiveCollapsed = collapsed;
   const dockInset = 16;
+  const syncStateRef = useRef(syncState);
+  syncStateRef.current = syncState;
+  const waitForProjectSync = useCallback(async () => {
+    const deadline = Date.now() + 15_000;
+    while (true) {
+      const projectSync = syncStateRef.current?.project;
+      if (!projectSync) return;
+      if (projectSync.status === "disabled") {
+        throw new Error("Agent 工具需要云端项目状态，但当前账户未启用项目同步。");
+      }
+      if (projectSync.status === "error" || projectSync.status === "conflict") {
+        throw new Error(projectSync.lastError || "项目同步尚未完成，Agent 无法读取权威项目状态。");
+      }
+      if (projectSync.status === "synced" && (projectSync.pendingOps || 0) === 0) return;
+      if (Date.now() >= deadline) {
+        throw new Error("等待项目同步超时。Agent 不会上传本地项目快照，请确认同步完成后重试。");
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+  }, []);
   const prepareProjectToolState = useCallback(async (): Promise<ProjectSyncLease> => {
     const flowState = getNodeFlowSnapshot();
     const expectedRevision = flowState.revision;
@@ -641,16 +491,12 @@ export const StyloAgent: React.FC<Props> = ({
     const snapshot = mergeNodeFlowIntoProjectData(projectDataRef.current, nodeFlowSnapshot);
     projectDataRef.current = snapshot;
     setProjectData(snapshot);
-    // Agent 已与云同步解耦：直接把本地快照交给服务端构建工作区，
-    // 不再等待云端确认或校验云端修订。快照按云端形状归一化，
-    // 剔除本地 blob/data 媒体，避免把浏览器私有资源带上请求。
-    return {
-      expectedRevision,
-      remoteVersion: 0,
-      localSnapshot: toCloudProjectData(snapshot),
-      release: () => undefined,
-    };
-  }, [setProjectData]);
+    if (ensureProjectSynced) {
+      return ensureProjectSynced(snapshot, expectedRevision);
+    }
+    await waitForProjectSync();
+    return { expectedRevision, remoteVersion: 0, release: () => undefined };
+  }, [ensureProjectSynced, setProjectData, waitForProjectSync]);
   const edgeRuntime = useMemo(
     () =>
       createHttpStyloAgentRuntime({
@@ -720,7 +566,8 @@ export const StyloAgent: React.FC<Props> = ({
       activeConversation?.id || conversationState.activeId || "stylo-default"
     ),
     activityStorageKey,
-    setMessages,
+    conversationId: activeConversation?.id || conversationState.activeId || "stylo-default",
+    setConversationMessages,
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -991,22 +838,26 @@ export const StyloAgent: React.FC<Props> = ({
     if (!cleanedInput || submittingRef.current) return;
     submittingRef.current = true;
     const runProjectId = projectId;
-    const runFlowRevision = getNodeFlowSnapshot().revision;
+    const runConversationId = ensureActiveConversationId();
+    const runSessionId = buildStyloAccountSessionId(accountScope, projectId, runConversationId);
     const runAccountGeneration = useNodeFlowStore.getState().accountGeneration;
     const isRunAccountCurrent = () =>
       useNodeFlowStore.getState().accountGeneration === runAccountGeneration;
-    setMessages((prev) => {
+    setConversationMessages(runConversationId, (prev) => {
       const nextOrder = prev.reduce((max, message) => Math.max(max, message.order || 0), 0) + 1;
       const userMsg: Message = { role: "user", text: cleanedInput, kind: "chat", order: nextOrder };
       return [...prev, userMsg];
     });
     setIsSending(true);
     try {
-      const runResult = await runAgentMessage({
-        userText: cleanedInput,
-        enabledSkillIds: [],
-        uiContext: submittedUiContext,
-      });
+      const runResult = await runAgentMessage(
+        {
+          userText: cleanedInput,
+          enabledSkillIds: [],
+          uiContext: submittedUiContext,
+        },
+        { conversationId: runConversationId, sessionId: runSessionId },
+      );
       if (
         !isRunAccountCurrent() ||
         runResult.projectId !== runProjectId ||
@@ -1014,72 +865,11 @@ export const StyloAgent: React.FC<Props> = ({
       ) {
         return;
       }
-      const latestFlowRevision = getNodeFlowSnapshot().revision;
-      if (shouldRejectStaleAgentResult(runResult, runFlowRevision, latestFlowRevision)) {
-        const conflictMessage = buildAgentRevisionConflictMessage(runFlowRevision, latestFlowRevision);
-        setMessages((previous) => reconcileStaleAgentMessages(previous, runResult, conflictMessage));
-        return;
-      }
-      const agentProjectPatch = normalizeAgentProjectPatch(
-        runResult.updatedProjectPatch || runResult.updatedProjectData,
-        runProjectId
-      );
-      if (agentProjectPatch || runResult.updatedNodeFlow) {
-        const latestProjectData = projectDataRef.current;
-        const currentFlow = buildNodeFlowFileFromProjectData(latestProjectData, {
-          revision,
-          linkStyle,
-          nodeFlowContext,
-          viewport: viewport || undefined,
-          activeView,
+      if (runResult.scriptEditProposals?.length) {
+        onScriptEditProposals?.({
+          id: `agent-script-batch-${Date.now().toString(36)}`,
+          proposals: runResult.scriptEditProposals,
         });
-        const candidateFlowInput =
-          runResult.updatedNodeFlow ||
-          (agentProjectPatch?.flow
-            ? buildNodeFlowFileFromProjectData({ ...latestProjectData, flow: agentProjectPatch.flow }, {
-                revision,
-                linkStyle,
-                nodeFlowContext,
-                viewport: viewport || undefined,
-                activeView,
-              })
-            : null);
-        const parsedCandidateFlow = candidateFlowInput
-          ? parseNodeFlowFile(candidateFlowInput)
-          : null;
-        const candidateFlow = parsedCandidateFlow && currentFlow
-          ? {
-              ...parsedCandidateFlow,
-              nodes: restoreLocalNodeMedia(parsedCandidateFlow.nodes, currentFlow.nodes),
-            }
-          : parsedCandidateFlow;
-        const proposals =
-          currentFlow && candidateFlow
-            ? collectScriptEditProposals(currentFlow.nodes, candidateFlow.nodes)
-            : [];
-        const committedFlow =
-          candidateFlow && currentFlow
-            ? preserveProposedScriptEdits(candidateFlow, currentFlow.nodes, proposals)
-            : candidateFlow;
-        const resultBase = applyAgentProjectPatch(latestProjectData, agentProjectPatch, runProjectId);
-
-        if (committedFlow) {
-          if (!isRunAccountCurrent()) return;
-          const nextProjectData = mergeNodeFlowIntoProjectData(resultBase, committedFlow);
-          setProjectData(nextProjectData);
-          projectDataRef.current = nextProjectData;
-          importNodeFlow(committedFlow, { expectedAccountGeneration: runAccountGeneration });
-        } else if (agentProjectPatch) {
-          setProjectData(resultBase);
-          projectDataRef.current = resultBase;
-        }
-
-        if (proposals.length) {
-          onScriptEditProposals?.({
-            id: `agent-script-batch-${Date.now().toString(36)}`,
-            proposals,
-          });
-        }
       }
       if (runResult.updatedExecutionApprovals) {
         if (!isRunAccountCurrent()) return;
@@ -1097,7 +887,7 @@ export const StyloAgent: React.FC<Props> = ({
         message.includes("用户已停止") ||
         message.includes("已取消");
       if (isAborted) {
-        setMessages((prev) => {
+        setConversationMessages(runConversationId, (prev) => {
           const nextOrder = prev.reduce((max, message) => Math.max(max, message.order || 0), 0) + 1;
           return [
             ...prev,
@@ -1106,7 +896,7 @@ export const StyloAgent: React.FC<Props> = ({
         });
         return;
       }
-      setMessages((prev) => {
+      setConversationMessages(runConversationId, (prev) => {
         const nextOrder = prev.reduce((max, message) => Math.max(max, message.order || 0), 0) + 1;
         return [
           ...prev,
@@ -1117,7 +907,7 @@ export const StyloAgent: React.FC<Props> = ({
       submittingRef.current = false;
       setIsSending(false);
     }
-  }, [accountScope, activeView, importNodeFlow, linkStyle, nodeFlowContext, onScriptEditProposals, projectId, revision, runAgentMessage, setExecutionApprovals, setMessages, setProjectData, viewport]);
+  }, [accountScope, ensureActiveConversationId, onScriptEditProposals, projectId, runAgentMessage, setConversationMessages, setExecutionApprovals]);
 
   const panelClassName = "pointer-events-auto stylo-panel";
   const titleOrigin = { x: 16, y: 20, width: 126, height: 42, radius: 12 };

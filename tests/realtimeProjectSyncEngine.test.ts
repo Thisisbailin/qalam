@@ -3,11 +3,17 @@ import { test } from "node:test";
 import * as Y from "yjs";
 import {
   applyProjectSnapshot,
+  applyProjectNodeTextPatches,
   decodeUpdateBase64,
   encodeUpdateBase64,
   readProjectSnapshot,
 } from "../collaboration/yProjectDocument";
 import { REALTIME_PROJECT_MAX_BYTES } from "../collaboration/realtimeLimits";
+import {
+  REALTIME_NODE_GEOMETRY_CAPABILITY,
+  REALTIME_NODE_TEXT_CAPABILITY,
+  REALTIME_TYPED_MUTATION_CAPABILITY,
+} from "../collaboration/realtimeMutation";
 import { RealtimeProjectSyncEngine } from "../sync/realtimeProjectSyncEngine";
 import type { SyncCodec } from "../sync/realtimeSyncTypes";
 import type { ProjectData, SyncStatus } from "../types";
@@ -477,7 +483,13 @@ test("node dragging sends only a geometry CRDT delta without snapshot materializ
   const serverDoc = new Y.Doc();
   applyProjectSnapshot(serverDoc, initial as unknown as Record<string, unknown>, "server");
   await engine.start(initial);
-  socket.emit(serverSyncFromDocument(serverDoc));
+  socket.emit({
+    ...serverSyncFromDocument(serverDoc),
+    capabilities: [
+      REALTIME_TYPED_MUTATION_CAPABILITY,
+      REALTIME_NODE_GEOMETRY_CAPABILITY,
+    ],
+  });
   await wait(20);
   // Mirror the React commit produced by onApplyRemote so the engine's
   // referential baseline matches the visible application snapshot.
@@ -495,6 +507,13 @@ test("node dragging sends only a geometry CRDT delta without snapshot materializ
   const outbound = socket.sent.find((message) => message.type === "update");
   assert.equal(snapshots, beforeDragSnapshots);
   assert.equal(typeof outbound?.update, "string");
+  assert.deepEqual(outbound?.mutation, {
+    version: 2,
+    kind: "node.geometry",
+    projectId: "project-main",
+    updatedAt: 2,
+    patches: [{ nodeId: "node-1", position: { x: 84, y: 20 } }],
+  });
   const delta = decodeUpdateBase64(String(outbound!.update));
   assert.ok(delta.byteLength < 1_024);
   Y.applyUpdate(serverDoc, delta, "client-delta");
@@ -503,6 +522,116 @@ test("node dragging sends only a geometry CRDT delta without snapshot materializ
   assert.equal(snapshot.flowProjects?.[0].flow.flowNodes?.[0]?.data.markdown, "hello");
   serverDoc.destroy();
   engine.dispose();
+});
+
+test("a legacy realtime worker receives the same geometry delta without typed metadata", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  initial.flowProjects = [{
+    id: "project-main",
+    title: "Project",
+    color: "amber",
+    durationMin: 90,
+    rootNodeId: "root-project-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: structuredClone(initial.flow!),
+  }];
+  const engine = createEngine({ socket });
+  const serverDoc = new Y.Doc();
+  applyProjectSnapshot(serverDoc, initial as unknown as Record<string, unknown>, "server");
+  await engine.start(initial);
+  socket.emit(serverSyncFromDocument(serverDoc));
+  await wait(10);
+
+  engine.expectNodeGeometryMutation(
+    [{ nodeId: "node-1", position: { x: 84, y: 20 } }],
+    2,
+  );
+  await wait(10);
+
+  const outbound = socket.sent.find((message) => message.type === "update");
+  assert.equal(typeof outbound?.update, "string");
+  assert.equal(outbound?.mutation, undefined);
+  engine.dispose();
+  serverDoc.destroy();
+});
+
+test("node text editing sends a path-only typed envelope while the Yjs delta carries characters", async () => {
+  const socket = new FakeSocket();
+  const initial = project(1, 10);
+  initial.flow!.flowNodes![0].data.text = "OPEN";
+  initial.flowProjects = [{
+    id: "project-main",
+    title: "Project",
+    color: "amber",
+    durationMin: 90,
+    rootNodeId: "root-project-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: structuredClone(initial.flow!),
+  }];
+  const changedNode = {
+    ...initial.flow!.flowNodes![0],
+    data: { ...initial.flow!.flowNodes![0].data, text: "OPEN LEFT" },
+  };
+  const changedFlow = {
+    ...initial.flow!,
+    revision: 2,
+    flowNodes: [changedNode],
+  };
+  const changed: ProjectData = {
+    ...initial,
+    flow: changedFlow,
+    flowProjects: [{
+      ...initial.flowProjects[0],
+      updatedAt: 2,
+      flow: changedFlow,
+    }],
+  };
+
+  const engine = createEngine({ socket });
+  const serverDoc = new Y.Doc();
+  applyProjectSnapshot(serverDoc, initial as unknown as Record<string, unknown>, "server");
+  await engine.start(initial);
+  socket.emit({
+    ...serverSyncFromDocument(serverDoc),
+    capabilities: [REALTIME_TYPED_MUTATION_CAPABILITY, REALTIME_NODE_TEXT_CAPABILITY],
+  });
+  await wait(20);
+  engine.stage(initial);
+  await wait(10);
+
+  engine.expectNodeTextMutation({
+    projectId: "project-main",
+    nodeId: "node-1",
+    previousText: "OPEN",
+    nextText: "OPEN LEFT",
+    derivedFields: [],
+  });
+  engine.stage(changed);
+  await wait(20);
+
+  const outbound = socket.sent.find((message) => message.type === "update");
+  assert.deepEqual(outbound?.mutation, {
+    version: 2,
+    kind: "node.text",
+    projectId: "project-main",
+    updatedAt: 2,
+    revision: 2,
+    patches: [{ nodeId: "node-1", field: "text" }],
+  });
+  assert.equal(JSON.stringify(outbound?.mutation).includes("OPEN LEFT"), false);
+  const delta = decodeUpdateBase64(String(outbound!.update));
+  assert.ok(delta.byteLength < 1_024);
+  Y.applyUpdate(serverDoc, delta, "client-text-delta");
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>(serverDoc)
+      .flowProjects?.[0].flow.flowNodes?.[0]?.data.text,
+    "OPEN LEFT",
+  );
+  engine.dispose();
+  serverDoc.destroy();
 });
 
 test("switching projects drains a first local snapshot instead of abandoning it", async () => {
@@ -831,6 +960,82 @@ test("a recovered durable outbox is persisted before it is resent", async () => 
 
   const sent = socket.sent.find((message) => message.type === "update");
   assert.equal(sent?.opId, "operation-recovered-1");
+  engine.dispose();
+  baseDoc.destroy();
+  localDoc.destroy();
+});
+
+test("a recovered text outbox preserves typed metadata across restart", async () => {
+  const socket = new FakeSocket();
+  const base = project(1, 10);
+  base.flow!.flowNodes![0].data.text = "OPEN";
+  base.flowProjects = [{
+    id: "project-main",
+    title: "Project",
+    color: "amber",
+    durationMin: 90,
+    rootNodeId: "root-project-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: structuredClone(base.flow!),
+  }];
+  const baseDoc = new Y.Doc();
+  const localDoc = new Y.Doc();
+  applyProjectSnapshot(baseDoc, base as unknown as Record<string, unknown>, "base");
+  Y.applyUpdate(localDoc, Y.encodeStateAsUpdate(baseDoc));
+  applyProjectNodeTextPatches(
+    localDoc,
+    "project-main",
+    [{ nodeId: "node-1", text: "OPEN OFFLINE" }],
+    2,
+    2,
+    "offline",
+  );
+  const pendingUpdate = Y.encodeStateAsUpdate(localDoc, Y.encodeStateVector(baseDoc));
+  const mutation = {
+    version: 2 as const,
+    kind: "node.text" as const,
+    projectId: "project-main",
+    updatedAt: 2,
+    revision: 2,
+    patches: [{ nodeId: "node-1", field: "text" as const }],
+  };
+  const engine = new RealtimeProjectSyncEngine({
+    accountScope: "user-account-1",
+    projectId: "project-main",
+    session: {
+      deviceId: "device-test-1",
+      openWebSocket: async () => socket as unknown as WebSocket,
+    } as any,
+    codec: codec(),
+    debounceMs: 0,
+    stageDebounceMs: 0,
+    persistenceDebounceMs: 0,
+    onApplyRemote: () => undefined,
+    documentStore: {
+      read: async () => Y.encodeStateAsUpdate(baseDoc),
+      readConfirmed: async () => Y.encodeStateAsUpdate(baseDoc),
+      readOutbox: async () => [{ opId: "text-operation-recovered", update: pendingUpdate, mutation }],
+      writeOutbox: async () => undefined,
+      write: async () => undefined,
+      delete: async () => undefined,
+    },
+  });
+
+  await engine.start(base);
+  assert.equal(
+    readProjectSnapshot<ProjectData & Record<string, unknown>>((engine as any).doc)
+      .flowProjects?.[0].flow.flowNodes?.[0]?.data.text,
+    "OPEN OFFLINE",
+  );
+  socket.emit({
+    ...serverSyncFromDocument(baseDoc),
+    capabilities: [REALTIME_TYPED_MUTATION_CAPABILITY, REALTIME_NODE_TEXT_CAPABILITY],
+  });
+  await wait(10);
+  const sent = socket.sent.find((message) => message.type === "update");
+  assert.equal(sent?.opId, "text-operation-recovered");
+  assert.deepEqual(sent?.mutation, mutation);
   engine.dispose();
   baseDoc.destroy();
   localDoc.destroy();

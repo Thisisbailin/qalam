@@ -1,6 +1,7 @@
 import { createStyloAgentBridge } from "../../agents/bridge/nodeFlowBridgeCore";
 import type { Connection } from "@xyflow/react";
 import type { StyloRunResult } from "../../agents/runtime/types";
+import type { AgentScriptEditProposal } from "../../agents/runtime/types";
 import type { ProjectData } from "../../types";
 import type { NodeFlowFile, NodeFlowNode, NodeFlowNodeData, NodeType } from "../../node-workspace/types";
 import { createDefaultNodeFlowNodeData } from "../../node-workspace/nodeflow/defaults";
@@ -103,6 +104,74 @@ export const mergeAgentNodeFlowIntoProjectData = (
     next.designAssets = designAssets;
   }
   return next;
+};
+
+const readScriptDocument = (node: NodeFlowNode) => {
+  const data = (node.data || {}) as Record<string, unknown>;
+  const content = typeof data.content === "string"
+    ? data.content
+    : typeof data.text === "string"
+      ? data.text
+      : "";
+  return {
+    title: typeof data.title === "string" && data.title.trim() ? data.title : "剧本文档",
+    content,
+    documentId: typeof data.documentId === "string" && data.documentId.trim()
+      ? data.documentId
+      : undefined,
+  };
+};
+
+export const splitAgentScriptEditProposals = (
+  source: NodeFlowFile,
+  candidate: NodeFlowFile,
+  receivedAt = Date.now(),
+): {
+  committedNodeFlow: NodeFlowFile;
+  proposals: AgentScriptEditProposal[];
+  hasCommittedNodeFlowMutation: boolean;
+} => {
+  const sourceById = new Map(source.nodes.map((node) => [node.id, node]));
+  const proposals: AgentScriptEditProposal[] = [];
+  const proposalNodeIds = new Set<string>();
+
+  candidate.nodes.forEach((node, index) => {
+    if (node.type !== "scriptPage") return;
+    const previous = sourceById.get(node.id);
+    if (!previous || previous.type !== "scriptPage") return;
+    const previousDocument = readScriptDocument(previous);
+    const nextDocument = readScriptDocument(node);
+    if (previousDocument.content === nextDocument.content) return;
+    proposalNodeIds.add(node.id);
+    proposals.push({
+      id: `agent-script-edit-${receivedAt.toString(36)}-${index}`,
+      nodeId: node.id,
+      documentId: nextDocument.documentId || previousDocument.documentId,
+      title: nextDocument.title,
+      content: nextDocument.content,
+      receivedAt,
+    });
+  });
+
+  const restoredNodes = candidate.nodes.map((node) => {
+    if (!proposalNodeIds.has(node.id)) return node;
+    const previous = sourceById.get(node.id);
+    if (!previous) return node;
+    const previousData = (previous.data || {}) as Record<string, unknown>;
+    const nextData = { ...((node.data || {}) as Record<string, unknown>) };
+    ["title", "text", "content", "preview", "updatedAt"].forEach((key) => {
+      if (key in previousData) nextData[key] = previousData[key];
+      else delete nextData[key];
+    });
+    return { ...node, data: nextData as NodeFlowNode["data"] };
+  });
+  const restored = { ...candidate, nodes: restoredNodes };
+  const comparison = { ...restored, revision: source.revision };
+  return {
+    committedNodeFlow: restored,
+    proposals,
+    hasCommittedNodeFlowMutation: JSON.stringify(comparison) !== JSON.stringify(source),
+  };
 };
 
 export const createNodeFlowBridgeState = (

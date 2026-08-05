@@ -12,6 +12,13 @@ import {
   REALTIME_UPDATE_MAX_BYTES,
 } from "../../collaboration/realtimeLimits";
 import { validateRealtimeProjectSnapshot } from "../../collaboration/realtimeProjectValidation";
+import {
+  parseRealtimeMutationEnvelope,
+  REALTIME_NODE_GEOMETRY_CAPABILITY,
+  REALTIME_NODE_TEXT_CAPABILITY,
+  REALTIME_TYPED_MUTATION_CAPABILITY,
+  validateRealtimeMutationEffect,
+} from "../../collaboration/realtimeMutation";
 
 type RoomEnv = { DB: D1Database };
 type RoomIdentity = { userId: string; projectId: string };
@@ -24,6 +31,7 @@ type ClientMessage = {
   update?: unknown;
   projectBytes?: unknown;
   epoch?: unknown;
+  mutation?: unknown;
 };
 type AgentApplyInput = {
   expectedRevision?: unknown;
@@ -61,7 +69,7 @@ const MAX_UPDATE_BYTES = REALTIME_UPDATE_MAX_BYTES;
 const MAX_PENDING_BYTES = 8_000_000;
 const MAX_PROJECT_BYTES = REALTIME_PROJECT_MAX_BYTES;
 const MAX_UPDATE_BASE64_CHARS = Math.ceil(MAX_UPDATE_BYTES / 3) * 4 + 4;
-const MAX_REALTIME_MESSAGE_CHARS = MAX_UPDATE_BASE64_CHARS + 2_048;
+const MAX_REALTIME_MESSAGE_CHARS = MAX_UPDATE_BASE64_CHARS + 128_000;
 const SOCKET_RATE_WINDOW_MS = 60_000;
 const SOCKET_RATE_MAX_MESSAGES = 600;
 const SOCKET_RATE_MAX_CHARS = 64 * 1024 * 1024;
@@ -1063,6 +1071,11 @@ export class ProjectRealtimeRoom {
       epochReason: meta?.epoch_reason === "reset" ? "reset" : "rebase",
       update: encodeUpdateBase64(Y.encodeStateAsUpdate(this.doc)),
       stateVector: encodeUpdateBase64(Y.encodeStateVector(this.doc)),
+      capabilities: [
+        REALTIME_TYPED_MUTATION_CAPABILITY,
+        REALTIME_NODE_GEOMETRY_CAPABILITY,
+        REALTIME_NODE_TEXT_CAPABILITY,
+      ],
     }));
     return new Response(null, {
       status: 101,
@@ -1162,6 +1175,12 @@ export class ProjectRealtimeRoom {
       this.sendSocketMessage(socket, JSON.stringify({ type: "error", opId, error: "Realtime update is too large" }));
       return;
     }
+    const parsedMutationResult = message.mutation === undefined
+      ? null
+      : parseRealtimeMutationEnvelope(message.mutation, attachedIdentity.projectId);
+    let validatedMutation = parsedMutationResult?.ok
+      ? parsedMutationResult.value
+      : null;
 
     try {
       const duplicate = (this.state.storage.sql.exec(
@@ -1194,8 +1213,30 @@ export class ProjectRealtimeRoom {
       // state out of the durable log and guarantees ACK means "safe authority".
       const candidate = new Y.Doc();
       try {
+        const before = validatedMutation
+          ? readProjectSnapshot<Record<string, unknown>>(this.doc)
+          : null;
         Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.doc), "candidate-base");
         Y.applyUpdate(candidate, update, "candidate-update");
+        if (validatedMutation) {
+          const effect = validateRealtimeMutationEffect(
+            before,
+            readProjectSnapshot<Record<string, unknown>>(candidate),
+            validatedMutation,
+          );
+          // Typed metadata is an optional proof and optimization. If a stale,
+          // malformed, or buggy envelope does not prove the exact effect, keep
+          // the user's raw Yjs update on the fully validated v1 path.
+          if (!effect.ok) {
+            console.warn(JSON.stringify({
+              event: "realtime_typed_mutation_shadow_mismatch",
+              kind: validatedMutation.kind,
+              serverSeq: this.serverSeq,
+              reason: effect.error.slice(0, 160),
+            }));
+            validatedMutation = null;
+          }
+        }
         this.inspectCandidate(candidate, attachedIdentity.projectId);
       } catch (error) {
         candidate.destroy();
@@ -1259,6 +1300,7 @@ export class ProjectRealtimeRoom {
         serverSeq,
         epoch: roomEpoch,
         update: message.update,
+        ...(validatedMutation ? { mutation: validatedMutation } : {}),
       });
       for (const peer of this.state.getWebSockets().filter(isOpenSocket)) {
         if (peer !== socket) this.sendSocketMessage(peer, broadcast);

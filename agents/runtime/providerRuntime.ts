@@ -1,5 +1,6 @@
 import { OpenAIProvider, type ModelSettings } from "@openai/agents";
 import OpenAI from "openai";
+import { AGENT_TRANSPORT_LIMITS } from "./limits";
 
 export type StyloProviderRuntimeConfig = {
   apiKey: string;
@@ -27,6 +28,8 @@ export const createStyloProviderRuntime = (config: StyloProviderRuntimeConfig): 
     baseURL: config.baseUrl,
     defaultHeaders: config.defaultHeaders,
     dangerouslyAllowBrowser: config.allowBrowserClient,
+    timeout: AGENT_TRANSPORT_LIMITS.modelTimeoutMs,
+    maxRetries: 1,
   });
   const modelProvider = new OpenAIProvider({
     openAIClient: client,

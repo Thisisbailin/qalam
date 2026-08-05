@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as Y from "yjs";
 import {
   applyProjectNodeGeometryPatches,
+  applyProjectNodeTextPatches,
   applyProjectSnapshot,
   applyProjectSnapshotDelta,
   readProjectSnapshot,
@@ -74,6 +75,83 @@ test("Yjs snapshots omit undefined object fields and preserve explicit null", ()
   contaminated.flow.links[0].data = undefined;
   applyProjectSnapshot(doc, contaminated, "normalized");
   assert.equal(Object.hasOwn(readProjectSnapshot<any>(doc).flow.links[0], "data"), false);
+});
+
+test("concurrent edits in different ranges of the same node text retain both writers", () => {
+  const seed = baseProject();
+  seed.flowProjects = [{
+    id: "project-main",
+    title: "Project",
+    durationMin: 90,
+    rootNodeId: "root-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: {
+      revision: 1,
+      links: [],
+      flowNodes: [{ id: "node-1", type: "text", position: { x: 0, y: 0 }, data: { text: "OPEN" } }],
+    },
+  }];
+  const base = new Y.Doc();
+  applyProjectSnapshot(base, seed, "seed");
+  const baseState = Y.encodeStateAsUpdate(base);
+  const baseVector = Y.encodeStateVector(base);
+  const left = new Y.Doc();
+  const right = new Y.Doc();
+  Y.applyUpdate(left, baseState);
+  Y.applyUpdate(right, baseState);
+
+  assert.equal(applyProjectNodeTextPatches(left, "project-main", [{ nodeId: "node-1", text: "LEFT OPEN" }], 2, 2, "left"), true);
+  assert.equal(applyProjectNodeTextPatches(right, "project-main", [{ nodeId: "node-1", text: "OPEN RIGHT" }], 3, 2, "right"), true);
+  const leftDelta = Y.encodeStateAsUpdate(left, baseVector);
+  const rightDelta = Y.encodeStateAsUpdate(right, baseVector);
+  Y.applyUpdate(left, rightDelta);
+  Y.applyUpdate(right, leftDelta);
+
+  assert.equal(readProjectSnapshot<any>(left).flowProjects[0].flow.flowNodes[0].data.text, "LEFT OPEN RIGHT");
+  assert.equal(readProjectSnapshot<any>(right).flowProjects[0].flow.flowNodes[0].data.text, "LEFT OPEN RIGHT");
+  base.destroy();
+  left.destroy();
+  right.destroy();
+});
+
+test("overlapping replacements in the same node converge without silently dropping either writer", () => {
+  const seed = baseProject();
+  seed.flowProjects = [{
+    id: "project-main",
+    title: "Project",
+    durationMin: 90,
+    rootNodeId: "root-main",
+    createdAt: 1,
+    updatedAt: 1,
+    flow: {
+      revision: 1,
+      links: [],
+      flowNodes: [{ id: "node-1", type: "text", position: { x: 0, y: 0 }, data: { text: "CAT" } }],
+    },
+  }];
+  const base = new Y.Doc();
+  applyProjectSnapshot(base, seed, "seed");
+  const baseState = Y.encodeStateAsUpdate(base);
+  const baseVector = Y.encodeStateVector(base);
+  const left = new Y.Doc();
+  const right = new Y.Doc();
+  Y.applyUpdate(left, baseState);
+  Y.applyUpdate(right, baseState);
+  applyProjectNodeTextPatches(left, "project-main", [{ nodeId: "node-1", text: "DOG" }], 2, 2, "left");
+  applyProjectNodeTextPatches(right, "project-main", [{ nodeId: "node-1", text: "FOX" }], 3, 2, "right");
+  const leftDelta = Y.encodeStateAsUpdate(left, baseVector);
+  const rightDelta = Y.encodeStateAsUpdate(right, baseVector);
+  Y.applyUpdate(left, rightDelta);
+  Y.applyUpdate(right, leftDelta);
+  const leftText = readProjectSnapshot<any>(left).flowProjects[0].flow.flowNodes[0].data.text;
+  const rightText = readProjectSnapshot<any>(right).flowProjects[0].flow.flowNodes[0].data.text;
+  assert.equal(leftText, rightText);
+  assert.match(leftText, /DOG/);
+  assert.match(leftText, /FOX/);
+  base.destroy();
+  left.destroy();
+  right.destroy();
 });
 
 test("concurrent first nodes in an initially empty graph both survive", () => {

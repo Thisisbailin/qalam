@@ -15,11 +15,11 @@ export type AgentPromptCatalogEntry = {
 
 export const AGENT_PROMPT_CATALOG: AgentPromptCatalogEntry[] = [
   {
-    "id": "4a73e29c59f5",
-    "title": "guidance · L233",
+    "id": "062b449732e3",
+    "title": "guidance · L264",
     "category": "guardrail",
     "sourcePath": "agents/tools/index.ts",
-    "sourceLine": 233,
+    "sourceLine": 264,
     "content": "The tool failed without a durable project change. Re-read state, adjust arguments, or explain the blocker instead of repeating the same call.",
     "kind": "guardrail",
     "chars": 141
@@ -75,11 +75,11 @@ export const AGENT_PROMPT_CATALOG: AgentPromptCatalogEntry[] = [
     "chars": 913
   },
   {
-    "id": "35c34c664463",
+    "id": "028111ef8f7c",
     "title": "search_web · guidance",
     "category": "guardrail",
     "sourcePath": "agents/tools/searchWeb.ts",
-    "sourceLine": 74,
+    "sourceLine": 76,
     "content": "Use this as a discovery result. For precise claims, open and verify primary source URLs surfaced in the result text.",
     "kind": "guardrail",
     "chars": 116
@@ -155,81 +155,81 @@ export const AGENT_PROMPT_CATALOG: AgentPromptCatalogEntry[] = [
     "chars": 9136
   },
   {
-    "id": "68bdd762981e",
+    "id": "0e99a019943a",
     "title": "action · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 49,
+    "sourceLine": 50,
     "content": "Repository action. status reads latest default-branch metadata; tree lists repository files; read fetches any file path; search searches file paths and optionally file contents.",
     "kind": "tool-schema",
     "chars": 177
   },
   {
-    "id": "4bfe6f1137a8",
+    "id": "ebae3c6bb71f",
     "title": "path · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 54,
+    "sourceLine": 55,
     "content": "Repository-relative path for action=read, or optional directory/file prefix for action=tree.",
     "kind": "tool-schema",
     "chars": 92
   },
   {
-    "id": "a300eae7b922",
+    "id": "042bd8c1e48c",
     "title": "query · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 58,
+    "sourceLine": 59,
     "content": "Search query for action=search. Matches file paths and, when include_content=true, file contents.",
     "kind": "tool-schema",
     "chars": 97
   },
   {
-    "id": "550697b89a1f",
+    "id": "699ace509434",
     "title": "ref · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 62,
+    "sourceLine": 63,
     "content": "Optional branch, tag, or commit SHA. Defaults to the repository default branch.",
     "kind": "tool-schema",
     "chars": 79
   },
   {
-    "id": "1901c0bfdaaf",
+    "id": "d3c201ba5925",
     "title": "include_content · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 66,
+    "sourceLine": 67,
     "content": "For action=search, also read text files and search inside contents. Use only when source-level evidence is needed.",
     "kind": "tool-schema",
     "chars": 114
   },
   {
-    "id": "5999854ee251",
+    "id": "ef8ab838f1db",
     "title": "max_chars · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 70,
+    "sourceLine": 71,
     "content": "Maximum characters to return for file contents or large text output.",
     "kind": "tool-schema",
     "chars": 68
   },
   {
-    "id": "97abc2f0114f",
+    "id": "eb811ce7c2e8",
     "title": "max_items · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 74,
+    "sourceLine": 75,
     "content": "Maximum tree/search items to return.",
     "kind": "tool-schema",
     "chars": 36
   },
   {
-    "id": "bbaa8087e54b",
+    "id": "8f30c4d032ea",
     "title": "access_github_repository · description",
     "category": "tool",
     "sourcePath": "agents/tools/accessGithubRepository.ts",
-    "sourceLine": 272,
+    "sourceLine": 277,
     "content": "Read the live Stylo GitHub repository with broad read-only access: latest default-branch status, recursive file tree, arbitrary file contents, and repository search.",
     "kind": "tool-schema",
     "chars": 165
@@ -1445,31 +1445,31 @@ export const AGENT_PROMPT_CATALOG: AgentPromptCatalogEntry[] = [
     "chars": 155
   },
   {
-    "id": "62ba8fce3708",
+    "id": "1307feea896f",
     "title": "query · description",
     "category": "tool",
     "sourcePath": "agents/tools/searchWeb.ts",
-    "sourceLine": 10,
+    "sourceLine": 11,
     "content": "Web search query.",
     "kind": "tool-schema",
     "chars": 17
   },
   {
-    "id": "d237e74b23c3",
+    "id": "670c67f1d5a5",
     "title": "max_chars · description",
     "category": "tool",
     "sourcePath": "agents/tools/searchWeb.ts",
-    "sourceLine": 14,
+    "sourceLine": 15,
     "content": "Maximum characters to return from the search result page.",
     "kind": "tool-schema",
     "chars": 57
   },
   {
-    "id": "b4e53f20e4aa",
+    "id": "ab8018350ed0",
     "title": "search_web · description",
     "category": "tool",
     "sourcePath": "agents/tools/searchWeb.ts",
-    "sourceLine": 50,
+    "sourceLine": 51,
     "content": "Search the public web for fresh information. Prefer primary sources when technical, legal, financial, or product accuracy matters.",
     "kind": "tool-schema",
     "chars": 130

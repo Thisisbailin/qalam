@@ -31,6 +31,7 @@ import { cancelGenerationExecutionToolDef } from "./cancelGenerationExecution";
 import { readRuntimeManualToolDef } from "./readRuntimeManual";
 import { accessGithubRepositoryToolDef } from "./accessGithubRepository";
 import { searchWebToolDef } from "./searchWeb";
+import { AGENT_TRANSPORT_LIMITS, createAbortError, withAbortAndTimeout } from "../runtime/limits";
 
 type ToolLifecycleEvent =
   | { type: "tool_called"; call: AgentExecutedToolCall }
@@ -93,11 +94,15 @@ export const executeStyloCapability = async ({
   input,
   bridge,
   allowedCapabilities,
+  signal,
+  timeoutMs = AGENT_TRANSPORT_LIMITS.toolTimeoutMs,
 }: {
   toolName: string;
   input: unknown;
   bridge: StyloAgentBridge;
   allowedCapabilities?: readonly StyloToolCapability[];
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }): Promise<StyloCapabilityExecutionResult> => {
   const definition = findStyloToolDefinition(toolName);
   if (!definition) throw new Error(`Unknown Stylo tool: ${toolName}`);
@@ -110,13 +115,39 @@ export const executeStyloCapability = async ({
       `Stylo capability ${descriptor.capability} is not available to this Agent host.`
     );
   }
-  const output = await definition.execute(input as never, bridge);
-  return {
-    name: definition.name as StyloToolName,
-    descriptor,
-    output,
-    summary: definition.summarize(output as never),
-  };
+  const execute = definition.execute as (
+    input: unknown,
+    bridge: StyloAgentBridge,
+    options?: { signal?: AbortSignal },
+  ) => unknown | Promise<unknown>;
+  const executionController = new AbortController();
+  const forwardAbort = () => executionController.abort(signal?.reason);
+  if (signal?.aborted) forwardAbort();
+  else signal?.addEventListener("abort", forwardAbort, { once: true });
+  const timeoutMessage = `${toolName} 工具执行超过 ${Math.round(timeoutMs / 1000)} 秒，已停止。`;
+  const timeout = setTimeout(
+    () => executionController.abort(createAbortError(timeoutMessage)),
+    timeoutMs,
+  );
+  try {
+    const output = await withAbortAndTimeout(
+      Promise.resolve().then(() => execute(input, bridge, { signal: executionController.signal })),
+      {
+        signal: executionController.signal,
+        timeoutMs,
+        timeoutMessage,
+      },
+    );
+    return {
+      name: definition.name as StyloToolName,
+      descriptor,
+      output,
+      summary: definition.summarize(output as never),
+    };
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", forwardAbort);
+  }
 };
 
 const LEGACY_DISABLED_TOOL_NAMES = new Set([
@@ -241,11 +272,13 @@ export const createStyloTools = ({
   emitEvent,
   disabledTools = [],
   toolBudget,
+  signal,
 }: {
   bridge: StyloAgentBridge;
   emitEvent?: (event: ToolLifecycleEvent) => void;
   disabledTools?: string[];
   toolBudget?: StyloToolBudgetPolicy;
+  signal?: AbortSignal;
 }) => {
   const disabled = new Set(disabledTools);
   const lookupCache = new Map<string, { output: unknown; summary: string }>();
@@ -311,6 +344,7 @@ export const createStyloTools = ({
             toolName: toolDef.name,
             input,
             bridge,
+            signal,
           });
           const { output, summary } = execution;
           if (shouldCache) {

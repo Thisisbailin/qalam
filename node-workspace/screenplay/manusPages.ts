@@ -42,6 +42,9 @@ const readPageNumber = (node: NodeFlowNode) => {
   return Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : Number.POSITIVE_INFINITY;
 };
 
+const hasCanonicalPageNumbers = (nodes: NodeFlowNode[]) =>
+  nodes.every((node, index) => readPageNumber(node) === index + 1);
+
 const compareNodes = (left: NodeFlowNode, right: NodeFlowNode) =>
   readPageNumber(left) - readPageNumber(right) ||
   left.position.y - right.position.y ||
@@ -168,7 +171,7 @@ export const ensureScreenplayTitlePage = (
   const existingTitlePage = sequence.find(isScreenplayTitlePageNode);
   if (existingTitlePage) {
     const orderedIds = [existingTitlePage.id, ...sequence.filter((node) => node.id !== existingTitlePage.id).map((node) => node.id)];
-    const nextProjectData = sequence[0]?.id === existingTitlePage.id
+    const nextProjectData = sequence[0]?.id === existingTitlePage.id && hasCanonicalPageNumbers(sequence)
       ? projectData
       : reorderConnectedScriptPages(projectData, orderedIds);
     return { projectData: nextProjectData, titlePageId: existingTitlePage.id, created: false };
@@ -276,7 +279,10 @@ export const reorderConnectedScriptPages = (
     currentOrder.length !== uniqueNodeIds.length ||
     currentOrder.some((nodeId) => !uniqueNodeIds.includes(nodeId))
   ) return projectData;
-  if (currentOrder.every((nodeId, index) => nodeId === uniqueNodeIds[index])) return projectData;
+  if (
+    currentOrder.every((nodeId, index) => nodeId === uniqueNodeIds[index]) &&
+    hasCanonicalPageNumbers(currentOrder.map((nodeId) => (flow.flowNodes || []).find((node) => node.id === nodeId)!))
+  ) return projectData;
 
   const reorderedIds = new Set(uniqueNodeIds);
   const links = (flow.links || []).filter((link) => !(

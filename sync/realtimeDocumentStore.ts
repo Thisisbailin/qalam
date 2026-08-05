@@ -1,3 +1,8 @@
+import {
+  parseRealtimeMutationEnvelope,
+  type RealtimeMutationEnvelope,
+} from "../collaboration/realtimeMutation";
+
 const DB_NAME = "stylo-realtime-projects";
 const STORE_NAME = "documents";
 const epochKey = (key: string) => `${key}:epoch`;
@@ -8,6 +13,7 @@ const rejectedKey = (key: string) => `${key}:rejected`;
 export type RealtimeStoredOutboxEntry = {
   opId: string;
   update: Uint8Array;
+  mutation?: RealtimeMutationEnvelope;
 };
 
 export type RealtimeStoredRejectedEntry = RealtimeStoredOutboxEntry & {
@@ -167,14 +173,26 @@ export const readRealtimeDocumentOutbox = async (
         }
         resolve(value.flatMap((entry): RealtimeStoredOutboxEntry[] => {
           if (!entry || typeof entry !== "object") return [];
-          const candidate = entry as { opId?: unknown; update?: unknown };
+          const candidate = entry as { opId?: unknown; update?: unknown; mutation?: unknown };
           const update = candidate.update instanceof ArrayBuffer
             ? new Uint8Array(candidate.update)
             : candidate.update instanceof Uint8Array
               ? new Uint8Array(candidate.update)
               : null;
-          return typeof candidate.opId === "string" && candidate.opId.length > 0 && update?.byteLength
-            ? [{ opId: candidate.opId, update }]
+          const mutation = candidate.mutation === undefined
+            ? null
+            : parseRealtimeMutationEnvelope(candidate.mutation);
+          return typeof candidate.opId === "string"
+            && candidate.opId.length > 0
+            && update?.byteLength
+            ? [{
+                opId: candidate.opId,
+                update,
+                // Mutation metadata is an optional proof/optimization. A
+                // malformed or future-version envelope must degrade to the
+                // opaque Yjs path, never make the durable user update vanish.
+                ...(mutation?.ok ? { mutation: mutation.value } : {}),
+              }]
             : [];
         }));
       };
@@ -200,6 +218,7 @@ export const writeRealtimeDocumentOutbox = async (
       } else {
         store.put(entries.map((entry) => ({
           opId: entry.opId,
+          ...(entry.mutation ? { mutation: entry.mutation } : {}),
           update: entry.update.buffer.slice(
             entry.update.byteOffset,
             entry.update.byteOffset + entry.update.byteLength,
@@ -302,6 +321,7 @@ export const writeRealtimeDocumentSessionState = async (
       } else {
         store.put(entries.map((entry) => ({
           opId: entry.opId,
+          ...(entry.mutation ? { mutation: entry.mutation } : {}),
           update: entry.update.buffer.slice(
             entry.update.byteOffset,
             entry.update.byteOffset + entry.update.byteLength,

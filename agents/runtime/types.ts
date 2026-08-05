@@ -55,6 +55,15 @@ export type AgentExecutedToolCall = {
   error?: string;
 };
 
+export type AgentScriptEditProposal = {
+  id: string;
+  nodeId: string;
+  documentId?: string;
+  title: string;
+  content: string;
+  receivedAt: number;
+};
+
 export type AgentThreadItemStatus = "in_progress" | "completed" | "failed";
 
 export type AgentMessageThreadItem = {
@@ -107,6 +116,13 @@ export type StyloRunResult = {
   updatedProjectData?: ProjectData;
   updatedNodeFlow?: NodeFlowFile;
   updatedExecutionApprovals?: NodeFlowExecutionApprovalProposal[];
+  scriptEditProposals?: AgentScriptEditProposal[];
+  projectCommit?: {
+    operationId: string;
+    baseRevision: number;
+    revision: number;
+    serverSeq: number;
+  };
   tracing?: {
     enabled: boolean;
     traceId?: string;
@@ -116,6 +132,18 @@ export type StyloRunResult = {
     outputTokens?: number;
     totalTokens?: number;
   };
+};
+
+export type StyloRunTerminalResult = Omit<
+  StyloRunResult,
+  | "finalText"
+  | "outputItems"
+  | "toolCalls"
+  | "updatedProjectPatch"
+  | "updatedProjectData"
+  | "updatedNodeFlow"
+> & {
+  finalItemId?: string;
 };
 
 export interface StyloAgentRuntime {
@@ -131,11 +159,10 @@ export type AgentRuntimeEvent = (
       itemId: string;
       itemType: "agent_message" | "reasoning";
       delta: string;
-      accumulatedText: string;
     }
   | { type: "item_updated"; runId: string; item: AgentThreadItem }
   | { type: "item_completed"; runId: string; item: AgentThreadItem }
-  | { type: "turn_completed"; runId: string; result: StyloRunResult }
+  | { type: "turn_completed"; runId: string; result: StyloRunTerminalResult }
   | { type: "turn_failed"; runId: string; error: string }
 ) & { sequence?: number };
 

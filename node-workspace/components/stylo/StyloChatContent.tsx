@@ -314,7 +314,11 @@ const renderAssistantPanel = (message: ChatMessage) => {
           )}
         </details>
       ) : null}
-      {message.text ? renderStyloMarkdown(message.text) : null}
+      {message.text ? (
+        message.meta?.isStreaming
+          ? <div className={`${styloBodyTextClass} whitespace-pre-wrap break-words`}>{message.text}</div>
+          : renderStyloMarkdown(message.text)
+      ) : null}
       {message.meta?.isStreaming ? (
         <div className="inline-flex items-center gap-2 text-[11px] text-[var(--app-text-muted)]" role="status">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" aria-hidden="true" />
@@ -593,7 +597,7 @@ export const StyloChatContent: React.FC<Props> = ({
     <div
       ref={messagesRef}
       role="log"
-      aria-live="polite"
+      aria-live={isSending ? "off" : "polite"}
       aria-relevant="additions text"
       aria-busy={isSending}
       aria-label="Stylo Agent 对话"

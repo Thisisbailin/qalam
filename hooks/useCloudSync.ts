@@ -5,7 +5,10 @@ import { createProjectSyncCodec } from "../sync/projectSyncAdapter";
 import { mergeStyloScopedProjectData } from "../agents/runtime/projectScope";
 import type { RealtimeSyncLease, SyncStatusDetail } from "../sync/realtimeSyncTypes";
 import { RealtimeProjectSyncEngine } from "../sync/realtimeProjectSyncEngine";
-import { subscribeProjectNodeGeometryMutations } from "../sync/projectMutationBus";
+import {
+  subscribeProjectNodeGeometryMutations,
+  subscribeProjectNodeTextMutations,
+} from "../sync/projectMutationBus";
 
 type UseCloudSyncOptions = {
   accountScope: string;
@@ -21,13 +24,7 @@ type UseCloudSyncOptions = {
   onRemoteReset?: (mode: "reset" | "delete") => void;
 };
 
-export type ProjectSyncLease = RealtimeSyncLease & {
-  /**
-   * 本地项目快照（可选）。Agent 预检携带它时即可在本地数据上直接运行，
-   * 不必等待实时项目写入获得云端确认。
-   */
-  localSnapshot?: ProjectData;
-};
+export type ProjectSyncLease = RealtimeSyncLease;
 export type EnsureProjectSynced = (
   snapshot: ProjectData,
   expectedRevision: number,
@@ -99,10 +96,13 @@ export const useCloudSync = ({
     });
     const scopedEngine = { projectId, engine };
     engineRef.current = scopedEngine;
-    const unsubscribeMutations = subscribeProjectNodeGeometryMutations((mutation) => {
+    const unsubscribeGeometryMutations = subscribeProjectNodeGeometryMutations((mutation) => {
       if (mutation.projectId === projectId) {
         engine.expectNodeGeometryMutation(mutation.patches, mutation.updatedAt);
       }
+    });
+    const unsubscribeTextMutations = subscribeProjectNodeTextMutations((mutation) => {
+      if (mutation.projectId === projectId) engine.expectNodeTextMutation(mutation);
     });
     void engine.start(projectDataRef.current).catch((error) => {
       if (engineRef.current === scopedEngine && !isAbortError(error)) {
@@ -112,7 +112,8 @@ export const useCloudSync = ({
 
     return () => {
       if (engineRef.current === scopedEngine) engineRef.current = null;
-      unsubscribeMutations();
+      unsubscribeGeometryMutations();
+      unsubscribeTextMutations();
       engine.dispose();
     };
   }, [accountScope, accountSession, isLoaded, isSignedIn, projectId, saveDebounceMs, sessionGeneration]);

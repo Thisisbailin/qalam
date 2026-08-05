@@ -380,6 +380,43 @@ test("Manus migrates its cover into a fixed first scriptPage node", () => {
   assert.equal(getConnectedScriptPageSequence(attemptedReorder, page.id)[0].id, sequence[0].id);
 });
 
+test("Manus restores an existing cover to page one and renumbers content pages", () => {
+  const title = {
+    id: "title-page",
+    type: "scriptPage" as const,
+    position: { x: 0, y: 0 },
+    data: { manuscriptId: "manuscript-a", pageRole: "title", pageNumber: 3, content: "" },
+  };
+  const firstContent = {
+    id: "page-a",
+    type: "scriptPage" as const,
+    position: { x: 380, y: 0 },
+    data: { manuscriptId: "manuscript-a", pageNumber: 1, content: "!第一页正文" },
+  };
+  const secondContent = {
+    id: "page-b",
+    type: "scriptPage" as const,
+    position: { x: 760, y: 0 },
+    data: { manuscriptId: "manuscript-a", pageNumber: 2, content: "!第二页正文" },
+  };
+  const projectData = {
+    flow: {
+      flowNodes: [title, firstContent, secondContent],
+      links: [
+        { id: "page-a-b", source: "page-a", target: "page-b", data: { relation: "screenplay-page" as const } },
+        { id: "page-b-title", source: "page-b", target: "title-page", data: { relation: "screenplay-page" as const } },
+      ],
+    },
+  } as unknown as ProjectData;
+
+  const repaired = ensureScreenplayTitlePage(projectData, firstContent.id);
+  const sequence = getConnectedScriptPageSequence(repaired.projectData, firstContent.id);
+
+  assert.equal(repaired.created, false);
+  assert.deepEqual(sequence.map((node) => node.id), ["title-page", "page-a", "page-b"]);
+  assert.deepEqual(sequence.map((node) => node.data?.pageNumber), [1, 2, 3]);
+});
+
 test("screenplay analysis builds navigation, production metrics, and continuity diagnostics", () => {
   const analysis = analyzeScreenplay(
     [

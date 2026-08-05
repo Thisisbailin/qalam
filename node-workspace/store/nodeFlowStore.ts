@@ -80,6 +80,7 @@ import {
   type NodeFlowExecutionApprovalProposal,
   upsertNodeFlowExecutionApproval,
 } from "../nodeflow/approvals";
+import { publishProjectNodeTextMutation } from "../../sync/projectMutationBus";
 
 export type { GlobalAssetHistoryItem, GlobalAssetType };
 
@@ -256,7 +257,29 @@ export const useNodeFlowStore = create<NodeFlowStore>((set, get) => ({
   },
 
   updateNodeData: (nodeId, data) => {
-    set((state) => patchNodeFlowNodeData(state, nodeId, data));
+    const previous = get();
+    const previousNode = previous.nodes.find((node) => node.id === nodeId);
+    const next = patchNodeFlowNodeData(previous, nodeId, data);
+    if (next === previous) return;
+    set(next);
+    const previousText = previousNode?.data?.text;
+    const nextText = Object.hasOwn(data, "text") ? data.text : undefined;
+    const projectId = previous.nodeFlowContext.projectId;
+    if (
+      projectId
+      && typeof previousText === "string"
+      && typeof nextText === "string"
+      && previousText !== nextText
+    ) {
+      publishProjectNodeTextMutation({
+        projectId,
+        nodeId,
+        previousText,
+        nextText,
+        derivedFields: (["atMentions", "entityBindings"] as const)
+          .filter((field) => Object.hasOwn(data, field)),
+      });
+    }
   },
 
   moveNode: (nodeId, position, options) => {

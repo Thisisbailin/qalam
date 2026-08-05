@@ -26,8 +26,28 @@ import type {
   StyloRunContext,
   StyloRunInput,
   StyloRunResult,
+  StyloRunTerminalResult,
   StyloResolvedSkill,
 } from "./types";
+
+const toTerminalResult = (result: StyloRunResult): StyloRunTerminalResult => {
+  const {
+    finalText: _finalText,
+    outputItems,
+    toolCalls: _toolCalls,
+    updatedProjectPatch: _updatedProjectPatch,
+    updatedProjectData: _updatedProjectData,
+    updatedNodeFlow: _updatedNodeFlow,
+    ...terminal
+  } = result;
+  const finalItemId = [...outputItems]
+    .reverse()
+    .find((item) => item.type === "agent_message" && item.phase === "final_answer")?.id;
+  return {
+    ...terminal,
+    ...(finalItemId ? { finalItemId } : {}),
+  };
+};
 
 const summarizeSuccessfulToolCalls = (toolCalls: AgentExecutedToolCall[]) => {
   const successfulCalls = toolCalls.filter((toolCall) => toolCall.status === "success" && toolCall.summary?.trim());
@@ -65,7 +85,7 @@ type RunStyloAgentCoreOptions = {
   signal?: AbortSignal;
   onEvent?: (event: AgentRuntimeEvent) => void;
   onDebug?: (label: string, payload?: unknown) => void;
-  getExtraResult?: () => Partial<StyloRunResult>;
+  getExtraResult?: () => Partial<StyloRunResult> | Promise<Partial<StyloRunResult>>;
   runStartedMeta?: Pick<Extract<AgentRuntimeEvent, { type: "turn_started" }>, "traceId" | "tracingEnabled">;
   recoverFallbackOnAnyError?: boolean;
   traceId?: string;
@@ -102,6 +122,20 @@ export const runStyloAgentCore = async ({
   const runId = `${runtimeMode === "edge_full" ? "edge-run" : "run"}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   let runtimeEventSequence = 0;
   const completedItems = new Map<string, AgentThreadItem>();
+  let extraResultPromise: Promise<Partial<StyloRunResult>> | null = null;
+  const resolveExtraResult = () => {
+    if (!extraResultPromise) {
+      extraResultPromise = Promise.resolve()
+        .then(() => getExtraResult?.() || {})
+        .catch((error) => {
+          const finalizationError = error instanceof Error ? error : new Error(String(error));
+          (finalizationError as Error & { styloResultFinalizationFailure?: boolean })
+            .styloResultFinalizationFailure = true;
+          throw finalizationError;
+        });
+    }
+    return extraResultPromise;
+  };
   const emitRuntimeEvent = (event: AgentRuntimeEvent) => {
     if (event.type === "item_completed" || event.type === "item_updated") {
       completedItems.set(event.item.id, event.item);
@@ -201,6 +235,7 @@ export const runStyloAgentCore = async ({
       emitEvent: emitToolEvent,
       disabledTools,
       toolBudget,
+      signal,
     });
     const initialToolBudgetSnapshot = toolBudget.snapshot();
     const runContext: StyloRunContext = {
@@ -291,6 +326,7 @@ export const runStyloAgentCore = async ({
       synthesizedToolText;
     messageProjector.finalize(finalText);
 
+    const extraResult = await resolveExtraResult();
     const runResult: StyloRunResult = {
       projectId: input.projectId,
       finalText,
@@ -304,7 +340,7 @@ export const runStyloAgentCore = async ({
             totalTokens: result.rawResponses.at(-1)?.usage?.totalTokens,
           }
         : undefined,
-      ...(getExtraResult?.() || {}),
+      ...extraResult,
     };
 
     onDebug?.("run result", {
@@ -325,7 +361,7 @@ export const runStyloAgentCore = async ({
       `tools=${toolEvents.length} · response=${result.lastResponseId || "n/a"}`,
       `text=${finalText.length} chars`
     );
-    emitRuntimeEvent({ type: "turn_completed", runId, result: runResult });
+    emitRuntimeEvent({ type: "turn_completed", runId, result: toTerminalResult(runResult) });
     return runResult;
   } catch (error: any) {
     const isMaxTurns = error?.name === "MaxTurnsExceededError" || String(error?.message || "").includes("Max turns");
@@ -345,6 +381,7 @@ export const runStyloAgentCore = async ({
       return category === "mutation" || category === "approval";
     });
     const fallbackText = messageProjector.streamedResponseText.trim() || messageProjector.streamedText.trim() || synthesizedToolText;
+    const isResultFinalizationFailure = error?.styloResultFinalizationFailure === true;
 
     onDebug?.("run error", {
       errorName: error instanceof Error ? error.name : "UnknownError",
@@ -362,6 +399,7 @@ export const runStyloAgentCore = async ({
     });
 
     const shouldRecover =
+      !isResultFinalizationFailure &&
       Boolean(fallbackText) &&
       (
         (isMaxTurns && (!toolEvents.length || hasSuccessfulAction)) ||
@@ -371,13 +409,14 @@ export const runStyloAgentCore = async ({
     if (shouldRecover) {
       const recoveredText = fallbackText;
       messageProjector.finalize(recoveredText);
+      const extraResult = await resolveExtraResult();
       const runResult: StyloRunResult = {
         projectId: input.projectId,
         finalText: recoveredText,
         sessionId: input.sessionId,
         outputItems: Array.from(completedItems.values()),
         toolCalls: toolEvents,
-        ...(getExtraResult?.() || {}),
+        ...extraResult,
       };
       debugTrace(
         "result",
@@ -388,7 +427,7 @@ export const runStyloAgentCore = async ({
           : "运行中断，但已从已知结果恢复文本。",
         `text=${recoveredText.length} chars`
       );
-      emitRuntimeEvent({ type: "turn_completed", runId, result: runResult });
+      emitRuntimeEvent({ type: "turn_completed", runId, result: toTerminalResult(runResult) });
       return runResult;
     }
 

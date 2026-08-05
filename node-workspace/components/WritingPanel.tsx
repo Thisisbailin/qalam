@@ -337,7 +337,7 @@ export const WritingPanel: React.FC<Props> = ({
     () => displayPages.filter((node) => !isScreenplayTitlePageNode(node)),
     [displayPages]
   );
-  const pageIndex = Math.max(0, pageSequence.findIndex((node) => node.id === scriptNode?.id));
+  const pageIndex = Math.max(0, displayPages.findIndex((node) => node.id === scriptNode?.id));
   const isTitlePageActive = isScreenplayTitlePageNode(scriptNode);
   const sourceDraft = useMemo(
     () => readScriptNode(scriptNode, knownCharacterIdentities),
@@ -416,10 +416,14 @@ export const WritingPanel: React.FC<Props> = ({
   }, [contentPages, draggedPageId]);
 
   useEffect(() => {
-    if (!scriptNode?.id || titlePageNode) return;
-    shouldActivateCreatedTitlePageRef.current = true;
+    const titleIsFirst = titlePageNode?.id === pageSequence[0]?.id;
+    const pageNumbersAreCanonical = pageSequence.every(
+      (node, index) => Number(node.data?.pageNumber) === index + 1
+    );
+    if (!scriptNode?.id || (titleIsFirst && pageNumbersAreCanonical)) return;
+    if (!titlePageNode) shouldActivateCreatedTitlePageRef.current = true;
     setProjectData((previous) => ensureScreenplayTitlePage(previous, scriptNode.id).projectData);
-  }, [scriptNode?.id, setProjectData, titlePageNode]);
+  }, [pageSequence, scriptNode?.id, setProjectData, titlePageNode]);
 
   useEffect(() => {
     if (!titlePageNode || !shouldActivateCreatedTitlePageRef.current) return;
@@ -1181,7 +1185,7 @@ export const WritingPanel: React.FC<Props> = ({
       onShare={() => void handleShare()}
       onClose={handleClose}
       pageIndex={pageIndex}
-      pageCount={contentPages.length}
+      pageCount={displayPages.length}
       isCoverPage={isTitlePageActive}
       pageArrangement={pageArrangement}
       autoPagination={autoPagination}
@@ -1240,7 +1244,7 @@ export const WritingPanel: React.FC<Props> = ({
                   />
                 ) : <strong>{paperDraft.title}</strong>}
               </div>
-              <small>{index}/{Math.max(1, contentPages.length)} · {paperAnalysis.stats.scenes} 场</small>
+              <small>{index + 1}/{Math.max(1, displayPages.length)} · {paperAnalysis.stats.scenes} 场</small>
             </header>
           ) : null}
           {isTitlePage && titlePageFields ? (
@@ -1400,7 +1404,7 @@ export const WritingPanel: React.FC<Props> = ({
               onClick={() => openScriptPage(0)}
               aria-label="打开剧本封面"
             >
-              <small>C</small>
+              <small>01</small>
               <strong>封面</strong>
               <span>{parseFountainTitlePage(readScriptNode(titlePageNode).body).title || "未填写"}</span>
             </button>
@@ -1414,7 +1418,7 @@ export const WritingPanel: React.FC<Props> = ({
           >
           {orderedFilmstripPages.map((node) => {
             const index = displayPages.findIndex((page) => page.id === node.id);
-            const contentPageNumber = contentPages.findIndex((page) => page.id === node.id) + 1;
+            const contentPageNumber = contentPages.findIndex((page) => page.id === node.id) + (titlePageNode ? 2 : 1);
             const paperDraft = node.id === scriptNode?.id ? draft : readScriptNode(node, knownCharacterIdentities);
             return (
               <FilmstripPageItem

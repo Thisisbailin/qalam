@@ -9,7 +9,9 @@ import { normalizeProjectData } from "../utils/projectData";
 import { validateProjectData } from "../utils/validation";
 import {
   isNodeGeometryOnlyProjectChange,
+  isNodeTextOnlyProjectChange,
   patchProjectSyncSnapshotGeometry,
+  patchProjectSyncSnapshotText,
 } from "../sync/projectSyncAdapter";
 import { mergeProjectSnapshotsAcrossEpoch } from "../sync/projectThreeWayMerge";
 
@@ -184,6 +186,54 @@ test("node movement is recognized and applied as an action-level sync patch", ()
   const patched = patchProjectSyncSnapshotGeometry(previous, next, "project-a", patches);
   assert.deepEqual(patched.flowProjects?.[0].flow.flowNodes?.[0].position, { x: 40, y: 50 });
   assert.equal(patched.flowProjects?.[0].flow.flowNodes?.[0].data.markdown, "unchanged");
+});
+
+test("node text is eligible only when no undeclared project field changed", () => {
+  const previous = projectData("project-a", ["project-a"]);
+  previous.flowProjects![0].flow.flowNodes = [{
+    id: "node-a",
+    type: "text",
+    position: { x: 1, y: 2 },
+    data: { title: "Text", text: "OPEN", atMentions: [] },
+  } as any, {
+    id: "node-b",
+    type: "text",
+    position: { x: 4, y: 5 },
+    data: { title: "Sibling", text: "UNCHANGED" },
+  } as any];
+  previous.flow = previous.flowProjects![0].flow;
+  const changedNode = {
+    ...previous.flow.flowNodes![0],
+    data: { ...previous.flow.flowNodes![0].data, text: "OPEN LEFT", atMentions: ["left"] },
+  };
+  const changedFlow: NonNullable<ProjectData["flow"]> = {
+    ...previous.flow,
+    revision: 1,
+    // FlowSurface rebuilds the runtime node containers even when a sibling is
+    // semantically unchanged; that must not disable the text fast path.
+    flowNodes: [changedNode as any, structuredClone(previous.flow.flowNodes![1])],
+  };
+  const next: ProjectData = {
+    ...previous,
+    flow: changedFlow,
+    flowProjects: [{ ...previous.flowProjects![0], updatedAt: 20, flow: changedFlow }],
+  };
+  const intents = [{
+    projectId: "project-a",
+    nodeId: "node-a",
+    previousText: "OPEN",
+    nextText: "OPEN LEFT",
+    derivedFields: ["atMentions" as const],
+  }];
+  assert.equal(isNodeTextOnlyProjectChange(previous, next, "project-a", intents), true);
+  const patched = patchProjectSyncSnapshotText(previous, next, "project-a", intents);
+  assert.equal(patched.flowProjects?.[0].flow.flowNodes?.[0].data.text, "OPEN LEFT");
+  assert.deepEqual(patched.flowProjects?.[0].flow.flowNodes?.[0].data.atMentions, ["left"]);
+
+  const hidden = structuredClone(next);
+  hidden.flowProjects![0].flow.flowNodes![0].data.title = "Hidden title overwrite";
+  hidden.flow!.flowNodes![0].data.title = "Hidden title overwrite";
+  assert.equal(isNodeTextOnlyProjectChange(previous, hidden, "project-a", intents), false);
 });
 
 test("epoch rebasing keeps an offline local field and an unrelated remote field", () => {

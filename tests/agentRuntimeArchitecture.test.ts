@@ -263,7 +263,7 @@ test("React message projection is idempotent for replayed terminal events and tr
     return projected;
   };
   apply({ type: "turn_started", runId: "run-1", sessionId: "session-1", sequence: 1 });
-  apply({ type: "item_delta", runId: "run-1", itemId: "message-1", itemType: "agent_message", delta: "Hi", accumulatedText: "Hi", sequence: 2 });
+  apply({ type: "item_delta", runId: "run-1", itemId: "message-1", itemType: "agent_message", delta: "Hi", sequence: 2 });
   const completedEvent: AgentRuntimeEvent = {
     type: "item_completed",
     runId: "run-1",
@@ -300,7 +300,6 @@ test("stream event buffering coalesces text deltas without swallowing ordered te
     itemId: "reasoning-1",
     itemType: "reasoning",
     delta: "a",
-    accumulatedText: "a",
     sequence: 1,
   }), true);
   assert.equal(buffer.push({
@@ -309,7 +308,6 @@ test("stream event buffering coalesces text deltas without swallowing ordered te
     itemId: "reasoning-1",
     itemType: "reasoning",
     delta: "b",
-    accumulatedText: "ab",
     sequence: 2,
   }), true);
   assert.equal(buffer.push({
@@ -318,7 +316,6 @@ test("stream event buffering coalesces text deltas without swallowing ordered te
     itemId: "answer-1",
     itemType: "agent_message",
     delta: "x",
-    accumulatedText: "x",
     sequence: 3,
   }), true);
   assert.equal(buffer.push({
@@ -331,7 +328,7 @@ test("stream event buffering coalesces text deltas without swallowing ordered te
   const events = buffer.drain();
   assert.equal(events.length, 2);
   assert.equal(events[0].type, "item_delta");
-  assert.equal(events[0].type === "item_delta" && events[0].accumulatedText, "ab");
+  assert.equal(events[0].type === "item_delta" && events[0].delta, "ab");
   assert.equal(events[1].type, "item_delta");
   assert.deepEqual(buffer.drain(), []);
 });
@@ -591,18 +588,21 @@ test("Agent messages are borderless while approvals remain explicit decision car
   assert.doesNotMatch(styleSource, /\.stylo-approval-panel\[data-status="pending"\]\s*\{[^}]*inset 3px/);
 });
 
-test("Agent sending uses a synchronous lock and batches stream persistence work", () => {
+test("Agent sending uses a synchronous lock, addressed conversations, and async persistence", () => {
   const agentSource = readFileSync("node-workspace/components/StyloAgent.tsx", "utf8");
   const controllerSource = readFileSync("agents/react/useStyloAgentController.ts", "utf8");
 
-  assert.match(agentSource, /debounceMs:\s*180/);
-  assert.match(agentSource, /conversationStateRef\.current\s*=\s*nextState/);
+  assert.match(agentSource, /useAsyncPersistedState<ConversationState>/);
+  assert.match(agentSource, /debounceMs:\s*600/);
+  assert.match(agentSource, /conversationStateRef\.current\s*=\s*result\.state/);
   assert.match(agentSource, /if \(!cleanedInput \|\| submittingRef\.current\) return/);
   assert.match(agentSource, /submittingRef\.current\s*=\s*true/);
   assert.match(agentSource, /submittingRef\.current\s*=\s*false/);
   assert.match(controllerSource, /streamEventQueueRef/);
   assert.match(controllerSource, /requestAnimationFrame/);
   assert.match(controllerSource, /AgentStreamEventBuffer/);
+  assert.match(controllerSource, /setConversationMessages\(runConversationIdRef\.current/);
+  assert.match(controllerSource, /runScope\?: \{ conversationId: string; sessionId: string \}/);
 });
 
 test("tool display outcomes do not present budget skips or no-ops as success", () => {
@@ -656,7 +656,7 @@ test("stale durable Agent results cannot overwrite a newer Flow revision", () =>
 test("HTTP stream packets validate shape and sequence guard rejects replay", () => {
   const event = parseAgentStreamPacket(JSON.stringify({
     kind: "event",
-    event: { type: "item_delta", runId: "run-1", sequence: 2, itemId: "message-1", itemType: "agent_message", delta: "a", accumulatedText: "a" },
+    event: { type: "item_delta", runId: "run-1", sequence: 2, itemId: "message-1", itemType: "agent_message", delta: "a" },
   }));
   assert.equal(event.kind, "event");
   assert.throws(
@@ -716,6 +716,9 @@ test("SSE decoder handles CRLF frames, comments, and multi-line data", () => {
 
 test("Agent run requests carry identity and revision but no project knowledge", () => {
   const request: AgentHttpRunRequest = {
+    protocolVersion: 2,
+    turnId: "turn-1",
+    idempotencyKey: "agent-turn-1",
     run: {
       projectId: "project-1",
       sessionId: "stylo:project-1:conversation-1",
@@ -724,7 +727,7 @@ test("Agent run requests carry identity and revision but no project knowledge", 
     runtime: { provider: "deepseek", model: DEEPSEEK_DEFAULT_MODEL },
     project: { expectedRevision: 7 },
   };
-  assert.deepEqual(Object.keys(request).sort(), ["project", "run", "runtime"]);
+  assert.deepEqual(Object.keys(request).sort(), ["idempotencyKey", "project", "protocolVersion", "run", "runtime", "turnId"]);
   assert.equal("projectData" in request, false);
   assert.equal("nodeFlow" in request, false);
   assert.deepEqual(request.project, { expectedRevision: 7 });
@@ -793,14 +796,14 @@ test("HTTP Agent runtime flushes sync before sending the minimal request", async
     assert.deepEqual(calls[0].body.project, { expectedRevision: 9 });
     assert.equal("projectData" in calls[0].body, false);
     assert.equal("nodeFlow" in calls[0].body, false);
-    assert.deepEqual(Object.keys(calls[0].body).sort(), ["project", "run", "runtime"]);
+    assert.deepEqual(Object.keys(calls[0].body).sort(), ["idempotencyKey", "project", "protocolVersion", "run", "runtime", "turnId"]);
     assert.equal(leaseReleased, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("Agent project sync barrier uses an immutable snapshot lease instead of UI polling", () => {
+test("Agent project sync barrier commits an immutable snapshot before the minimal request", () => {
   const syncSource = readFileSync("hooks/useCloudSync.ts", "utf8");
   assert.match(syncSource, /return scopedEngine\.engine\.acquire\(snapshot, expectedRevision\)/);
   assert.doesNotMatch(syncSource, /while \(readActiveFlowRevision/);
@@ -815,14 +818,13 @@ test("Agent project sync barrier uses an immutable snapshot lease instead of UI 
 
   const agentSource = readFileSync("node-workspace/components/StyloAgent.tsx", "utf8");
   assert.match(agentSource, /const snapshot = mergeNodeFlowIntoProjectData/);
-  assert.match(agentSource, /localSnapshot: toCloudProjectData\(snapshot\)/);
-  assert.match(
-    agentSource,
-    /nodes: restoreLocalNodeMedia\(parsedCandidateFlow\.nodes, currentFlow\.nodes\)/
-  );
+  assert.match(agentSource, /ensureProjectSynced\(snapshot, expectedRevision\)/);
+  assert.doesNotMatch(agentSource, /localSnapshot|toCloudProjectData/);
+  assert.doesNotMatch(agentSource, /runResult\.updatedNodeFlow|runResult\.updatedProjectPatch/);
+  assert.match(agentSource, /runResult\.scriptEditProposals/);
 });
 
-test("Agent run requests carry the local snapshot when the preflight provides one", async () => {
+test("Agent run requests never carry the local project snapshot", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ body: AgentHttpRunRequest }> = [];
   const localSnapshot: ProjectData = {
@@ -875,11 +877,7 @@ test("Agent run requests carry the local snapshot when the preflight provides on
     const runtime = createHttpStyloAgentRuntime({
       endpoint: "https://stylo.test/api/agent",
       getRuntimeConfig: () => ({ provider: "deepseek", model: DEEPSEEK_DEFAULT_MODEL }),
-      beforeRequest: async () => ({
-        expectedRevision: 9,
-        localSnapshot,
-        release: () => undefined,
-      }),
+      beforeRequest: async () => ({ expectedRevision: 9, release: () => undefined }),
       getProjectRevision: () => 9,
     });
     await runtime.run({
@@ -890,16 +888,17 @@ test("Agent run requests carry the local snapshot when the preflight provides on
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].body.project.expectedRevision, 9);
-    assert.deepEqual(calls[0].body.project.localSnapshot, localSnapshot);
+    assert.equal("localSnapshot" in calls[0].body.project, false);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("Edge Agent API accepts a local snapshot and skips the cloud revision barrier", () => {
+test("Edge Agent API requires project authorization and the cloud revision barrier", () => {
   const apiSource = readFileSync("functions/api/agent.ts", "utf8");
-  assert.match(apiSource, /normalizeLocalProjectSnapshot/);
-  assert.match(apiSource, /buildAgentProjectStateFromRealtimeDocument\(\s*body\.run\.projectId,\s*localSnapshot/);
+  assert.match(apiSource, /hasProjectCatalogEntry/);
+  assert.match(apiSource, /flushRealtimeProjectProjection/);
+  assert.doesNotMatch(apiSource, /normalizeLocalProjectSnapshot|localSnapshot/);
   assert.match(apiSource, /云端 Flow 修订为 \$\{projectState\.nodeFlow\.revision\}/);
 });
 

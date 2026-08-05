@@ -104,16 +104,18 @@
 9. **客户端恢复边界分裂**：本地 checkpoint、confirmed checkpoint、epoch、outbox 和 rejected quarantine 现在可在同一个 IndexedDB 事务写入；待发编辑使用微任务立即启动落盘，网络发送仍严格等待 durable outbox。
 10. **永久拒绝导致重试风暴**：服务端以 `INVALID_PROJECT_STATE` 区分永久业务拒绝；客户端把整个未确认分支持久化到 rejected quarantine，从自动 outbox 移除，并恢复 confirmed 基线后重连，不再形成崩溃循环。
 11. **重置中途失败可破坏内存权威**：空文档先在独立候选中建立，Durable Object 重置事务成功后才切换内存；D1 删除以 `projected_seq = -1` 形成可重试投影屏障，短暂失败由 alarm 和 strong-reader flush 继续完成。
+12. **typed mutation v2 兼容层**：握手现在声明 `typed-mutation.v2` 和细分 capability。节点拖拽会携带封闭、限额、项目绑定的 `node.geometry` 意图，同时仍发送并持久化原始 Yjs update；服务端只有在实际物化副作用与声明完全一致时才把 typed 意图继续广播。旧 Worker、无 capability、混合操作、未知版本或无效意图一律退回完整 v1 候选校验，原始 durable update 不能因优化元数据损坏而消失。
+13. **同节点文本并发不再退化为字段覆盖**：`node-text.v1` 只声明节点的 `data.text` 路径和可选派生 mention 字段，不在 envelope 复制正文；字符插入/删除仍由原始 `Y.Text` update 表达。同一区段的并发替换会按 CRDT 顺序确定性收敛并保留双方插入，而不是按到达顺序静默丢掉一端。服务端以完整候选物化做影子证明，发现越权字段副作用会记录 `realtime_typed_mutation_shadow_mismatch` 并退回 v1。
 
 ### 仍需继续演进的风险
 
 #### 已封堵的 P0 与后续协议优化：typed mutation
 
-兼容协议 v1 已通过“完整候选状态 ACK 前校验”封堵非法状态进入权威日志的问题。它以安全优先，但每个 opaque 更新需要克隆和物化项目，CPU 成本仍是 O(项目总大小)。下一阶段应逐步引入 typed mutation envelope：
+兼容协议 v1 已通过“完整候选状态 ACK 前校验”封堵非法状态进入权威日志的问题。typed mutation v2 的 capability 协商、durable outbox、精确副作用证明、`node.geometry` 和 `node.text` 已落地。文本 envelope 是路径白名单而不是正文副本，因此不会绕开或重写 Yjs causal history。当前阶段仍保留完整候选校验作为影子安全网，因此每个 update 的服务端 CPU 成本仍是 O(项目总大小)；只有按 mutation kind 统计的 shadow mismatch 长期为零后，才可以逐步跳过全项目业务扫描：
 
 ```ts
 type ProjectMutation =
-  | { kind: "text.splice"; nodeId: string; field: "text" | "content"; index: number; delete: number; insert: string }
+  | { kind: "node.text"; patches: Array<{ nodeId: string; field: "text"; derivedFields?: Array<"atMentions" | "entityBindings"> }> }
   | { kind: "node.patch"; nodeId: string; patch: SafeNodePatch }
   | { kind: "node.create"; node: SafeNode }
   | { kind: "node.delete"; nodeId: string }
@@ -121,7 +123,7 @@ type ProjectMutation =
   | { kind: "link.delete"; linkId: string };
 ```
 
-服务端在事务前验证权限、引用完整性、字段白名单和资源配额，再转换为 Yjs 更新。迁移期继续接受经过完整候选校验的 v1 opaque update；新协议覆盖充分后，v1 owner 写入降级为只读/迁移通道。typed mutation 不能建立第二套权威，最终仍必须转换为同一 Yjs 操作并写入同一房间 WAL。
+服务端在事务前验证权限、引用完整性、字段白名单和资源配额，再转换为 Yjs 更新。迁移期继续接受经过完整候选校验的 v1 opaque update；新协议覆盖充分后，v1 owner 写入降级为只读/迁移通道。typed mutation 不能建立第二套权威，最终仍必须对应同一 Yjs 操作并写入同一房间 WAL。本阶段刻意不让服务端另行生成第二份 CRDT 更新，避免发送端后续操作依赖服务器未见过的本地 causal structs。
 
 #### P1：客户端远端应用仍是 O(项目总大小)
 

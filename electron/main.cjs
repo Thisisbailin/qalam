@@ -12,7 +12,37 @@ const MIN_WINDOW_BOUNDS = { width: 1100, height: 720 };
 const WINDOW_STATE_FILE = "stylo-window-state.json";
 const WINDOW_STATE_WRITE_DELAY_MS = 240;
 const MIN_VISIBLE_WINDOW_EDGE = 96;
+const RUNTIME_DIAGNOSTICS_FILE = "stylo-runtime-diagnostics.log";
 let mainWindow = null;
+
+const redactDiagnosticText = (value) => String(value || "")
+  .replace(/(authorization|api[-_]?key|token|secret)\s*[:=]\s*[^\s&,]+/gi, "$1=[redacted]")
+  .replace(/bearer\s+[^\s]+/gi, "Bearer [redacted]")
+  .slice(0, 1000);
+
+const sanitizeDiagnosticUrl = (value) => {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "";
+  }
+};
+
+const recordRuntimeDiagnostic = (event, detail = {}) => {
+  const payload = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    event,
+    ...detail,
+  });
+  fs.appendFile(
+    path.join(app.getPath("userData"), RUNTIME_DIAGNOSTICS_FILE),
+    `${payload}\n`,
+    (error) => {
+      if (error) console.warn("Unable to persist Stylo runtime diagnostic", error);
+    },
+  );
+};
 const migrateLegacyUserDataDirectory = () => {
   const currentUserData = app.getPath("userData");
   const appDataRoot = path.dirname(currentUserData);
@@ -442,6 +472,12 @@ const createMainWindow = () => {
   mainWindow.on("maximize", persistWindowStateSoon);
   mainWindow.on("unmaximize", persistWindowStateSoon);
   mainWindow.on("close", persistWindowStateNow);
+  mainWindow.on("unresponsive", () => {
+    recordRuntimeDiagnostic("renderer-unresponsive", {
+      url: sanitizeDiagnosticUrl(mainWindow?.webContents?.getURL?.() || ""),
+    });
+  });
+  mainWindow.on("responsive", () => recordRuntimeDiagnostic("renderer-responsive"));
   mainWindow.on("closed", () => {
     if (windowStateWriteTimer) clearTimeout(windowStateWriteTimer);
     windowStateWriteTimer = null;
@@ -460,6 +496,18 @@ const createMainWindow = () => {
     if (!shouldOpenExternally(url, startUrl)) return;
     event.preventDefault();
     if (isAllowedExternalUrl(url)) void shell.openExternal(url);
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    recordRuntimeDiagnostic("render-process-gone", {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      url: startUrl,
+    });
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(startUrl);
+    }, 500);
   });
 
   mainWindow.webContents.on("did-finish-load", () => {
@@ -513,4 +561,29 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("child-process-gone", (_event, details) => {
+  recordRuntimeDiagnostic("child-process-gone", {
+    type: details.type,
+    reason: details.reason,
+    exitCode: details.exitCode,
+    serviceName: details.serviceName,
+    name: details.name,
+  });
+});
+
+process.on("uncaughtException", (error) => {
+  recordRuntimeDiagnostic("main-uncaught-exception", {
+    name: error?.name,
+    message: redactDiagnosticText(error?.message),
+  });
+  console.error(error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  recordRuntimeDiagnostic("main-unhandled-rejection", {
+    message: redactDiagnosticText(reason instanceof Error ? reason.message : reason),
+  });
+  console.error(reason);
 });

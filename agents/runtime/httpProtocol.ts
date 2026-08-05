@@ -1,7 +1,6 @@
 import type { StyloToolSettings } from "../../types";
-import type { AgentRuntimeEvent, AgentThreadItem, StyloRunInput, StyloRunResult } from "./types";
-import { parseNodeFlowFile } from "../../node-workspace/nodeflow/schema";
-import type { ProjectData } from "../../types";
+import type { AgentRuntimeEvent, AgentThreadItem, StyloRunInput, StyloRunTerminalResult } from "./types";
+import { AGENT_PROTOCOL_VERSION } from "./limits";
 
 export type AgentHttpRuntimeConfig = {
   provider?: "qwen" | "openrouter" | "ark" | "deepseek";
@@ -11,27 +10,24 @@ export type AgentHttpRuntimeConfig = {
 };
 
 export type AgentHttpRunRequest = {
+  protocolVersion: typeof AGENT_PROTOCOL_VERSION;
+  turnId: string;
+  idempotencyKey: string;
   run: StyloRunInput;
   runtime: AgentHttpRuntimeConfig;
   project: {
     expectedRevision: number;
-    /**
-     * 本地项目快照（已按云端形状归一化）。提供时服务端直接基于该快照
-     * 构建 Agent 工作区，不再等待实时项目投影或校验云端修订，从而把
-     * Agent 运行与云同步状态解耦。
-     */
-    localSnapshot?: ProjectData;
   };
 };
 
 export type AgentHttpStreamPacket =
-  | { kind: "event"; event: AgentRuntimeEvent }
-  | { kind: "error"; error: string };
+  | { protocolVersion?: typeof AGENT_PROTOCOL_VERSION; kind: "event"; event: AgentRuntimeEvent }
+  | { protocolVersion?: typeof AGENT_PROTOCOL_VERSION; kind: "error"; error: string };
 
 export const AGENT_HTTP_STREAM_CONTENT_TYPE = "text/event-stream; charset=utf-8";
 
 export const serializeAgentStreamPacket = (packet: AgentHttpStreamPacket) =>
-  `data: ${JSON.stringify(packet)}\n\n`;
+  `data: ${JSON.stringify({ protocolVersion: AGENT_PROTOCOL_VERSION, ...packet })}\n\n`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -84,24 +80,32 @@ const parseThreadItem = (value: unknown): AgentThreadItem => {
   return failMalformedPacket();
 };
 
-const parseRunResult = (value: unknown): StyloRunResult => {
+const parseRunTerminalResult = (value: unknown): StyloRunTerminalResult => {
   if (
     !isRecord(value) ||
     !isNonEmptyString(value.projectId) ||
-    !isNonEmptyString(value.sessionId) ||
-    typeof value.finalText !== "string" ||
-    !Array.isArray(value.outputItems) ||
-    !Array.isArray(value.toolCalls)
+    !isNonEmptyString(value.sessionId)
   ) {
     return failMalformedPacket();
   }
-  value.toolCalls.forEach(parseToolCall);
-  value.outputItems.forEach(parseThreadItem);
-  const result = value as unknown as StyloRunResult;
   return {
-    ...result,
-    ...(result.updatedNodeFlow !== undefined
-      ? { updatedNodeFlow: parseNodeFlowFile(result.updatedNodeFlow) }
+    projectId: value.projectId,
+    sessionId: value.sessionId,
+    ...(isNonEmptyString(value.finalItemId) ? { finalItemId: value.finalItemId } : {}),
+    ...(Array.isArray(value.updatedExecutionApprovals)
+      ? { updatedExecutionApprovals: value.updatedExecutionApprovals as StyloRunTerminalResult["updatedExecutionApprovals"] }
+      : {}),
+    ...(Array.isArray(value.scriptEditProposals)
+      ? { scriptEditProposals: value.scriptEditProposals as StyloRunTerminalResult["scriptEditProposals"] }
+      : {}),
+    ...(isRecord(value.projectCommit)
+      ? { projectCommit: value.projectCommit as StyloRunTerminalResult["projectCommit"] }
+      : {}),
+    ...(isRecord(value.tracing)
+      ? { tracing: value.tracing as StyloRunTerminalResult["tracing"] }
+      : {}),
+    ...(isRecord(value.usage)
+      ? { usage: value.usage as StyloRunTerminalResult["usage"] }
       : {}),
   };
 };
@@ -137,12 +141,18 @@ const parseRuntimeEvent = (value: unknown): AgentRuntimeEvent => {
       if (
         !isNonEmptyString(value.itemId) ||
         (value.itemType !== "agent_message" && value.itemType !== "reasoning") ||
-        typeof value.delta !== "string" ||
-        typeof value.accumulatedText !== "string"
+        typeof value.delta !== "string"
       ) return failMalformedPacket();
-      break;
+      return {
+        type: "item_delta",
+        runId: value.runId,
+        itemId: value.itemId,
+        itemType: value.itemType,
+        delta: value.delta,
+        ...(value.sequence === undefined ? {} : { sequence: Number(value.sequence) }),
+      } as AgentRuntimeEvent;
     case "turn_completed":
-      return { ...value, result: parseRunResult(value.result) } as unknown as AgentRuntimeEvent;
+      return { ...value, result: parseRunTerminalResult(value.result) } as unknown as AgentRuntimeEvent;
     case "turn_failed":
       if (typeof value.error !== "string") return failMalformedPacket();
       break;
@@ -199,6 +209,12 @@ export const parseAgentStreamPacket = (raw: string): AgentHttpStreamPacket => {
   const packet: unknown = JSON.parse(raw);
   if (!isRecord(packet) || typeof packet.kind !== "string") {
     throw new Error("Malformed Agent stream packet");
+  }
+  if (
+    packet.protocolVersion !== undefined &&
+    packet.protocolVersion !== AGENT_PROTOCOL_VERSION
+  ) {
+    throw new Error(`Unsupported Agent protocol version: ${String(packet.protocolVersion)}`);
   }
   if (packet.kind === "error" && typeof packet.error === "string") {
     return { kind: "error", error: packet.error };

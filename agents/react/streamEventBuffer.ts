@@ -12,7 +12,15 @@ export class AgentStreamEventBuffer {
     const key = eventKey(event);
     if (!key) return false;
     const existingIndex = this.events.findIndex((queued) => eventKey(queued) === key);
-    if (existingIndex >= 0) this.events[existingIndex] = event;
+    if (existingIndex >= 0) {
+      const existing = this.events[existingIndex];
+      if (existing.type === "item_delta" && event.type === "item_delta") {
+        this.events[existingIndex] = {
+          ...event,
+          delta: `${existing.delta}${event.delta}`,
+        };
+      }
+    }
     else this.events.push(event);
     return true;
   }

@@ -52,6 +52,10 @@ test("the realtime room durably appends only incremental edits before ACK", () =
   assert.doesNotMatch(worker, /INSERT INTO user_project_updates/);
   assert.match(worker, /this\.inspectCandidate\(candidate, attachedIdentity\.projectId\)/);
   assert.match(worker, /validateRealtimeProjectSnapshot/);
+  assert.match(worker, /validateRealtimeMutationEffect/);
+  assert.match(worker, /REALTIME_TYPED_MUTATION_CAPABILITY/);
+  assert.match(worker, /REALTIME_NODE_TEXT_CAPABILITY/);
+  assert.match(worker, /realtime_typed_mutation_shadow_mismatch/);
   assert.match(worker, /socket\.close\(1012, "Realtime stream interrupted; reconnect required"\)/);
   assert.match(worker, /raw\.length > MAX_REALTIME_MESSAGE_CHARS/);
   assert.match(worker, /SOCKET_RATE_MAX_MESSAGES/);
@@ -214,9 +218,10 @@ test("local project changes enter Yjs immediately while network writes are coale
   const engine = read("sync/realtimeProjectSyncEngine.ts");
   const hook = read("hooks/useCloudSync.ts");
   const store = read("sync/realtimeDocumentStore.ts");
+  const nodeFlowStore = read("node-workspace/store/nodeFlowStore.ts");
 
   assert.match(engine, /stage\(local: ProjectData\)[\s\S]*applyProjectSnapshot\(/);
-  assert.match(engine, /this\.queueUpdate\(update\)/);
+  assert.match(engine, /this\.queueUpdate\([\s\S]*origin === LOCAL_ORIGIN/);
   assert.match(engine, /this\.stageTimer = setTimeout/);
   assert.match(engine, /latestLocalFingerprint/);
   assert.match(engine, /areProjectDocumentsSemanticallyEqual/);
@@ -237,6 +242,12 @@ test("local project changes enter Yjs immediately while network writes are coale
   assert.match(store, /readRealtimeRejectedUpdates/);
   assert.match(engine, /queueMicrotask/);
   assert.match(engine, /handleSequenceGap/);
+  assert.match(engine, /mergeRealtimeMutations/);
+  assert.match(engine, /applyProjectNodeTextPatches/);
+  assert.match(engine, /REALTIME_NODE_TEXT_CAPABILITY/);
+  assert.match(store, /parseRealtimeMutationEnvelope/);
+  assert.match(hook, /subscribeProjectNodeTextMutations/);
+  assert.match(nodeFlowStore, /publishProjectNodeTextMutation/);
   assert.doesNotMatch(engine, /setInterval|\.refresh\(/);
   assert.doesNotMatch(hook, /refreshKey|forceCloudPull/);
 });

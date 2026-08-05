@@ -103,7 +103,7 @@ export const ScreenplayHeader: React.FC<HeaderProps> = ({
         </div>
         <span className="screenplay-header__divider" />
         <div className="screenplay-header__page-controls" aria-label="稿纸排列">
-          <small>{isCoverPage ? "C" : pageIndex + 1}/{Math.max(1, pageCount)}</small>
+          <small>{pageIndex + 1}/{Math.max(1, pageCount)}</small>
           <button type="button" className={pageArrangement === "vertical" ? "is-active" : ""} onClick={() => onPageArrangementChange("vertical")} title="纵向稿纸队列" aria-label="纵向稿纸队列">
             <ArrowsDownUp size={16} />
           </button>

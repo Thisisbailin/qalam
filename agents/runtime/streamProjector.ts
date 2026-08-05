@@ -137,7 +137,6 @@ export class AgentMessageStreamProjector {
       itemId: messageId,
       itemType: "agent_message",
       delta,
-      accumulatedText: this.activeMessageText,
     });
   }
 
@@ -152,7 +151,6 @@ export class AgentMessageStreamProjector {
       itemId: reasoningId,
       itemType: "reasoning",
       delta,
-      accumulatedText: this.activeReasoningText,
     });
   }
 

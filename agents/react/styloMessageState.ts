@@ -88,6 +88,14 @@ export class StyloMessageEventState {
   private readonly streamed = new Set<string>();
   private readonly toolFailures = new Map<string, Map<string, number>>();
   private readonly settledToolCalls = new Set<string>();
+  private readonly streamedText = new Map<string, string>();
+
+  private appendDelta(event: Extract<AgentRuntimeEvent, { type: "item_delta" }>) {
+    const key = streamKey(event.runId, event.itemId);
+    const text = `${this.streamedText.get(key) || ""}${event.delta}`;
+    this.streamedText.set(key, text);
+    return text;
+  }
 
   createPreflight(messages: Message[], statusId: string): Message[] {
     this.preflightStatusId = statusId;
@@ -195,6 +203,9 @@ export class StyloMessageEventState {
     [...this.settledToolCalls]
       .filter((key) => key.startsWith(`${runId}:`))
       .forEach((key) => this.settledToolCalls.delete(key));
+    [...this.streamedText.keys()]
+      .filter((key) => key.startsWith(`${runId}:`))
+      .forEach((key) => this.streamedText.delete(key));
     if (this.activeRunId === runId) this.activeRunId = null;
   }
 
@@ -223,13 +234,14 @@ export class StyloMessageEventState {
     }
 
     if (event.type === "item_delta" && event.itemType === "reasoning") {
+      const accumulatedText = this.appendDelta(event);
       const id = this.statusId(event.runId, "reasoning");
       const next = upsertStatus(messages, id, (current) => ({
         role: "assistant", kind: "status", order: current?.order || order(),
         statusCard: {
           id, runId: event.runId, status: current?.statusCard.status || "running",
           headline: "思考", detail: "模型正在分析并规划下一步。",
-          summary: event.accumulatedText, steps: [],
+          summary: accumulatedText.slice(-8_000), steps: [],
           startedAt: current?.statusCard.startedAt || Date.now(), updatedAt: Date.now(), isThinking: true,
         },
       }));
@@ -237,6 +249,7 @@ export class StyloMessageEventState {
     }
 
     if (event.type === "item_delta" && event.itemType === "agent_message") {
+      const accumulatedText = this.appendDelta(event);
       this.streamed.add(streamKey(event.runId, event.itemId));
       const responseId = this.statusId(event.runId, "response");
       let next = upsertStatus(messages, responseId, (current) => ({
@@ -248,7 +261,7 @@ export class StyloMessageEventState {
         },
       }));
       next = upsertAssistant(next, event.runId, event.itemId, (current) => ({
-        role: "assistant", kind: "chat", order: current?.order || this.order(next, event), text: event.accumulatedText,
+        role: "assistant", kind: "chat", order: current?.order || this.order(next, event), text: accumulatedText,
         meta: { ...current?.meta, runId: event.runId, messageId: event.itemId, isStreaming: true },
       }));
       return { messages: this.finalizeStatus(next, event.runId, "reasoning", "success") };
@@ -329,6 +342,7 @@ export class StyloMessageEventState {
           },
         }));
         this.streamed.delete(key);
+        this.streamedText.delete(key);
         return { messages: this.finalizeStatus(next, event.runId, "response", "success", {
           headline: item.phase === "final_answer" ? "最终回答已完成" : "本轮内容已生成",
           detail: item.phase === "final_answer" ? "Agent 已完成本次任务。" : "Agent 将继续处理后续工具或推理步骤。",

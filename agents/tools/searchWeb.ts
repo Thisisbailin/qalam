@@ -1,4 +1,5 @@
 import type { StyloAgentBridge } from "../bridge/styloBridge";
+import { readBoundedResponseText } from "./httpSafety";
 
 const DEFAULT_MAX_CHARS = 8000;
 
@@ -21,10 +22,10 @@ const searchWebParameters = {
 const trim = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
 const toPositiveInteger = (value: unknown, fallback: number) => {
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return Math.min(value, 32_000);
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
-    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    if (Number.isInteger(parsed) && parsed > 0) return Math.min(parsed, 32_000);
   }
   return fallback;
 };
@@ -50,19 +51,20 @@ export const searchWebToolDef = {
   description:
     "Search the public web for fresh information. Prefer primary sources when technical, legal, financial, or product accuracy matters.",
   parameters: searchWebParameters,
-  execute: async (input: unknown, _bridge: StyloAgentBridge) => {
+  execute: async (input: unknown, _bridge: StyloAgentBridge, options?: { signal?: AbortSignal }) => {
     const args = parseArgs(input);
     const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(args.query)}`;
-    const readerUrl = `https://r.jina.ai/http://r.jina.ai/http://${searchUrl}`;
+    const readerUrl = `https://r.jina.ai/http://${searchUrl.replace(/^https?:\/\//, "")}`;
     const response = await fetch(readerUrl, {
       headers: {
         Accept: "text/plain",
       },
+      signal: options?.signal,
     });
     if (!response.ok) {
       throw new Error(`Web search failed: ${response.status} ${response.statusText}`);
     }
-    const text = await response.text();
+    const text = await readBoundedResponseText(response, { signal: options?.signal });
     return {
       target: "web_search",
       action: "search",

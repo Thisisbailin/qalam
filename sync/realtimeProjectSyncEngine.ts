@@ -4,12 +4,21 @@ import {
   applyProjectSnapshot,
   applyProjectSnapshotDelta,
   applyProjectNodeGeometryPatches,
+  applyProjectNodeTextPatches,
   decodeUpdateBase64,
   encodeUpdateBase64,
   isProjectDocumentEmpty,
   readProjectSnapshot,
 } from "../collaboration/yProjectDocument";
 import { REALTIME_PROJECT_MAX_BYTES } from "../collaboration/realtimeLimits";
+import {
+  mergeRealtimeMutations,
+  parseRealtimeMutationEnvelope,
+  REALTIME_NODE_GEOMETRY_CAPABILITY,
+  REALTIME_NODE_TEXT_CAPABILITY,
+  REALTIME_TYPED_MUTATION_CAPABILITY,
+  type RealtimeMutationEnvelope,
+} from "../collaboration/realtimeMutation";
 import type { AccountApiSession } from "./authenticatedFetch";
 import type { RealtimeSyncLease, SyncCodec, SyncStatusDetail } from "./realtimeSyncTypes";
 import {
@@ -28,10 +37,15 @@ import {
   type RealtimeStoredRejectedEntry,
 } from "./realtimeDocumentStore";
 import { mergeProjectSnapshotsAcrossEpoch } from "./projectThreeWayMerge";
-import type { ProjectNodeGeometryPatch } from "./projectMutationBus";
+import type {
+  ProjectNodeGeometryPatch,
+  ProjectNodeTextMutation,
+} from "./projectMutationBus";
 import {
   isNodeGeometryOnlyProjectChange,
+  isNodeTextOnlyProjectChange,
   patchProjectSyncSnapshotGeometry,
+  patchProjectSyncSnapshotText,
 } from "./projectSyncAdapter";
 
 const REALTIME_PROTOCOL = "stylo-realtime.v1";
@@ -40,6 +54,44 @@ const REMOTE_ORIGIN = Symbol("stylo-remote-project");
 const PERSISTED_ORIGIN = Symbol("stylo-persisted-project");
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const HEARTBEAT_TIMEOUT_MS = 12_000;
+
+const jsonByteLength = (value: unknown) => {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value) ?? "null").byteLength;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+};
+
+const estimateNodeTextSnapshotUpperBound = (
+  currentBytes: number,
+  previous: ProjectData,
+  next: ProjectData,
+  projectId: string,
+  intents: ProjectNodeTextMutation[],
+) => {
+  let growth = 256;
+  const flowPairs: Array<[ProjectData["flow"], ProjectData["flow"]]> = [
+    [previous.flow, next.flow],
+  ];
+  flowPairs.push([
+    previous.flowProjects?.find((project) => project.id === projectId)?.flow,
+    next.flowProjects?.find((project) => project.id === projectId)?.flow,
+  ]);
+  for (const [beforeFlow, afterFlow] of flowPairs) {
+    for (const intent of intents) {
+      const beforeData = beforeFlow?.flowNodes?.find((node) => node.id === intent.nodeId)?.data;
+      const afterData = afterFlow?.flowNodes?.find((node) => node.id === intent.nodeId)?.data;
+      for (const field of ["text", ...intent.derivedFields] as const) {
+        const beforeBytes = jsonByteLength(beforeData?.[field]);
+        const afterBytes = jsonByteLength(afterData?.[field]);
+        if (!Number.isFinite(beforeBytes) || !Number.isFinite(afterBytes)) return Number.POSITIVE_INFINITY;
+        growth += Math.max(0, afterBytes - beforeBytes) + 32;
+      }
+    }
+  }
+  return currentBytes + growth;
+};
 
 type ServerMessage = {
   type?: "sync" | "update" | "ack" | "error" | "reset";
@@ -53,10 +105,12 @@ type ServerMessage = {
   mode?: "reset" | "delete";
   epoch?: number;
   epochReason?: "rebase" | "reset";
+  capabilities?: string[];
 };
 
 type PendingAck = {
   update: Uint8Array;
+  mutation: RealtimeMutationEnvelope | null;
   timeout: ReturnType<typeof setTimeout>;
   resolve: (serverSeq: number) => void;
   reject: (error: Error) => void;
@@ -139,6 +193,7 @@ export class RealtimeProjectSyncEngine {
   private detached = false;
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
   private ready = false;
+  private serverCapabilities = new Set<string>();
   private serverSeq = 0;
   private epoch = 0;
   private reconnectAttempt = 0;
@@ -156,10 +211,13 @@ export class RealtimeProjectSyncEngine {
   private latestLocalFingerprint: string | null = null;
   private latestLocalByteLength = 0;
   private expectedGeometryPatches: ProjectNodeGeometryPatch[] = [];
+  private expectedTextMutations: ProjectNodeTextMutation[] = [];
   private bootstrapLocalDirty = false;
   private bootstrapWithoutPersistedBase = false;
   private pendingOfflineUpdate: Uint8Array | null = null;
   private pendingOfflineOpId: string | null = null;
+  private pendingOfflineMutation: RealtimeMutationEnvelope | null = null;
+  private nextLocalMutation: RealtimeMutationEnvelope | null = null;
   private pendingAcks = new Map<string, PendingAck>();
   private rejectedUpdates: RealtimeStoredRejectedEntry[] = [];
   private persistDirty = false;
@@ -225,6 +283,12 @@ export class RealtimeProjectSyncEngine {
       this.pendingOfflineOpId = recoveredOutbox.length === 1
         ? recoveredOutbox[0].opId
         : createId();
+      this.pendingOfflineMutation = recoveredOutbox.reduce<RealtimeMutationEnvelope | null>(
+        (merged, entry, index) => index === 0
+          ? entry.mutation || null
+          : mergeRealtimeMutations(merged, entry.mutation || null),
+        null,
+      );
       this.bootstrapLocalDirty = true;
     }
     if (!isProjectDocumentEmpty(this.doc)) {
@@ -265,6 +329,7 @@ export class RealtimeProjectSyncEngine {
       const nextProject = local.flowProjects?.find((project) => project.id === this.options.projectId);
       const patches = this.expectedGeometryPatches;
       this.expectedGeometryPatches = [];
+      this.expectedTextMutations = [];
       this.latestInput = local;
       if (this.stagedLocalInput) this.stagedLocalInput = local;
       this.latestLocal = patchProjectSyncSnapshotGeometry(
@@ -285,8 +350,91 @@ export class RealtimeProjectSyncEngine {
       }
       return;
     }
+    if (
+      this.latestInput
+      && this.latestLocal
+      && this.expectedTextMutations.length
+      && isNodeTextOnlyProjectChange(
+        this.latestInput,
+        local,
+        this.options.projectId,
+        this.expectedTextMutations,
+      )
+    ) {
+      const nextProject = local.flowProjects?.find((project) => project.id === this.options.projectId);
+      const intents = this.expectedTextMutations;
+      const projectedLocal = patchProjectSyncSnapshotText(
+        this.latestLocal,
+        local,
+        this.options.projectId,
+        intents,
+      );
+      const projectedByteUpperBound = estimateNodeTextSnapshotUpperBound(
+        this.latestLocalByteLength,
+        this.latestLocal,
+        local,
+        this.options.projectId,
+        intents,
+      );
+      const typedWithinLimit = projectedByteUpperBound <= REALTIME_PROJECT_MAX_BYTES;
+      const textPatches = nextProject
+        ? intents.flatMap((intent) => {
+            const node = nextProject.flow.flowNodes?.find((candidate) => candidate.id === intent.nodeId);
+            if (!node || typeof node.data?.text !== "string") return [];
+            const derived = Object.fromEntries(
+              intent.derivedFields.map((field) => [field, node.data?.[field]]),
+            );
+            return [{
+              nodeId: intent.nodeId,
+              text: node.data.text,
+              ...(intent.derivedFields.length ? { derived } : {}),
+            }];
+          })
+        : [];
+      const typedMutation = typedWithinLimit && nextProject && textPatches.length === intents.length
+        ? parseRealtimeMutationEnvelope({
+            version: 2,
+            kind: "node.text",
+            projectId: this.options.projectId,
+            updatedAt: nextProject.updatedAt,
+            revision: nextProject.flow.revision || 0,
+            patches: intents.map((intent) => ({
+              nodeId: intent.nodeId,
+              field: "text",
+              ...(intent.derivedFields.length ? { derivedFields: intent.derivedFields } : {}),
+            })),
+          }, this.options.projectId)
+        : null;
+      this.nextLocalMutation = typedMutation?.ok ? typedMutation.value : null;
+      let applied = false;
+      try {
+        if (typedWithinLimit && nextProject && textPatches.length === intents.length) {
+          applied = applyProjectNodeTextPatches(
+            this.doc,
+            this.options.projectId,
+            textPatches,
+            nextProject.updatedAt,
+            nextProject.flow.revision || 0,
+            LOCAL_ORIGIN,
+          );
+        }
+      } finally {
+        this.nextLocalMutation = null;
+      }
+      this.expectedTextMutations = [];
+      if (applied) {
+        this.expectedGeometryPatches = [];
+        this.latestInput = local;
+        if (this.stagedLocalInput) this.stagedLocalInput = local;
+        this.latestLocal = projectedLocal;
+        this.latestLocalFingerprint = null;
+        this.latestLocalByteLength = projectedByteUpperBound;
+        return;
+      }
+    }
     const previousInput = this.latestInput;
     this.expectedGeometryPatches = [];
+    this.expectedTextMutations = [];
     if (!this.stagedLocalBase && previousInput) this.stagedLocalBase = previousInput;
     this.latestInput = local;
     this.stagedLocalInput = local;
@@ -304,13 +452,47 @@ export class RealtimeProjectSyncEngine {
     // Apply the high-frequency action directly to the CRDT. The subsequent
     // normalized React snapshot remains the validation/fallback path, but the
     // network payload for a drag contains only the touched node geometry.
-    applyProjectNodeGeometryPatches(
-      this.doc,
-      this.options.projectId,
-      patches,
+    const typedMutation = parseRealtimeMutationEnvelope({
+      version: 2,
+      kind: "node.geometry",
+      projectId: this.options.projectId,
       updatedAt,
-      LOCAL_ORIGIN,
-    );
+      patches,
+    }, this.options.projectId);
+    this.nextLocalMutation = typedMutation.ok ? typedMutation.value : null;
+    try {
+      applyProjectNodeGeometryPatches(
+        this.doc,
+        this.options.projectId,
+        patches,
+        updatedAt,
+        LOCAL_ORIGIN,
+      );
+    } finally {
+      this.nextLocalMutation = null;
+    }
+  }
+
+  expectNodeTextMutation(mutation: ProjectNodeTextMutation) {
+    if (mutation.projectId !== this.options.projectId) return;
+    const index = this.expectedTextMutations.findIndex((entry) => entry.nodeId === mutation.nodeId);
+    if (index < 0) {
+      this.expectedTextMutations.push(mutation);
+      return;
+    }
+    const previous = this.expectedTextMutations[index];
+    if (previous.nextText !== mutation.previousText) {
+      // The UI intent chain is discontinuous (usually a remote projection or
+      // a non-text mutation interleaved). Force the next stage through the
+      // generic snapshot delta instead of guessing at a character history.
+      this.expectedTextMutations = [];
+      return;
+    }
+    this.expectedTextMutations[index] = {
+      ...mutation,
+      previousText: previous.previousText,
+      derivedFields: Array.from(new Set([...previous.derivedFields, ...mutation.derivedFields])),
+    };
   }
 
   private applyStagedLocal() {
@@ -449,6 +631,7 @@ export class RealtimeProjectSyncEngine {
       }
       const superseded = this.socket;
       this.socket = socket;
+      this.serverCapabilities = new Set();
       if (superseded && superseded !== socket) {
         superseded.onmessage = null;
         superseded.onclose = null;
@@ -550,6 +733,13 @@ export class RealtimeProjectSyncEngine {
       }
     }
     if ((message.type === "sync" || message.type === "update") && typeof message.update === "string") {
+      if (message.type === "sync") {
+        this.serverCapabilities = new Set(
+          Array.isArray(message.capabilities)
+            ? message.capabilities.filter((value): value is string => typeof value === "string")
+            : [],
+        );
+      }
       // React has committed the visible edit and stage() has captured it, but
       // the normal snapshot conversion may still be inside its short debounce.
       // Materialize it before applying a remote operation so a whole-project
@@ -559,6 +749,11 @@ export class RealtimeProjectSyncEngine {
         this.stageApplyTimer = null;
         this.applyStagedLocal();
       }
+      // A typed UI hint is valid only against the local snapshot that produced
+      // it. Once a remote causal update crosses this boundary, any unstaged
+      // hint must fail back to the generic delta path.
+      this.expectedGeometryPatches = [];
+      this.expectedTextMutations = [];
       let remoteUpdate: Uint8Array;
       const serverDoc = message.type === "sync" ? new Y.Doc() : null;
       const serverEpoch = Number(message.epoch);
@@ -587,6 +782,7 @@ export class RealtimeProjectSyncEngine {
             : null;
           this.pendingOfflineUpdate = null;
           this.pendingOfflineOpId = null;
+          this.pendingOfflineMutation = null;
           this.discardPendingAcks(new Error("项目实时文档已进入新的同步世代。"));
           this.replaceDocument(remoteUpdate);
           this.replaceConfirmedDocument(remoteUpdate);
@@ -696,6 +892,7 @@ export class RealtimeProjectSyncEngine {
           // Do not upload that history as an authored project change.
           this.pendingOfflineUpdate = null;
           this.pendingOfflineOpId = null;
+          this.pendingOfflineMutation = null;
           this.scheduleOutboxPersistence();
         }
         serverDoc.destroy();
@@ -725,9 +922,8 @@ export class RealtimeProjectSyncEngine {
       }
       this.pendingOfflineUpdate = null;
       this.pendingOfflineOpId = null;
+      this.pendingOfflineMutation = null;
       this.discardPendingAcks(new Error("项目已在另一台设备重置。"));
-      this.pendingOfflineUpdate = null;
-      this.pendingOfflineOpId = null;
       this.rejectedUpdates = [];
       this.scheduleOutboxPersistence();
       this.replaceDocument(new Uint8Array());
@@ -822,11 +1018,12 @@ export class RealtimeProjectSyncEngine {
             }
             this.pendingOfflineUpdate = null;
             this.pendingOfflineOpId = null;
+            this.pendingOfflineMutation = null;
             const confirmedCheckpoint = Y.encodeStateAsUpdate(this.confirmedDoc);
             this.replaceDocument(confirmedCheckpoint);
             this.scheduleOutboxPersistence();
           } else {
-            this.queueUpdate(pending.update, message.opId);
+            this.queueUpdate(pending.update, message.opId, pending.mutation);
           }
           pending.reject(error);
         }
@@ -917,7 +1114,11 @@ export class RealtimeProjectSyncEngine {
     if (origin === PERSISTED_ORIGIN) return;
     this.scheduleDocumentPersistence();
     if (origin === REMOTE_ORIGIN) return;
-    this.queueUpdate(update);
+    this.queueUpdate(
+      update,
+      null,
+      origin === LOCAL_ORIGIN ? this.nextLocalMutation : null,
+    );
     if (this.stageTimer) clearTimeout(this.stageTimer);
     this.stageTimer = setTimeout(() => {
       this.stageTimer = null;
@@ -926,18 +1127,27 @@ export class RealtimeProjectSyncEngine {
     }, this.options.debounceMs ?? 180);
   };
 
-  private queueUpdate(update: Uint8Array, retryOpId: string | null = null) {
+  private queueUpdate(
+    update: Uint8Array,
+    retryOpId: string | null = null,
+    mutation: RealtimeMutationEnvelope | null = null,
+  ) {
     // Yjs encodes an empty update as two bytes. Do not turn a connection
     // handshake or a semantically unchanged React render into a network write.
     if (update.byteLength <= 2) return;
     if (this.pendingOfflineUpdate) {
       this.pendingOfflineUpdate = Y.mergeUpdates([this.pendingOfflineUpdate, update]);
+      this.pendingOfflineMutation = mergeRealtimeMutations(
+        this.pendingOfflineMutation,
+        mutation,
+      );
       // Once separately identified operations are merged, the result needs a
       // new id because a server may have persisted only part of the merge.
       this.pendingOfflineOpId = createId();
     } else {
       this.pendingOfflineUpdate = update;
       this.pendingOfflineOpId = retryOpId || createId();
+      this.pendingOfflineMutation = mutation;
     }
     this.scheduleOutboxPersistence();
     if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) {
@@ -959,6 +1169,7 @@ export class RealtimeProjectSyncEngine {
     }
     const update = this.pendingOfflineUpdate;
     const opId = this.pendingOfflineOpId || createId();
+    const mutation = this.pendingOfflineMutation;
     // A server ACK must never be the only surviving copy of an edit. Persist
     // the operation locally before putting it on the wire.
     await this.flushOutboxPersistence();
@@ -967,12 +1178,17 @@ export class RealtimeProjectSyncEngine {
     }
     this.pendingOfflineUpdate = null;
     this.pendingOfflineOpId = null;
-    return this.sendUpdate(update, opId);
+    this.pendingOfflineMutation = null;
+    return this.sendUpdate(update, opId, mutation);
   }
 
-  private sendUpdate(update: Uint8Array, retryOpId: string | null = null) {
+  private sendUpdate(
+    update: Uint8Array,
+    retryOpId: string | null = null,
+    mutation: RealtimeMutationEnvelope | null = null,
+  ) {
     if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      this.queueUpdate(update, retryOpId);
+      this.queueUpdate(update, retryOpId, mutation);
       return Promise.resolve(this.serverSeq);
     }
     const opId = retryOpId || createId();
@@ -981,7 +1197,7 @@ export class RealtimeProjectSyncEngine {
         const pending = this.pendingAcks.get(opId);
         if (!pending) return;
         this.pendingAcks.delete(opId);
-        this.queueUpdate(pending.update, opId);
+        this.queueUpdate(pending.update, opId, pending.mutation);
         const error = new Error("实时项目写入确认超时，更改将在重连后重发。");
         pending.reject(error);
         this.options.onStatusChange?.("error", {
@@ -991,10 +1207,16 @@ export class RealtimeProjectSyncEngine {
         });
         this.socket?.close(1012, "Realtime acknowledgement timeout");
       }, 15_000);
-      this.pendingAcks.set(opId, { update, timeout, resolve, reject });
+      this.pendingAcks.set(opId, { update, mutation, timeout, resolve, reject });
     });
     this.scheduleOutboxPersistence();
     try {
+      const canSendTypedMutation = mutation
+        && this.serverCapabilities.has(REALTIME_TYPED_MUTATION_CAPABILITY)
+        && (
+          (mutation.kind === "node.geometry" && this.serverCapabilities.has(REALTIME_NODE_GEOMETRY_CAPABILITY))
+          || (mutation.kind === "node.text" && this.serverCapabilities.has(REALTIME_NODE_TEXT_CAPABILITY))
+        );
       this.socket.send(JSON.stringify({
         type: "update",
         actorId: this.actorId,
@@ -1002,13 +1224,14 @@ export class RealtimeProjectSyncEngine {
         update: encodeUpdateBase64(update),
         projectBytes: this.latestLocalByteLength,
         epoch: this.epoch,
+        ...(canSendTypedMutation ? { mutation } : {}),
       }));
     } catch {
       const pending = this.pendingAcks.get(opId);
       if (pending) {
         clearTimeout(pending.timeout);
         this.pendingAcks.delete(opId);
-        this.queueUpdate(pending.update, opId);
+        this.queueUpdate(pending.update, opId, pending.mutation);
       }
       this.ready = false;
       this.socket?.close(1011, "Realtime update send failed");
@@ -1036,7 +1259,7 @@ export class RealtimeProjectSyncEngine {
     this.pendingAcks.clear();
     pending.forEach(([opId, entry]) => {
       clearTimeout(entry.timeout);
-      this.queueUpdate(entry.update, opId);
+      this.queueUpdate(entry.update, opId, entry.mutation);
       entry.reject(error);
     });
   }
@@ -1060,12 +1283,14 @@ export class RealtimeProjectSyncEngine {
     const entries = Array.from(this.pendingAcks.entries()).map(([opId, pending]) => ({
       opId,
       update: pending.update,
+      ...(pending.mutation ? { mutation: pending.mutation } : {}),
     }));
     if (this.pendingOfflineUpdate) {
       if (!this.pendingOfflineOpId) this.pendingOfflineOpId = createId();
       entries.push({
         opId: this.pendingOfflineOpId,
         update: this.pendingOfflineUpdate,
+        ...(this.pendingOfflineMutation ? { mutation: this.pendingOfflineMutation } : {}),
       });
     }
     return entries;
